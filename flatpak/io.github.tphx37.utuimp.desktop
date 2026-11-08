@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=utuimp
+GenericName=Music Player
+Comment=Universal terminal user interface media player
+Exec=utuimp
+Icon=io.github.tphx37.utuimp
+Terminal=true
+Type=Application
+Categories=Audio;Music;
+Keywords=music;apple;terminal;tui;
+StartupNotify=false

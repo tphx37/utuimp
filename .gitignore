@@ -1,0 +1,40 @@
+# Binaries
+/utuimp
+/utuimp.exe
+dist/
+
+# Test artifacts
+coverage.out
+coverage.html
+*.test
+*.test.exe
+
+# Release
+release_notes.md
+dist-darwin/
+
+# Config (personal credentials must not be committed)
+.env
+.env.*
+!.env.example
+*.p8
+*.pem
+*.key
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Agent state
+.sisyphus/
+
+# Cloudflare Wrangler
+.wrangler/
+worker/.wrangler/
+

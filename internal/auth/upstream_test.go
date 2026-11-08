@@ -1,0 +1,144 @@
+package auth
+
+import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+	"time"
+
+	"github.com/tphx37/utuimp/internal/config"
+)
+
+func jwtExpiring(exp time.Time) string {
+	enc := base64.RawURLEncoding.EncodeToString
+	return enc([]byte(`{"alg":"ES256"}`)) + "." + enc([]byte(fmt.Sprintf(`{"exp":%d}`, exp.Unix()))) + ".sig"
+}
+
+func TestJWTExpiry(t *testing.T) {
+	exp := time.Unix(1_900_000_000, 0)
+	if got := jwtExpiry(jwtExpiring(exp)); !got.Equal(exp) {
+		t.Errorf("jwtExpiry = %v, want %v", got, exp)
+	}
+	if !jwtExpiry("not.a.jwt").IsZero() {
+		t.Error("garbage should have no expiry")
+	}
+}
+
+func tarGz(t *testing.T, files map[string]string) []byte {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for name, body := range files {
+		_ = tw.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(body)), Typeflag: tar.TypeReg})
+		_, _ = tw.Write([]byte(body))
+	}
+	_ = tw.Close()
+	_ = gz.Close()
+	return buf.Bytes()
+}
+
+func TestExtractExecutableTakesOnlyTheBinary(t *testing.T) {
+	arc := tarGz(t, map[string]string{"README.md": "readme", "assets/logo.png": "png", "vibez": "BINARY"})
+	got, err := extractExecutable(arc, "vibez", false)
+	if err != nil || string(got) != "BINARY" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+	if _, err := extractExecutable(tarGz(t, map[string]string{"sub/vibez": "x"}), "vibez", false); err == nil {
+		t.Error("a nested path must not count as the binary")
+	}
+}
+
+func TestVerifyChecksum(t *testing.T) {
+	data := []byte("archive")
+	sum := sha256.Sum256(data)
+	sums := []byte(hex.EncodeToString(sum[:]) + "  vibez_linux_amd64.tar.gz\n")
+	if err := verifyChecksum(data, "vibez_linux_amd64.tar.gz", sums); err != nil {
+		t.Errorf("valid checksum rejected: %v", err)
+	}
+	if err := verifyChecksum([]byte("tampered"), "vibez_linux_amd64.tar.gz", sums); err == nil {
+		t.Error("tampered archive accepted")
+	}
+	if err := verifyChecksum(data, "other.tar.gz", sums); err == nil {
+		t.Error("unlisted asset accepted")
+	}
+}
+
+func TestRunUpstreamForTokenUsesSandbox(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake binary")
+	}
+	tok := jwtExpiring(time.Now().Add(7 * 24 * time.Hour))
+	// The fake upstream checks it was sandboxed (HOME is not the real one,
+	// --no-update passed, its config exists) and then caches a token.
+	script := fmt.Sprintf(`#!/bin/sh
+[ "$1" = "--no-update" ] || exit 3
+[ -f "$XDG_CONFIG_HOME/vibez/config.json" ] || exit 4
+case "$HOME" in */utuimp-token-*) ;; *) exit 5;; esac
+/bin/mkdir -p "$XDG_CACHE_HOME/vibez"
+printf '{"token":"%s","expires_at":%d}' > "$XDG_CACHE_HOME/vibez/devtoken.json"
+/bin/sleep 30
+`, tok, time.Now().Add(7*24*time.Hour).Unix())
+	bin := filepath.Join(t.TempDir(), "vibez")
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	c, err := runUpstreamForToken(context.Background(), bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Token != tok {
+		t.Errorf("token = %q", c.Token)
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Error("the process should be stopped as soon as the token appears")
+	}
+}
+
+func TestResolveWithoutBroker(t *testing.T) {
+	now := time.Now()
+	t.Cleanup(func() { upstreamRefresh = nil })
+	calls := 0
+	fresh := jwtExpiring(now.Add(7 * 24 * time.Hour))
+	upstreamRefresh = func(context.Context, string) (cachedToken, error) {
+		calls++
+		return cachedToken{Token: fresh, ExpiresAt: now.Add(7 * 24 * time.Hour).Unix()}, nil
+	}
+	_ = os.Remove(cachePath())
+
+	// Plenty of life left: keep it, no refresh.
+	long := jwtExpiring(now.Add(6 * 24 * time.Hour))
+	cfg := &config.Config{AppleDeveloperToken: long}
+	if err := resolveWithoutBroker(cfg, now); err != nil || cfg.AppleDeveloperToken != long || calls != 0 {
+		t.Fatalf("long-lived token: tok changed=%v calls=%d err=%v", cfg.AppleDeveloperToken != long, calls, err)
+	}
+
+	// Expiring: refresh, and cache the result for next time.
+	cfg = &config.Config{AppleDeveloperToken: jwtExpiring(now.Add(time.Hour))}
+	if err := resolveWithoutBroker(cfg, now); err != nil || cfg.AppleDeveloperToken != fresh || calls != 1 {
+		t.Fatalf("expiring token: got fresh=%v calls=%d err=%v", cfg.AppleDeveloperToken == fresh, calls, err)
+	}
+	cfg = &config.Config{AppleDeveloperToken: jwtExpiring(now.Add(time.Hour))}
+	if err := resolveWithoutBroker(cfg, now); err != nil || cfg.AppleDeveloperToken != fresh || calls != 1 {
+		t.Fatalf("second start should use the cache, calls=%d", calls)
+	}
+
+	// Refresh failing keeps the old token rather than failing start-up.
+	_ = os.Remove(cachePath())
+	upstreamRefresh = func(context.Context, string) (cachedToken, error) { return cachedToken{}, errors.New("offline") }
+	old := jwtExpiring(now.Add(time.Hour))
+	cfg = &config.Config{AppleDeveloperToken: old}
+	if err := resolveWithoutBroker(cfg, now); err != nil || cfg.AppleDeveloperToken != old {
+		t.Errorf("failed refresh: err=%v kept=%v", err, cfg.AppleDeveloperToken == old)
+	}
+}

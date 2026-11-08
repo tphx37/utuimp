@@ -1,0 +1,412 @@
+//go:build linux
+
+// Package local provides a Player backed by GStreamer for local audio files.
+// It plays file:// URIs directly so no DRM, no WebView, no credentials needed.
+package local
+
+import (
+	"fmt"
+	"net/url"
+	"sync"
+	"time"
+
+	"github.com/tphx37/utuimp/internal/audioquality"
+	"github.com/tphx37/utuimp/internal/player"
+	"github.com/tphx37/utuimp/internal/player/gst"
+	"github.com/tphx37/utuimp/internal/provider"
+)
+
+// Player implements player.Player for local audio files using GStreamer.
+type Player struct {
+	gst       *gst.Player
+	mu        sync.RWMutex
+	state     player.State
+	subs      []chan player.State
+	queue     []provider.Track
+	allTracks []provider.Track
+	idx       int
+	ended     bool
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+// New creates a local Player backed by a GStreamer pipeline.
+func New(_ func(string)) (*Player, error) {
+	gstPlayer, err := gst.New()
+	if err != nil {
+		return nil, fmt.Errorf("local player: %w", err)
+	}
+	p := &Player{gst: gstPlayer, done: make(chan struct{})}
+	p.gst.OnEOS(func() {
+		_ = p.Next()
+	})
+	p.gst.OnError(func(e error) {
+		p.mu.Lock()
+		p.state.Error = e.Error()
+		s := p.state
+		p.mu.Unlock()
+		p.broadcast(s)
+	})
+	go p.pollState()
+	return p, nil
+}
+
+func (p *Player) broadcast(s player.State) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for _, ch := range p.subs {
+		select {
+		case ch <- s:
+		default:
+		}
+	}
+}
+
+func (p *Player) currentState() player.State {
+	p.mu.RLock()
+	s := p.state
+	p.mu.RUnlock()
+	s.Position = p.gst.Position()
+	return s
+}
+
+func (p *Player) playTrack(t provider.Track) {
+	// Escape the path: file names with spaces, #, ? or % are otherwise
+	// not valid URIs.
+	uri := (&url.URL{Scheme: "file", Path: t.ID[len("local:"):]}).String()
+	p.gst.PlayURI(uri)
+	p.mu.Lock()
+	p.ended = false
+	p.state.Track = &t
+	p.state.Playing = true
+	p.state.Position = 0
+	s := p.state
+	p.mu.Unlock()
+	p.broadcast(s)
+}
+
+func (p *Player) Play() error {
+	p.mu.Lock()
+	if (p.ended || p.state.Track == nil) && len(p.queue) > 0 {
+		if p.ended || p.idx < 0 || p.idx >= len(p.queue) {
+			p.idx = 0
+		}
+		p.ended = false
+		t := p.queue[p.idx]
+		p.mu.Unlock()
+		p.playTrack(t)
+		return nil
+	}
+	p.state.Playing = true
+	s := p.state
+	p.mu.Unlock()
+	p.gst.Play()
+	p.broadcast(s)
+	return nil
+}
+
+func (p *Player) Pause() error {
+	p.gst.Pause()
+	p.mu.Lock()
+	p.state.Playing = false
+	s := p.state
+	p.mu.Unlock()
+	p.broadcast(s)
+	return nil
+}
+
+func (p *Player) Stop() error {
+	p.gst.Stop()
+	p.mu.Lock()
+	p.state.Playing = false
+	s := p.state
+	p.mu.Unlock()
+	p.broadcast(s)
+	return nil
+}
+
+func (p *Player) Next() error {
+	p.mu.Lock()
+	if len(p.queue) == 0 {
+		p.mu.Unlock()
+		return nil
+	}
+	if p.state.RepeatMode == player.RepeatModeOne {
+		t := p.queue[p.idx]
+		p.mu.Unlock()
+		p.playTrack(t)
+		return nil
+	}
+	if p.state.RepeatMode == player.RepeatModeOff && p.idx >= len(p.queue)-1 {
+		p.ended = true
+		p.state.Playing = false
+		p.state.Position = 0
+		s := p.state
+		p.mu.Unlock()
+		p.gst.Stop()
+		p.broadcast(s)
+		return nil
+	}
+	p.idx = (p.idx + 1) % len(p.queue)
+	t := p.queue[p.idx]
+	p.mu.Unlock()
+	p.playTrack(t)
+	return nil
+}
+
+// PlayAt jumps to queue position idx, keeping the queue intact.
+func (p *Player) PlayAt(idx int) error {
+	p.mu.Lock()
+	if idx < 0 || idx >= len(p.queue) {
+		p.mu.Unlock()
+		return nil
+	}
+	p.idx = idx
+	t := p.queue[idx]
+	p.mu.Unlock()
+	p.playTrack(t)
+	return nil
+}
+
+func (p *Player) Previous() error {
+	p.mu.Lock()
+	if len(p.queue) == 0 {
+		p.mu.Unlock()
+		return nil
+	}
+	if p.gst.Position() > 3*time.Second {
+		p.mu.Unlock()
+		p.gst.Seek(0)
+		return nil
+	}
+	if p.idx == 0 {
+		p.idx = len(p.queue) - 1
+	} else {
+		p.idx--
+	}
+	t := p.queue[p.idx]
+	p.mu.Unlock()
+	p.playTrack(t)
+	return nil
+}
+
+func (p *Player) Seek(pos time.Duration) error {
+	p.gst.Seek(pos)
+	return nil
+}
+
+func (p *Player) SetVolume(v float64) error {
+	p.gst.SetVolume(v)
+	return nil
+}
+
+func (p *Player) SetAudioBitrate(kbps int) error {
+	if err := audioquality.Validate(kbps); err != nil {
+		return err
+	}
+	return player.ErrAudioBitrateSavedPreferenceOnly
+}
+
+func (p *Player) SetQueue(ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	p.mu.Lock()
+	newQueue := tracksForIDs(p.allTracks, ids)
+	if len(newQueue) == 0 {
+		p.mu.Unlock()
+		return nil
+	}
+	p.queue = newQueue
+	p.idx = 0
+	t := p.queue[0]
+	p.mu.Unlock()
+	p.playTrack(t)
+	return nil
+}
+
+func (p *Player) SetPlaylist(_ string, startIdx int) error {
+	p.mu.Lock()
+	if len(p.queue) == 0 {
+		p.mu.Unlock()
+		return nil
+	}
+	if startIdx >= 0 && startIdx < len(p.queue) {
+		p.idx = startIdx
+	} else {
+		p.idx = 0
+	}
+	t := p.queue[p.idx]
+	p.mu.Unlock()
+	p.playTrack(t)
+	return nil
+}
+
+func (p *Player) AppendQueue(ids []string) error {
+	extra := tracksForIDs(p.allTracks, ids)
+	if len(extra) == 0 {
+		return nil
+	}
+	p.mu.Lock()
+	wasEmpty := len(p.queue) == 0
+	wasEnded := p.ended && !p.state.Playing
+	firstNewIdx := len(p.queue)
+	p.queue = append(p.queue, extra...)
+	if wasEnded {
+		p.idx = firstNewIdx
+		p.ended = false
+	}
+	p.mu.Unlock()
+	if wasEmpty || wasEnded {
+		p.playTrack(extra[0])
+	}
+	return nil
+}
+
+func (p *Player) SetRepeat(mode int) error {
+	p.mu.Lock()
+	p.state.RepeatMode = mode
+	p.mu.Unlock()
+	return nil
+}
+
+func (p *Player) SetShuffle(on bool) error {
+	p.mu.Lock()
+	p.state.ShuffleMode = on
+	p.mu.Unlock()
+	return nil
+}
+
+func (p *Player) SetEqualizer(bands []player.EQBand) error {
+	if p.gst != nil {
+		gains := make([]float64, len(bands))
+		for i, b := range bands {
+			gains[i] = b.Gain
+		}
+		p.gst.SetEqualizer(gains)
+	}
+	return nil
+}
+
+func (p *Player) RemoveFromQueue(idx int) error {
+	p.mu.Lock()
+	if idx >= 0 && idx < len(p.queue) {
+		p.queue = append(p.queue[:idx], p.queue[idx+1:]...)
+		switch {
+		case idx == p.idx:
+			p.state.Track = nil
+			p.state.Playing = false
+			p.gst.Stop()
+		case idx < p.idx:
+			p.idx--
+		}
+	}
+	s := p.state
+	p.mu.Unlock()
+	p.broadcast(s)
+	return nil
+}
+
+func (p *Player) MoveInQueue(from, to int) error {
+	p.mu.Lock()
+	if from >= 0 && from < len(p.queue) && to >= 0 && to < len(p.queue) {
+		t := p.queue[from]
+		p.queue = append(p.queue[:from], p.queue[from+1:]...)
+		if from < to {
+			to--
+		}
+		p.queue = append(p.queue[:to], append([]provider.Track{t}, p.queue[to:]...)...)
+
+		switch {
+		case from == p.idx:
+			p.idx = to
+		case from < p.idx && to >= p.idx:
+			p.idx--
+		case from > p.idx && to <= p.idx:
+			p.idx++
+		}
+	}
+	p.mu.Unlock()
+	return nil
+}
+
+func (p *Player) ClearQueue() error {
+	p.gst.Stop()
+	p.mu.Lock()
+	p.queue = nil
+	p.idx = 0
+	p.state.Track = nil
+	p.state.Playing = false
+	s := p.state
+	p.mu.Unlock()
+	p.broadcast(s)
+	return nil
+}
+
+func (p *Player) GetState() (*player.State, error) {
+	s := p.currentState()
+	return &s, nil
+}
+
+func (p *Player) Subscribe() <-chan player.State {
+	ch := make(chan player.State, 8)
+	p.mu.Lock()
+	p.subs = append(p.subs, ch)
+	p.mu.Unlock()
+	return ch
+}
+
+func (p *Player) Close() error {
+	p.closeOnce.Do(func() {
+		close(p.done)
+		p.gst.Destroy()
+	})
+	return nil
+}
+
+// This replaces the internal queue with the given tracks. Called after
+// the provider scans the music directory
+func (p *Player) LoadTracks(tracks []provider.Track) {
+	p.mu.Lock()
+	p.allTracks = append([]provider.Track{}, tracks...)
+	p.queue = append([]provider.Track{}, tracks...)
+	p.idx = 0
+	p.mu.Unlock()
+}
+
+func tracksForIDs(tracks []provider.Track, ids []string) []provider.Track {
+	byID := make(map[string]provider.Track, len(tracks))
+	for _, t := range tracks {
+		byID[t.ID] = t
+	}
+	out := make([]provider.Track, 0, len(ids))
+	for _, id := range ids {
+		if t, ok := byID[id]; ok {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func (p *Player) pollState() {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			p.mu.RLock()
+			playing := p.state.Playing
+			p.mu.RUnlock()
+			if !playing {
+				continue
+			}
+			p.mu.Lock()
+			p.state.Position = p.gst.Position()
+			s := p.state
+			p.mu.Unlock()
+			p.broadcast(s)
+		case <-p.done:
+			return
+		}
+	}
+}

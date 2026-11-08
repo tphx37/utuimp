@@ -1,0 +1,280 @@
+#!/usr/bin/env sh
+# utuimp installer — https://github.com/tphx37/utuimp
+#
+# Usage (review before running!):
+#   curl --proto '=https' --tlsv1.2 -sSf \
+#     https://raw.githubusercontent.com/tphx37/utuimp/main/scripts/install.sh | sh
+#
+# Override the install directory:
+#   UTUIMP_INSTALL_DIR=/usr/local/bin curl ... | sh
+
+set -eu
+
+REPO="tphx37/utuimp"
+BIN="utuimp"
+INSTALL_DIR="${UTUIMP_INSTALL_DIR:-${HOME}/.local/bin}"
+
+# ── colours ───────────────────────────────────────────────────────────────────
+
+setup_colors() {
+    if [ -t 1 ] && command -v tput >/dev/null 2>&1; then
+        BOLD="$(tput bold   2>/dev/null || printf '')"
+        DIM="$(tput dim     2>/dev/null || printf '')"
+        PURPLE="$(tput setaf 5 2>/dev/null || printf '')"
+        GREEN="$(tput setaf 2 2>/dev/null || printf '')"
+        YELLOW="$(tput setaf 3 2>/dev/null || printf '')"
+        RED="$(tput setaf 1 2>/dev/null || printf '')"
+        RESET="$(tput sgr0  2>/dev/null || printf '')"
+    else
+        BOLD="" DIM="" PURPLE="" GREEN="" YELLOW="" RED="" RESET=""
+    fi
+}
+
+setup_colors
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+step()    { printf '\n%s==>%s %s%s%s\n'    "${BOLD}${PURPLE}" "${RESET}" "${BOLD}" "$*" "${RESET}"; }
+info()    { printf '    %s%s%s\n'          "${DIM}" "$*" "${RESET}"; }
+success() { printf '    %s✓%s  %s\n'      "${GREEN}" "${RESET}" "$*"; }
+warn()    { printf '    %s⚠%s  %s\n'      "${YELLOW}" "${RESET}" "$*" >&2; }
+die()     { printf '\n    %s✗%s  %s\n\n'  "${RED}" "${RESET}" "$*" >&2; exit 1; }
+
+need_cmd() {
+    command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
+}
+
+# Download a URL to a file, preferring curl then wget.
+download() {
+    url="$1"; dst="$2"
+    if command -v curl >/dev/null 2>&1; then
+        curl --proto '=https' --tlsv1.2 -sSfL -o "${dst}" "${url}"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "${dst}" "${url}"
+    else
+        die "Neither curl nor wget found — install one and try again."
+    fi
+}
+
+# Fetch a URL to stdout (for the GitHub API, no file needed).
+fetch() {
+    url="$1"
+    if command -v curl >/dev/null 2>&1; then
+        curl --proto '=https' --tlsv1.2 -sSf "${url}"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- "${url}"
+    else
+        die "Neither curl nor wget found — install one and try again."
+    fi
+}
+
+# ── header ────────────────────────────────────────────────────────────────────
+
+printf '\n'
+printf '%s    ♪  utuimp installer%s\n' "${BOLD}${PURPLE}" "${RESET}"
+printf '%s    ────────────────────────────────────────%s\n' "${DIM}" "${RESET}"
+printf '\n'
+info "https://github.com/${REPO}"
+printf '\n'
+
+# ── platform check ────────────────────────────────────────────────────────────
+
+step "Checking platform…"
+
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+ARCH_RAW="$(uname -m)"
+
+case "${ARCH_RAW}" in
+    x86_64)          ARCH="amd64" ;;
+    aarch64|arm64)   ARCH="arm64" ;;
+    *)               die "Unsupported architecture: ${ARCH_RAW}" ;;
+esac
+
+# Releases publish linux/amd64, darwin/amd64 and darwin/arm64 (.goreleaser.yml).
+case "${OS}" in
+    linux)
+        PLATFORM="Linux ${ARCH_RAW}"
+        [ "${ARCH}" = "amd64" ] || \
+            die "no prebuilt Linux/${ARCH} binary is published yet — build from source: git clone https://github.com/tphx37/utuimp && cd utuimp && make build"
+        ;;
+    darwin)
+        PLATFORM="macOS ${ARCH_RAW}"
+        ;;
+    *)
+        die "utuimp supports Linux and macOS (got: ${OS})"
+        ;;
+esac
+
+need_cmd tar
+need_cmd grep
+need_cmd sed
+need_cmd awk
+
+success "${PLATFORM}"
+
+# ── resolve latest release ────────────────────────────────────────────────────
+
+step "Fetching latest release…"
+
+VERSION="$(fetch "https://api.github.com/repos/${REPO}/releases/latest" \
+    | grep '"tag_name"' \
+    | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')"
+
+[ -n "${VERSION}" ] || die "Could not determine latest version from GitHub API."
+
+success "Latest: ${VERSION}"
+
+# ── already up to date? ───────────────────────────────────────────────────────
+
+CURRENT_VERSION=""
+if [ -x "${INSTALL_DIR}/${BIN}" ]; then
+    # "utuimp version" prints "utuimp <tag>", e.g. "utuimp v0.1.0"
+    CURRENT_VERSION="$("${INSTALL_DIR}/${BIN}" version 2>/dev/null | awk '{print $2}' || printf '')"
+fi
+
+if [ -n "${CURRENT_VERSION}" ]; then
+    if [ "${CURRENT_VERSION}" = "${VERSION}" ]; then
+        printf '\n'
+        printf '%s    ✓  utuimp %s is already up to date.%s\n\n' \
+            "${BOLD}${GREEN}" "${VERSION}" "${RESET}"
+        exit 0
+    fi
+    info "Installed: ${CURRENT_VERSION}  →  upgrading to ${VERSION}"
+fi
+
+# ── set up temp dir ───────────────────────────────────────────────────────────
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "${TMP}"' EXIT INT TERM
+
+ARCHIVE="${BIN}_${OS}_${ARCH}.tar.gz"
+BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
+
+# ── download ──────────────────────────────────────────────────────────────────
+
+step "Downloading ${BIN} ${VERSION}…"
+info "${BASE_URL}/${ARCHIVE}"
+
+download "${BASE_URL}/${ARCHIVE}"    "${TMP}/${ARCHIVE}"
+download "${BASE_URL}/checksums.txt" "${TMP}/checksums.txt"
+
+success "Download complete"
+
+# ── verify checksum ───────────────────────────────────────────────────────────
+
+step "Verifying checksum…"
+
+# checksums.txt lines are "<sha256>  <filename>", or "*<filename>" in binary mode.
+EXPECTED="$(awk -v f="${ARCHIVE}" '$2 == f || $2 == "*" f { print $1; exit }' "${TMP}/checksums.txt")"
+
+# Digest the archive ourselves rather than piping into --check: macOS ships a BSD
+# sha256sum that wins `command -v` but only understands [-bctwz], so GNU-style
+# long options abort every mac install with a bogus mismatch. The bare
+# invocation prints "<sha256>  <path>" on GNU coreutils, BSD and shasum alike.
+ACTUAL=""
+if command -v sha256sum >/dev/null 2>&1; then
+    ACTUAL="$(sha256sum "${TMP}/${ARCHIVE}" | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+    ACTUAL="$(shasum -a 256 "${TMP}/${ARCHIVE}" | awk '{print $1}')"
+fi
+
+if [ -z "${ACTUAL}" ]; then
+    die "No sha256 tool found (sha256sum or shasum) — refusing to install an unverified binary."
+elif [ -z "${EXPECTED}" ]; then
+    die "No checksum published for ${ARCHIVE} — refusing to install."
+elif [ "${ACTUAL}" != "${EXPECTED}" ]; then
+    die "Checksum mismatch — the download may be corrupted. Please retry."
+else
+    success "Checksum OK"
+fi
+
+# ── install ───────────────────────────────────────────────────────────────────
+
+step "Installing to ${INSTALL_DIR}…"
+
+mkdir -p "${INSTALL_DIR}"
+tar -xzf "${TMP}/${ARCHIVE}" -C "${TMP}"
+cp "${TMP}/${BIN}" "${INSTALL_DIR}/${BIN}"
+chmod 755 "${INSTALL_DIR}/${BIN}"
+
+success "${INSTALL_DIR}/${BIN}"
+
+# ── desktop integration (XDG, Linux only) ─────────────────────────────────────
+
+if [ "${OS}" = "linux" ]; then
+    step "Installing desktop integration…"
+
+    RAW_BASE="https://raw.githubusercontent.com/${REPO}/main"
+    APP_ID="io.github.tphx37.utuimp"
+
+    DESKTOP_DIR="${HOME}/.local/share/applications"
+    ICON_DIR="${HOME}/.local/share/icons/hicolor/512x512/apps"
+
+    mkdir -p "${DESKTOP_DIR}" "${ICON_DIR}"
+
+    download "${RAW_BASE}/flatpak/${APP_ID}.desktop" "${DESKTOP_DIR}/${APP_ID}.desktop"
+    download "${RAW_BASE}/assets/logo.png"            "${ICON_DIR}/${APP_ID}.png"
+
+    # Refresh desktop and icon caches so the DE picks up the new entries immediately.
+    command -v update-desktop-database >/dev/null 2>&1 \
+        && update-desktop-database "${DESKTOP_DIR}" 2>/dev/null || true
+    command -v gtk-update-icon-cache >/dev/null 2>&1 \
+        && gtk-update-icon-cache -f -t "${HOME}/.local/share/icons/hicolor" 2>/dev/null || true
+
+    success "Desktop file and icon installed"
+fi
+
+
+step "Checking PATH…"
+
+case ":${PATH}:" in
+    *":${INSTALL_DIR}:"*)
+        success "${INSTALL_DIR} is already in PATH"
+        ;;
+    *)
+        warn "${INSTALL_DIR} is not in your PATH"
+
+        # Pick the right shell profile.
+        SHELL_NAME="$(basename "${SHELL:-sh}")"
+        case "${SHELL_NAME}" in
+            zsh)
+                PROFILE="${ZDOTDIR:-${HOME}}/.zshrc"
+                EXPORT_LINE="export PATH=\"\${HOME}/.local/bin:\${PATH}\""
+                ;;
+            bash)
+                # bash prefers .bash_profile for login shells; .bashrc for interactive
+                PROFILE="${HOME}/.bashrc"
+                [ -f "${HOME}/.bash_profile" ] && PROFILE="${HOME}/.bash_profile"
+                EXPORT_LINE="export PATH=\"\${HOME}/.local/bin:\${PATH}\""
+                ;;
+            fish)
+                PROFILE="${HOME}/.config/fish/config.fish"
+                EXPORT_LINE="fish_add_path \${HOME}/.local/bin"
+                ;;
+            *)
+                PROFILE="${HOME}/.profile"
+                EXPORT_LINE="export PATH=\"\${HOME}/.local/bin:\${PATH}\""
+                ;;
+        esac
+
+        # Append only if the line is not already present.
+        if ! grep -qF "${EXPORT_LINE}" "${PROFILE}" 2>/dev/null; then
+            mkdir -p "$(dirname "${PROFILE}")"
+            printf '\n# Added by utuimp installer\n%s\n' "${EXPORT_LINE}" >> "${PROFILE}"
+            info "Added to ${PROFILE}"
+        fi
+
+        printf '\n'
+        printf '%s    Restart your terminal or run:%s\n' "${YELLOW}" "${RESET}"
+        printf '    %s  source %s%s\n' "${BOLD}" "${PROFILE}" "${RESET}"
+        ;;
+esac
+
+# ── done ──────────────────────────────────────────────────────────────────────
+
+printf '\n'
+printf '%s    ♪  utuimp %s installed successfully!%s\n' "${BOLD}${GREEN}" "${VERSION}" "${RESET}"
+printf '\n'
+printf '    Run %sutuimp auth login%s to connect your Apple Music account.\n' "${BOLD}" "${RESET}"
+printf '    Then %sutuimp%s to start.\n' "${BOLD}" "${RESET}"
+printf '\n'

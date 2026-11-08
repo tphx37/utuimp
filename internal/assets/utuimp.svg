@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <rect width="1024" height="1024" rx="200" fill="#fff"/>
+  <!-- note + terminal cursor, centred as one group -->
+  <g fill="#000" transform="translate(-55 -8)">
+    <rect x="562" y="248" width="56" height="400" rx="28"/>
+    <path d="M590 248 C 680 262, 760 318, 790 420 C 752 376, 690 352, 618 352 Z"/>
+    <ellipse cx="470" cy="660" rx="140" ry="104" transform="rotate(-22 470 660)"/>
+    <rect x="650" y="744" width="150" height="48" rx="10"/>
+  </g>
+</svg>

@@ -1,0 +1,494 @@
+// Package spotifyconnect is a player.Player for Spotify. utuimp runs
+// librespot as its own Spotify Connect device ("utuimp") that plays the
+// audio, and drives it (or any other device of the account) through the
+// Web API. Spotify requires Premium for this.
+package spotifyconnect
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/url"
+	"strconv"
+	"sync"
+	"time"
+
+	"github.com/tphx37/utuimp/internal/audioquality"
+	"github.com/tphx37/utuimp/internal/player"
+	"github.com/tphx37/utuimp/internal/provider"
+	"github.com/tphx37/utuimp/internal/provider/spotify"
+)
+
+// maxURIs bounds how many queued tracks are handed to Spotify at once.
+const maxURIs = 400
+
+// Player implements player.Player over Spotify Connect.
+type Player struct {
+	c    *spotify.Client
+	prov *spotify.Provider
+	log  func(string)
+
+	mu       sync.Mutex
+	state    player.State
+	subs     []chan player.State
+	queue    []string
+	idx      int
+	deviceID string
+
+	kick      chan struct{} // re-read the state soon (after a command)
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+// New starts polling the user's playback state.
+func New(prov *spotify.Provider, log func(string)) *Player {
+	if log == nil {
+		log = func(string) {}
+	}
+	p := &Player{c: prov.Client(), prov: prov, log: log, done: make(chan struct{}), kick: make(chan struct{}, 1)}
+	p.state.Volume = 1
+	go p.poll()
+	return p
+}
+
+func (p *Player) broadcast() {
+	p.mu.Lock()
+	s := p.state
+	subs := append([]chan player.State(nil), p.subs...)
+	p.mu.Unlock()
+	for _, ch := range subs {
+		select {
+		case ch <- s:
+		default:
+		}
+	}
+}
+
+// refresh asks the poller to read the state shortly, so a command's effect
+// shows without waiting a full poll interval.
+func (p *Player) refresh() {
+	select {
+	case p.kick <- struct{}{}:
+	default:
+	}
+}
+
+func (p *Player) fail(err error) error {
+	p.refresh()
+	if err == nil {
+		return nil
+	}
+	p.mu.Lock()
+	p.state.Error = err.Error()
+	p.state.Loading = false
+	p.mu.Unlock()
+	p.log("[spotify] " + err.Error())
+	p.broadcast()
+	return err
+}
+
+type device struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	IsActive bool   `json:"is_active"`
+}
+
+// SetDevice makes id (the utuimp librespot device) the playback device.
+func (p *Player) SetDevice(id string) {
+	p.mu.Lock()
+	p.deviceID = id
+	p.mu.Unlock()
+}
+
+// ensureDevice picks the device to play on: utuimp's own, else the active
+// one, else this computer, else the first available.
+func (p *Player) ensureDevice(ctx context.Context) (string, error) {
+	p.mu.Lock()
+	id := p.deviceID
+	p.mu.Unlock()
+	if id != "" {
+		return id, nil
+	}
+	var res struct {
+		Devices []device `json:"devices"`
+	}
+	if err := p.c.Do(ctx, http.MethodGet, "/me/player/devices", nil, nil, &res); err != nil {
+		return "", err
+	}
+	var pick *device
+	for i := range res.Devices {
+		d := &res.Devices[i]
+		switch {
+		case d.Name == DeviceName:
+			pick = d
+		case pick != nil && pick.Name == DeviceName:
+		case d.IsActive:
+			pick = d
+		case pick == nil, !pick.IsActive && d.Type == "Computer" && pick.Type != "Computer":
+			pick = d
+		}
+	}
+	if pick == nil {
+		return "", spotify.ErrNoDevice
+	}
+	p.mu.Lock()
+	p.deviceID = pick.ID
+	p.mu.Unlock()
+	p.log("[spotify] playing on " + pick.Name)
+	return pick.ID, nil
+}
+
+func (p *Player) devQuery(ctx context.Context) (url.Values, error) {
+	id, err := p.ensureDevice(ctx)
+	if err != nil {
+		return nil, err
+	}
+	q := url.Values{}
+	q.Set("device_id", id)
+	return q, nil
+}
+
+func ctx10() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 10*time.Second)
+}
+
+// playFrom starts the local queue at idx on the device.
+func (p *Player) playFrom(idx int) error {
+	p.mu.Lock()
+	if idx < 0 || idx >= len(p.queue) {
+		p.mu.Unlock()
+		return nil
+	}
+	p.idx = idx
+	ids := p.queue[idx:min(len(p.queue), idx+maxURIs)]
+	uris := make([]string, len(ids))
+	for i, id := range ids {
+		uris[i] = "spotify:track:" + id
+	}
+	p.state.Loading = true
+	p.state.Error = ""
+	p.mu.Unlock()
+	p.broadcast()
+
+	ctx, cancel := ctx10()
+	defer cancel()
+	q, err := p.devQuery(ctx)
+	if err != nil {
+		return p.fail(err)
+	}
+	err = p.c.Do(ctx, http.MethodPut, "/me/player/play", q, map[string]any{"uris": uris}, nil)
+	if errors.Is(err, spotify.ErrNoDevice) {
+		// The remembered device went away: pick again once.
+		p.mu.Lock()
+		p.deviceID = ""
+		p.mu.Unlock()
+		if q, err = p.devQuery(ctx); err == nil {
+			err = p.c.Do(ctx, http.MethodPut, "/me/player/play", q, map[string]any{"uris": uris}, nil)
+		}
+	}
+	return p.fail(err)
+}
+
+// simple sends a body-less playback command.
+func (p *Player) simple(method, path string, extra url.Values) error {
+	ctx, cancel := ctx10()
+	defer cancel()
+	q, err := p.devQuery(ctx)
+	if err != nil {
+		return p.fail(err)
+	}
+	for k, v := range extra {
+		q[k] = v
+	}
+	return p.fail(p.c.Do(ctx, method, path, q, nil, nil))
+}
+
+// ── player.Player ──────────────────────────────────────────────────────────
+
+func (p *Player) Play() error {
+	p.mu.Lock()
+	idle := p.state.Track == nil && len(p.queue) > 0
+	idx := p.idx
+	p.mu.Unlock()
+	if idle {
+		return p.playFrom(idx)
+	}
+	p.mu.Lock()
+	p.state.Playing = true
+	p.mu.Unlock()
+	p.broadcast()
+	return p.simple(http.MethodPut, "/me/player/play", nil)
+}
+
+func (p *Player) Pause() error {
+	p.mu.Lock()
+	p.state.Playing = false
+	p.mu.Unlock()
+	p.broadcast()
+	return p.simple(http.MethodPut, "/me/player/pause", nil)
+}
+
+func (p *Player) Stop() error { return p.Pause() }
+
+func (p *Player) Next() error {
+	p.mu.Lock()
+	p.state.Loading = true
+	p.mu.Unlock()
+	return p.simple(http.MethodPost, "/me/player/next", nil)
+}
+
+func (p *Player) Previous() error { return p.simple(http.MethodPost, "/me/player/previous", nil) }
+
+func (p *Player) Seek(pos time.Duration) error {
+	return p.simple(http.MethodPut, "/me/player/seek", url.Values{"position_ms": {strconv.FormatInt(pos.Milliseconds(), 10)}})
+}
+
+func (p *Player) SetVolume(v float64) error {
+	v = min(max(v, 0), 1)
+	p.mu.Lock()
+	p.state.Volume = v
+	p.mu.Unlock()
+	p.broadcast()
+	return p.simple(http.MethodPut, "/me/player/volume", url.Values{"volume_percent": {strconv.Itoa(int(v * 100))}})
+}
+
+func (p *Player) SetAudioBitrate(kbps int) error {
+	if err := audioquality.Validate(kbps); err != nil {
+		return err
+	}
+	return player.ErrAudioBitrateSavedPreferenceOnly
+}
+
+func (p *Player) SetQueue(ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	p.mu.Lock()
+	p.queue = append([]string(nil), ids...)
+	p.mu.Unlock()
+	return p.playFrom(0)
+}
+
+func (p *Player) SetPlaylist(_ string, startIdx int) error { return p.playFrom(startIdx) }
+
+// PlayAt implements player.QueueJumper.
+func (p *Player) PlayAt(idx int) error { return p.playFrom(idx) }
+
+func (p *Player) AppendQueue(ids []string) error {
+	p.mu.Lock()
+	idle := len(p.queue) == 0 || p.state.Track == nil
+	first := len(p.queue)
+	p.queue = append(p.queue, ids...)
+	p.mu.Unlock()
+	if idle {
+		return p.playFrom(first)
+	}
+	for _, id := range ids {
+		if err := p.simple(http.MethodPost, "/me/player/queue", url.Values{"uri": {"spotify:track:" + id}}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// PlayNext implements player.NextQueuer via Spotify's own queue, which plays
+// before the rest of the current list.
+func (p *Player) PlayNext(ids []string) error {
+	p.mu.Lock()
+	if len(p.queue) == 0 {
+		p.mu.Unlock()
+		return p.SetQueue(ids)
+	}
+	at := min(p.idx+1, len(p.queue))
+	p.queue = append(p.queue[:at], append(append([]string(nil), ids...), p.queue[at:]...)...)
+	p.mu.Unlock()
+	for _, id := range ids {
+		if err := p.simple(http.MethodPost, "/me/player/queue", url.Values{"uri": {"spotify:track:" + id}}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *Player) SetRepeat(mode int) error {
+	st := "off"
+	switch mode {
+	case player.RepeatModeAll:
+		st = "context"
+	case player.RepeatModeOne:
+		st = "track"
+	}
+	p.mu.Lock()
+	p.state.RepeatMode = mode
+	p.mu.Unlock()
+	return p.simple(http.MethodPut, "/me/player/repeat", url.Values{"state": {st}})
+}
+
+func (p *Player) SetShuffle(on bool) error {
+	p.mu.Lock()
+	p.state.ShuffleMode = on
+	p.mu.Unlock()
+	return p.simple(http.MethodPut, "/me/player/shuffle", url.Values{"state": {strconv.FormatBool(on)}})
+}
+
+// SetEqualizer: the sound is made by the Spotify device, not here.
+func (p *Player) SetEqualizer([]player.EQBand) error { return nil }
+
+// RemoveFromQueue and MoveInQueue edit the local list; Spotify's own queue
+// can't be edited through the API, so the change applies from the next
+// time the list is (re)started.
+func (p *Player) RemoveFromQueue(idx int) error {
+	p.mu.Lock()
+	if idx < 0 || idx >= len(p.queue) {
+		p.mu.Unlock()
+		return nil
+	}
+	p.queue = append(p.queue[:idx], p.queue[idx+1:]...)
+	current := idx == p.idx
+	if idx < p.idx {
+		p.idx--
+	}
+	i := p.idx
+	p.mu.Unlock()
+	if current {
+		return p.playFrom(i)
+	}
+	return nil
+}
+
+func (p *Player) MoveInQueue(from, to int) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if from < 0 || from >= len(p.queue) || to < 0 || to >= len(p.queue) {
+		return nil
+	}
+	id := p.queue[from]
+	p.queue = append(p.queue[:from], p.queue[from+1:]...)
+	p.queue = append(p.queue[:to], append([]string{id}, p.queue[to:]...)...)
+	return nil
+}
+
+func (p *Player) ClearQueue() error {
+	p.mu.Lock()
+	p.queue = nil
+	p.idx = 0
+	p.state.Track = nil
+	p.mu.Unlock()
+	return p.Pause()
+}
+
+func (p *Player) GetState() (*player.State, error) {
+	p.mu.Lock()
+	s := p.state
+	p.mu.Unlock()
+	return &s, nil
+}
+
+func (p *Player) Subscribe() <-chan player.State {
+	ch := make(chan player.State, 8)
+	p.mu.Lock()
+	p.subs = append(p.subs, ch)
+	p.mu.Unlock()
+	return ch
+}
+
+func (p *Player) Close() error {
+	p.closeOnce.Do(func() { close(p.done) })
+	return nil
+}
+
+type playbackState struct {
+	IsPlaying    bool   `json:"is_playing"`
+	ProgressMs   int64  `json:"progress_ms"`
+	ShuffleState bool   `json:"shuffle_state"`
+	RepeatState  string `json:"repeat_state"`
+	Device       struct {
+		ID            string `json:"id"`
+		VolumePercent *int   `json:"volume_percent"`
+	} `json:"device"`
+	Item json.RawMessage `json:"item"`
+}
+
+// Poll intervals: Spotify rate-limits this client tightly, so the state is
+// read every few seconds (the UI interpolates the position in between) and
+// rarely while nothing plays.
+const (
+	pollPlaying = 3 * time.Second
+	pollIdle    = 10 * time.Second
+)
+
+// poll mirrors the device's playback into the player state.
+func (p *Player) poll() {
+	var curID string
+	wait := time.Second
+	for {
+		select {
+		case <-p.done:
+			return
+		case <-time.After(wait):
+		case <-p.kick:
+			time.Sleep(400 * time.Millisecond) // let Spotify apply the command
+		}
+		ctx, cancel := ctx10()
+		var st playbackState
+		err := p.c.Do(ctx, http.MethodGet, "/me/player", nil, nil, &st)
+		cancel()
+		var rl spotify.ErrRateLimited
+		switch {
+		case errors.As(err, &rl):
+			wait = rl.Wait
+			continue
+		case err != nil || len(st.Item) == 0 || string(st.Item) == "null":
+			wait = pollIdle
+			continue
+		}
+		var track *provider.Track
+		if tr, perr := p.prov.ParseTrack(st.Item); perr == nil && tr.ID != curID {
+			track = &tr
+			curID = tr.ID
+		}
+
+		p.mu.Lock()
+		if track != nil {
+			p.state.Track = track
+			for i, id := range p.queue {
+				if id == curID {
+					p.idx = i
+					break
+				}
+			}
+		}
+		if st.Device.ID != "" {
+			p.deviceID = st.Device.ID
+		}
+		p.state.Playing = st.IsPlaying
+		p.state.Loading = false
+		p.state.Position = time.Duration(st.ProgressMs) * time.Millisecond
+		p.state.ShuffleMode = st.ShuffleState
+		switch st.RepeatState {
+		case "context":
+			p.state.RepeatMode = player.RepeatModeAll
+		case "track":
+			p.state.RepeatMode = player.RepeatModeOne
+		default:
+			p.state.RepeatMode = player.RepeatModeOff
+		}
+		if st.Device.VolumePercent != nil {
+			p.state.Volume = float64(*st.Device.VolumePercent) / 100
+		}
+		p.mu.Unlock()
+		p.broadcast()
+		wait = pollPlaying
+		if !st.IsPlaying {
+			wait = pollIdle / 2
+		}
+	}
+}
+
+var (
+	_ player.Player      = (*Player)(nil)
+	_ player.QueueJumper = (*Player)(nil)
+	_ player.NextQueuer  = (*Player)(nil)
+)

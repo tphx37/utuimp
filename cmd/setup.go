@@ -46,7 +46,7 @@ var setupServices = []struct {
 	{"apple", "Apple Music", true},
 	{"spotify", "Spotify (Premium)", false},
 	{"youtube", "YouTube Music", false},
-	{"soundcloud", "SoundCloud (your own API app)", false},
+	{"soundcloud", "SoundCloud", false},
 	{"local", "Local files", true},
 }
 
@@ -167,6 +167,18 @@ func runSetup(cfg *config.Config, in io.Reader, out io.Writer) error {
 			cfg.YouTubeCookies = v
 		}
 		if s.key == "soundcloud" && slices.Contains(services, "soundcloud") {
+			fmt.Fprintln(out, "     "+i18n.T("SoundCloud plays through yt-dlp and ffmpeg, no account needed (favorites stay in utuimp)."))
+			if _, err := findTool(cfg.YtDlpPath, "yt-dlp"); err != nil {
+				fmt.Fprintln(out, "       "+ytInstallHint())
+			}
+			hasApp := cfg.SoundCloudClientID != "" && cfg.SoundCloudClientSecret != ""
+			if !yesNo("     "+i18n.T("Use your own SoundCloud API app instead (your likes and playlists; needs Artist Pro)?"), hasApp) {
+				if hasApp {
+					cfg.SoundCloudClientID, cfg.SoundCloudClientSecret = "", ""
+					cfg.SoundCloudToken, cfg.SoundCloudRefreshToken, cfg.SoundCloudTokenExpiry = "", "", 0
+				}
+				continue
+			}
 			fmt.Fprintln(out, "     "+i18n.T("SoundCloud works through its official API with your own app (registering one needs SoundCloud Artist Pro):"))
 			fmt.Fprintln(out, "       1. "+i18n.T("Open https://soundcloud.com/you/apps and create an app."))
 			fmt.Fprintln(out, "       2. "+i18n.T("Redirect URI:")+" "+soundcloud.RedirectURI)

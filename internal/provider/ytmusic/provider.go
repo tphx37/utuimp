@@ -19,18 +19,16 @@ import (
 	"github.com/tphx37/utuimp/internal/i18n"
 	"github.com/tphx37/utuimp/internal/provider"
 	"github.com/tphx37/utuimp/internal/provider/localstore"
+	"github.com/tphx37/utuimp/internal/provider/ytdlp"
 )
 
 // MixPrefix starts the ID of a song's mix ("radio"): RDAMVM + video ID.
 const MixPrefix = "RDAMVM"
 
-// Runner runs yt-dlp with args and returns its standard output.
-type Runner func(ctx context.Context, args ...string) ([]byte, error)
-
 // Provider implements provider.Provider for YouTube Music.
 type Provider struct {
-	run    Runner
-	stream streamer
+	run    ytdlp.Runner
+	stream ytdlp.Streamer
 	store  *localstore.Store
 
 	mu      sync.Mutex
@@ -42,12 +40,11 @@ type Provider struct {
 // New returns a provider. ytdlp and ffmpeg are the programs' paths;
 // cookies is yt-dlp's cookie source: a cookies.txt path or a browser name
 // for --cookies-from-browser ("" for none).
-func New(ytdlp, ffmpeg, cookies string, store *localstore.Store) *Provider {
-	base := cookieArgs(cookies)
-	run := execRunner(ytdlp, base)
+func New(ytdlpPath, ffmpeg, cookies string, store *localstore.Store) *Provider {
+	base := ytdlp.CookieArgs(cookies)
 	return &Provider{
-		run:    run,
-		stream: streamer{ytdlp: ytdlp, ffmpeg: ffmpeg, base: base, run: run},
+		run:    ytdlp.ExecRunner(ytdlpPath, base),
+		stream: ytdlp.Streamer{YtDlp: ytdlpPath, FFmpeg: ffmpeg, Base: base},
 		store:  store,
 		cache:  map[string]provider.Track{}, artists: map[string]provider.Artist{}, albums: map[string]provider.Album{},
 	}
@@ -55,42 +52,6 @@ func New(ytdlp, ffmpeg, cookies string, store *localstore.Store) *Provider {
 
 func (p *Provider) Name() string          { return "YouTube Music" }
 func (p *Provider) IsAuthenticated() bool { return true }
-
-// ── yt-dlp JSON ────────────────────────────────────────────────────────────
-
-type thumb struct {
-	URL    string `json:"url"`
-	Width  int    `json:"width"`
-	Height int    `json:"height"`
-}
-
-type entry struct {
-	Type        string   `json:"_type"`
-	ID          string   `json:"id"`
-	URL         string   `json:"url"`
-	Title       string   `json:"title"`
-	Track       string   `json:"track"`
-	Artist      string   `json:"artist"`
-	Artists     []string `json:"artists"`
-	Album       string   `json:"album"`
-	Channel     string   `json:"channel"`
-	ChannelID   string   `json:"channel_id"`
-	Uploader    string   `json:"uploader"`
-	Duration    float64  `json:"duration"`
-	ReleaseYear int      `json:"release_year"`
-	ReleaseDate string   `json:"release_date"` // YYYYMMDD
-	Thumbnail   string   `json:"thumbnail"`
-	Thumbnails  []thumb  `json:"thumbnails"`
-	Entries     []entry  `json:"entries"`
-	Formats     []format `json:"formats"`
-}
-
-type format struct {
-	FormatID string  `json:"format_id"`
-	Acodec   string  `json:"acodec"`
-	Vcodec   string  `json:"vcodec"`
-	Abr      float64 `json:"abr"`
-}
 
 // cleanName drops YouTube's decorations from channel and album names.
 func cleanName(s string) string {
@@ -104,21 +65,7 @@ func cleanName(s string) string {
 	return provider.Clean(s)
 }
 
-// bestThumb picks a thumbnail about 400px wide.
-func bestThumb(ts []thumb) string {
-	best, bw := "", 0
-	for _, t := range ts {
-		if t.URL == "" {
-			continue
-		}
-		if best == "" || (t.Width >= 300 && (bw < 300 || t.Width < bw)) || (bw < 300 && t.Width > bw) {
-			best, bw = t.URL, t.Width
-		}
-	}
-	return best
-}
-
-func (e entry) artistName() string {
+func artistName(e ytdlp.Entry) string {
 	switch {
 	case len(e.Artists) > 0:
 		return strings.Join(e.Artists, ", ")
@@ -131,7 +78,7 @@ func (e entry) artistName() string {
 	}
 }
 
-func releaseDate(e entry) string {
+func releaseDate(e ytdlp.Entry) string {
 	if len(e.ReleaseDate) == 8 {
 		return e.ReleaseDate[:4] + "-" + e.ReleaseDate[4:6] + "-" + e.ReleaseDate[6:]
 	}
@@ -141,9 +88,9 @@ func releaseDate(e entry) string {
 	return ""
 }
 
-// toTrack converts a video entry and caches it. A cached track keeps the
-// fields the entry lacks (a search result has no artist).
-func (p *Provider) toTrack(e entry) provider.Track {
+// toTrack converts a video ytdlp.Entry and caches it. A cached track keeps the
+// fields the ytdlp.Entry lacks (a search result has no artist).
+func (p *Provider) toTrack(e ytdlp.Entry) provider.Track {
 	title := e.Track
 	if title == "" {
 		title = e.Title
@@ -151,14 +98,14 @@ func (p *Provider) toTrack(e entry) provider.Track {
 	t := provider.Track{
 		ID: e.ID, CatalogID: e.ID,
 		Title:       provider.Clean(title),
-		Artist:      provider.Clean(e.artistName()),
+		Artist:      provider.Clean(artistName(e)),
 		Album:       provider.Clean(e.Album),
 		Duration:    time.Duration(e.Duration * float64(time.Second)),
 		ArtworkURL:  e.Thumbnail,
 		ReleaseDate: releaseDate(e),
 	}
 	if t.ArtworkURL == "" {
-		t.ArtworkURL = bestThumb(e.Thumbnails)
+		t.ArtworkURL = ytdlp.BestThumb(e.Thumbnails)
 	}
 	if t.ArtworkURL == "" && e.ID != "" {
 		t.ArtworkURL = "https://i.ytimg.com/vi/" + e.ID + "/hqdefault.jpg"
@@ -199,7 +146,7 @@ func merge(old, t provider.Track) provider.Track {
 	return t
 }
 
-func (p *Provider) toTracks(es []entry) []provider.Track {
+func (p *Provider) toTracks(es []ytdlp.Entry) []provider.Track {
 	out := make([]provider.Track, 0, len(es))
 	for _, e := range es {
 		if e.ID == "" || (e.Type != "" && e.Type != "url" && e.Type != "video") {
@@ -210,21 +157,9 @@ func (p *Provider) toTracks(es []entry) []provider.Track {
 	return out
 }
 
-// flat lists url without resolving each item; limit 0 means all.
-func (p *Provider) flat(ctx context.Context, u string, limit int) (*entry, error) {
-	args := []string{"--flat-playlist", "-J"}
-	if limit > 0 {
-		args = append(args, "--playlist-end", fmt.Sprint(limit))
-	}
-	out, err := p.run(ctx, append(args, u)...)
-	if err != nil {
-		return nil, err
-	}
-	var e entry
-	if err := json.Unmarshal(out, &e); err != nil {
-		return nil, fmt.Errorf("yt-dlp output: %w", err)
-	}
-	return &e, nil
+// flat lists u without resolving each item; limit 0 means all.
+func (p *Provider) flat(ctx context.Context, u string, limit int) (*ytdlp.Entry, error) {
+	return ytdlp.Flat(ctx, p.run, u, limit)
 }
 
 func watchURL(id string) string { return "https://music.youtube.com/watch?v=" + url.QueryEscape(id) }
@@ -243,12 +178,12 @@ func listURL(id string) string {
 // ── Provider ───────────────────────────────────────────────────────────────
 
 func (p *Provider) Search(ctx context.Context, query string) (*provider.SearchResult, error) {
-	search := func(kind string, limit int) (*entry, error) {
+	search := func(kind string, limit int) (*ytdlp.Entry, error) {
 		return p.flat(ctx, "https://music.youtube.com/search?q="+url.QueryEscape(query)+"#"+kind, limit)
 	}
 	var (
 		wg                 sync.WaitGroup
-		songs, arts        *entry
+		songs, arts        *ytdlp.Entry
 		albums             []provider.Album
 		songErr, alb, artE error
 	)
@@ -312,12 +247,12 @@ func (p *Provider) searchAlbums(ctx context.Context, query string, limit int) ([
 			if err != nil || d.Title == "" {
 				return
 			}
-			a := provider.Album{ID: d.ID, Title: cleanName(d.Title), ArtworkURL: bestThumb(d.Thumbnails)}
+			a := provider.Album{ID: d.ID, Title: cleanName(d.Title), ArtworkURL: ytdlp.BestThumb(d.Thumbnails)}
 			if a.ID == "" {
 				a.ID = e.ID
 			}
 			if len(d.Entries) > 0 {
-				a.Artist = provider.Clean(d.Entries[0].artistName())
+				a.Artist = provider.Clean(artistName(d.Entries[0]))
 			}
 			out[i] = a
 		}()
@@ -380,7 +315,7 @@ func (p *Provider) GetAlbumTracks(ctx context.Context, id string) ([]provider.Tr
 	if err != nil {
 		return nil, err
 	}
-	al := provider.Album{ID: d.ID, Title: cleanName(d.Title), ArtworkURL: bestThumb(d.Thumbnails)}
+	al := provider.Album{ID: d.ID, Title: cleanName(d.Title), ArtworkURL: ytdlp.BestThumb(d.Thumbnails)}
 	ts := make([]provider.Track, 0, len(d.Entries))
 	for i, e := range d.Entries {
 		if e.ID == "" {
@@ -438,7 +373,7 @@ func (p *Provider) GetArtistAlbums(ctx context.Context, artistID string) ([]prov
 	out := make([]provider.Album, 0, len(d.Entries))
 	for _, e := range d.Entries {
 		if e.ID != "" && e.Title != "" {
-			out = append(out, provider.Album{ID: e.ID, Title: cleanName(e.Title), Artist: artist, ArtworkURL: bestThumb(e.Thumbnails)})
+			out = append(out, provider.Album{ID: e.ID, Title: cleanName(e.Title), Artist: artist, ArtworkURL: ytdlp.BestThumb(e.Thumbnails)})
 		}
 	}
 	return out, nil
@@ -520,7 +455,7 @@ func (p *Provider) Lookup(ctx context.Context, id string) (provider.Track, error
 	if err != nil {
 		return provider.Track{ID: id, CatalogID: id}, err
 	}
-	var e entry
+	var e ytdlp.Entry
 	if err := json.Unmarshal(out, &e); err != nil {
 		return provider.Track{ID: id, CatalogID: id}, err
 	}

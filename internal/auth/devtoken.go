@@ -382,7 +382,8 @@ func resolveWithoutBroker(cfg *config.Config, now time.Time) error {
 	if err != nil {
 		logBroker(fmt.Sprintf("[token] upstream refresh failed: %v", err))
 		if cfg.AppleDeveloperToken == "" {
-			return fmt.Errorf("no developer token and refresh failed: %w", err)
+			return fmt.Errorf("couldn't get the Apple Music developer token (%w). "+
+				"It comes from the vibez release on GitHub; check the connection and restart utuimp", err)
 		}
 		return nil
 	}

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"os"
@@ -103,5 +104,118 @@ func TestCoverView_NarrowStacks(t *testing.T) {
 		if ansi.StringWidth(l) > m.width {
 			t.Errorf("row wider than the terminal: %q", l)
 		}
+	}
+}
+
+// With nothing playing the cover view keeps its shape: a frame where the
+// cover goes, a greyed song block and hints instead of "no lyrics".
+func TestCoverView_Idle(t *testing.T) {
+	m := newModel(newMockPlayer())
+	m.width, m.height = 120, 36
+	m.introStep = introDone
+	m.toggleCoverView()
+	frame := ansi.Strip(m.View().Content)
+	if os.Getenv("COVER_DUMP") != "" {
+		t.Log("\n" + frame)
+	}
+	for _, want := range []string{"╭", "♪", "Nothing playing", "search"} {
+		if !strings.Contains(frame, want) {
+			t.Errorf("idle cover view lacks %q:\n%s", want, frame)
+		}
+	}
+	if strings.Contains(frame, "no lyrics found") {
+		t.Errorf("idle cover view shouldn't talk about lyrics:\n%s", frame)
+	}
+	lines := strings.Split(frame, "\n")
+	if strings.TrimSpace(lines[0]) != "" {
+		t.Errorf("the first row should be padding, got %q", lines[0])
+	}
+
+	// '/' opens search over the lyrics; esc goes back to them.
+	m.handleNormalKey(tea.KeyPressMsg{Code: '/', Text: "/"}, "/")
+	if m.mode != modeSearch {
+		t.Fatal("/ should open search in the cover view")
+	}
+}
+
+// The lyrics stay between the cover's top and bottom edges, with the sung
+// line about a third of the way down and the earlier ones above it.
+func TestCoverView_LyricsBetweenCoverEdges(t *testing.T) {
+	m := coverModel(t, 140, 40)
+	var ls []lyrics.Line
+	for i := range 40 {
+		ls = append(ls, lyrics.Line{Start: time.Duration(i) * 5 * time.Second,
+			Text: fmt.Sprintf("line %02d and a few more words to make it wrap on narrow screens", i)})
+	}
+	m.lyricsP.m.SetLyrics(&lyrics.Result{Lines: ls, Synced: true}, nil)
+	m.lyricsP.m.SetPosition(101 * time.Second) // line 20
+	m.toggleCoverView()
+	frame := ansi.Strip(m.View().Content)
+	if os.Getenv("COVER_DUMP") != "" {
+		t.Log("\n" + frame)
+	}
+	rows := strings.Split(frame, "\n")
+	coverTop, coverBottom, cur := -1, -1, -1
+	for i, r := range rows {
+		if strings.Contains(r, "▀") || strings.Contains(r, "▄") {
+			if coverTop < 0 {
+				coverTop = i
+			}
+			coverBottom = i
+		}
+		if strings.Contains(r, "line 20") {
+			cur = i
+		}
+	}
+	if coverTop < 0 || cur < 0 {
+		t.Fatalf("cover rows %d–%d, current line at %d:\n%s", coverTop, coverBottom, cur, frame)
+	}
+	for i, r := range rows {
+		if strings.Contains(r, "line ") && (i < coverTop || i > coverBottom) {
+			t.Errorf("lyrics row %d outside the cover's edges %d–%d: %q", i, coverTop, coverBottom, r)
+		}
+	}
+	if cur < coverTop+2 || cur > coverTop+(coverBottom-coverTop)/2 {
+		t.Errorf("current line at row %d, want in the upper part of %d–%d", cur, coverTop, coverBottom)
+	}
+	if !strings.Contains(frame, "line 19") {
+		t.Error("the line just sung should still show above the current one")
+	}
+}
+
+// Every key the cover view's hints list does something visible there.
+func TestCoverView_HintedKeysWork(t *testing.T) {
+	keys := []struct {
+		k    string
+		code rune
+	}{
+		{"/", '/'}, {"l", 'l'}, {"q", 'q'}, {"F", 'F'}, {"esc", tea.KeyEscape}, {"e", 'e'},
+		{"i", 'i'}, {"j", 'j'}, {"t", 't'}, {"T", 'T'}, {"c", 'c'}, {"v", 'v'}, {":", ':'}, {"?", '?'},
+	}
+	for _, key := range keys {
+		t.Run(key.k, func(t *testing.T) {
+			m := coverModel(t, 140, 40)
+			var ls []lyrics.Line
+			for i := range 30 {
+				ls = append(ls, lyrics.Line{Start: time.Duration(i) * time.Second, Text: fmt.Sprintf("words %02d", i)})
+			}
+			m.lyricsP.m.SetLyrics(&lyrics.Result{Lines: ls, Synced: true}, nil)
+			m.lyricsP.m.SetPosition(10500 * time.Millisecond)
+			m.toggleCoverView()
+			before := ansi.Strip(m.View().Content)
+			msg := tea.KeyPressMsg{Code: key.code}
+			if key.code != tea.KeyEscape {
+				msg.Text = key.k
+			}
+			cmd := m.handleKey(msg)
+			if key.k == "t" && cmd != nil {
+				// t asks the model to translate: run that request.
+				m.Update(cmd())
+			}
+			after := ansi.Strip(m.View().Content)
+			if after == before {
+				t.Errorf("%q changed nothing on screen:\n%s", key.k, after)
+			}
+		})
 	}
 }

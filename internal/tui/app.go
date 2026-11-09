@@ -41,6 +41,10 @@ type App struct {
 	// OnSwitch is called with the new tab index (to persist it, refocus
 	// media keys, …).
 	OnSwitch func(idx int)
+
+	// volume is the shared volume last set in any tab (nil until one is),
+	// handed to tabs that start later.
+	volume *volumeSyncMsg
 }
 
 // sessionMsg tags a message with the service it belongs to.
@@ -116,6 +120,10 @@ func (a *App) start(idx int) tea.Cmd {
 	if s.Model == nil {
 		return nil
 	}
+	if a.volume != nil {
+		// One volume for every player: a tab opened later starts with it.
+		s.Model.Update(*a.volume)
+	}
 	cmds := []tea.Cmd{wrap(idx, s.Model.Init())}
 	if a.width > 0 {
 		_, c := s.Model.Update(tea.WindowSizeMsg{Width: a.width, Height: a.bodyHeight()})
@@ -161,10 +169,14 @@ func (a *App) switchTo(idx int) tea.Cmd {
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
 	case sessionMsg:
-		if m.idx >= 0 && m.idx < len(a.services) {
-			return a, a.forward(m.idx, m.msg)
+		if m.idx < 0 || m.idx >= len(a.services) {
+			return a, nil
 		}
-		return a, nil
+		cmd := a.forward(m.idx, m.msg)
+		if v, ok := m.msg.(saveVolumeMsg); ok {
+			return a, tea.Batch(cmd, a.shareVolume(m.idx, v))
+		}
+		return a, cmd
 	case tea.WindowSizeMsg:
 		a.width, a.height = m.Width, m.Height
 		inner := tea.WindowSizeMsg{Width: m.Width, Height: a.bodyHeight()}
@@ -197,6 +209,20 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return a, a.forward(a.active, msg)
+}
+
+// shareVolume passes a volume change made in tab from to every other
+// running tab, so all players play at one volume.
+func (a *App) shareVolume(from int, v saveVolumeMsg) tea.Cmd {
+	sync := volumeSyncMsg(v)
+	a.volume = &sync
+	var cmds []tea.Cmd
+	for i, s := range a.services {
+		if i != from && s.started {
+			cmds = append(cmds, a.forward(i, sync))
+		}
+	}
+	return tea.Batch(cmds...)
 }
 
 // tabBar renders the service tabs.

@@ -199,9 +199,23 @@ type artworkCache struct {
 	failed   bool
 }
 
-// saveVolumeMsg is returned by volume-change commands to persist the new
-// volume to the config file.
-type saveVolumeMsg struct{ vol float64 }
+// saveVolumeMsg is returned by every volume change (+/-, :vol, :mute). The
+// service that made it saves the volume; App passes it on to the other
+// services as a volumeSyncMsg, so all players share one volume. muted marks
+// :mute, with the volume to come back to in preMute (not saved).
+type saveVolumeMsg struct {
+	vol     float64
+	muted   bool
+	preMute float64
+}
+
+// volumeSyncMsg sets this service's volume (and mute) to the one just
+// chosen in another tab.
+type volumeSyncMsg struct {
+	vol     float64
+	muted   bool
+	preMute float64
+}
 type saveAudioQualityMsg struct {
 	kbps      int
 	savedOnly bool
@@ -532,7 +546,10 @@ func (m *Model) Init() tea.Cmd {
 
 func (m *Model) restoreAudioSettings() []tea.Cmd {
 	var cmds []tea.Cmd
-	if m.cfg.Volume != nil {
+	if m.preMuteVol >= 0 {
+		// Muted in another tab before this engine was up.
+		cmds = append(cmds, m.playerCmd(func(p player.Player) error { return p.SetVolume(0) }))
+	} else if m.cfg.Volume != nil {
 		v := m.cfg.VolumeOrDefault()
 		cmds = append(cmds, m.playerCmd(func(p player.Player) error {
 			return p.SetVolume(v)
@@ -1256,9 +1273,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.introStep = introDone
 
 	case saveVolumeMsg:
-		m.cfg.SetVolume(msg.vol)
-		if err := m.cfg.Save(""); err != nil {
-			m.appendLog(fmt.Sprintf("[vol] config save error: %v", err))
+		if !msg.muted {
+			m.cfg.SetVolume(msg.vol)
+			if err := m.cfg.Save(""); err != nil {
+				m.appendLog(fmt.Sprintf("[vol] config save error: %v", err))
+			}
+		}
+
+	case volumeSyncMsg:
+		m.preMuteVol = -1
+		if msg.muted {
+			m.preMuteVol = msg.preMute
+		}
+		m.playerState.Volume = msg.vol
+		if p := m.player; p != nil {
+			vol := msg.vol
+			cmds = append(cmds, func() tea.Msg {
+				if err := p.SetVolume(vol); err != nil {
+					return errMsg{err}
+				}
+				return nil
+			})
 		}
 
 	case saveAudioQualityMsg:
@@ -1786,12 +1821,12 @@ func (m *Model) executeCommand(cmd string) tea.Cmd {
 			vol := m.preMuteVol
 			m.preMuteVol = -1
 			m.appendLog(fmt.Sprintf("[vol] unmuted → %.0f%%", vol*100))
-			return m.playerCmd(func(p player.Player) error { return p.SetVolume(vol) })
+			return m.volumeCmd(vol, saveVolumeMsg{vol: vol})
 		}
 		// Mute: save current volume and set to 0.
 		m.preMuteVol = m.playerState.Volume
 		m.appendLog("[vol] muted")
-		return m.playerCmd(func(p player.Player) error { return p.SetVolume(0) })
+		return m.volumeCmd(0, saveVolumeMsg{muted: true, preMute: m.preMuteVol})
 
 	case strings.HasPrefix(cmd, "quality"):
 		name, arg, _ := strings.Cut(cmd, " ")
@@ -1867,7 +1902,7 @@ func (m *Model) executeCommand(cmd string) tea.Cmd {
 			if err := p.SetVolume(vol); err != nil {
 				return errMsg{err}
 			}
-			return saveVolumeMsg{vol}
+			return saveVolumeMsg{vol: vol}
 		}
 
 	case strings.HasPrefix(cmd, "seek"):
@@ -2516,6 +2551,15 @@ func (m *Model) handleNormalKey(msg tea.KeyPressMsg, k string) tea.Cmd {
 		return nil
 	}
 
+	// '/' opens search from anywhere too (no panel uses it), so it also
+	// works over the lyrics of the cover view; esc returns to that panel.
+	if k == "/" && !m.lyricsP.m.PickerOpen() {
+		m.lastKey = ""
+		m.mode = modeSearch
+		m.searchCursor = len([]rune(m.searchQuery))
+		return nil
+	}
+
 	// History panel: play, queue or seed radio from a recently played song.
 	if m.activePanel >= 0 && m.panels[m.activePanel] == m.historyP {
 		_, t := m.historyP.m.SelectedTrack()
@@ -3140,7 +3184,23 @@ func (m *Model) playNextCmd(label string, tracks []provider.Track, ids []string)
 	})
 }
 
+// volumeCmd sets the player's volume and then reports done (saveVolumeMsg,
+// which App shares with the other services).
+func (m *Model) volumeCmd(vol float64, done saveVolumeMsg) tea.Cmd {
+	p := m.player
+	return func() tea.Msg {
+		if p == nil {
+			return errMsg{errNotConnected}
+		}
+		if err := p.SetVolume(vol); err != nil {
+			return errMsg{err}
+		}
+		return done
+	}
+}
+
 func (m *Model) adjustVolume(delta float64) tea.Cmd {
+	m.preMuteVol = -1 // changing the volume ends a mute
 	return func() tea.Msg {
 		if m.player == nil {
 			return errMsg{errNotConnected}
@@ -3149,7 +3209,7 @@ func (m *Model) adjustVolume(delta float64) tea.Cmd {
 		if err := m.player.SetVolume(newVol); err != nil {
 			return errMsg{err}
 		}
-		return saveVolumeMsg{newVol}
+		return saveVolumeMsg{vol: newVol}
 	}
 }
 
@@ -3987,6 +4047,10 @@ func (m *Model) statusNavLines(w int) []string {
 				accent.Render(i18n.T("Shift+Tab")) + muted.Render(i18n.T(" next")),
 				accent.Render(i18n.T("esc")) + muted.Render(i18n.T(" back/close")),
 			}
+		case m.coverView && m.mode == modeNormal && m.activePanel >= 0 &&
+			m.panels[m.activePanel] == m.lyricsP && !m.lyricsP.m.PickerOpen():
+			// The cover view's home screen: everything that works here.
+			parts = m.coverHomeHints()
 		case m.activePanel >= 0 && m.panels[m.activePanel] == m.lyricsP:
 			parts = []string{
 				styles.ModeNormal.Render(i18n.T("LYRICS")),
@@ -3997,14 +4061,6 @@ func (m *Model) statusNavLines(w int) []string {
 				accent.Render(i18n.T("c")) + muted.Render(i18n.T(" source")),
 				accent.Render(i18n.T("g/G")) + muted.Render(i18n.T(" top/bottom")),
 				accent.Render(i18n.T("esc")) + muted.Render(i18n.T(" close")),
-			}
-			if m.coverView {
-				parts[len(parts)-1] = accent.Render(i18n.T("esc")) + muted.Render(i18n.T(" queue"))
-				parts = append(parts,
-					accent.Render(i18n.T("l"))+muted.Render(i18n.T(" library")),
-					accent.Render("/")+muted.Render(i18n.T(" search")),
-					accent.Render(i18n.T("F"))+muted.Render(i18n.T(" feed")),
-					accent.Render("v")+muted.Render(i18n.T(" boxed view")))
 			}
 			if m.lyricsP.m.PickerOpen() {
 				parts = []string{
@@ -4055,6 +4111,9 @@ func (m *Model) statusNavLines(w int) []string {
 				accent.Render("?") + muted.Render(i18n.T(" about")),
 				accent.Render(i18n.T(":q")) + muted.Render(i18n.T(" quit")),
 			}
+			if m.coverView {
+				parts = append(parts, accent.Render(i18n.T("esc"))+muted.Render(i18n.T(" lyrics")))
+			}
 		}
 		return wrapFit(parts, dot, w)
 	}
@@ -4088,6 +4147,7 @@ func (m *Model) statusPlayLines(w int) []string {
 		accent.Render(i18n.T("s")) + muted.Render(i18n.T(" shuffle")),
 		accent.Render(i18n.T("r")) + muted.Render(i18n.T(" repeat")),
 		radioHint,
+		accent.Render("+/-") + muted.Render(i18n.T(" volume")),
 	}
 	return wrapFit(parts, dot, w)
 }

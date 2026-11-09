@@ -179,4 +179,19 @@ var ru = map[string]string{
 	"SoundCloud works through its official API with your own app (registering one needs SoundCloud Artist Pro):": "SoundCloud работает через официальный API с вашим приложением (для его регистрации нужен SoundCloud Artist Pro):",
 	"Open https://soundcloud.com/you/apps and create an app.":                                                    "Откройте https://soundcloud.com/you/apps и создайте приложение.",
 	"Paste its Client ID and Client Secret here.":                                                                "Вставьте сюда его Client ID и Client Secret.",
+
+	// cover view while idle, SoundCloud through yt-dlp
+	"Nothing playing": "Ничего не играет", "Nothing playing yet": "Пока ничего не играет",
+	"only 30-second previews here (SoundCloud Go+ tracks)":  "здесь только 30-секундные отрывки (треки SoundCloud Go+)",
+	"More like your favorites":                              "Похожее на избранное",
+	"Press f on tracks you like: similar ones show up here": "Нажимайте f на любимых треках — здесь появятся похожие",
+	"Starting SoundCloud…":                                  "Запуск SoundCloud…",
+	"SoundCloud needs yt-dlp:":                              "Для SoundCloud нужен yt-dlp:",
+	"SoundCloud needs ffmpeg:":                              "Для SoundCloud нужен ffmpeg:",
+	"SoundCloud plays through yt-dlp and ffmpeg, no account needed (favorites stay in utuimp).": "SoundCloud играет через yt-dlp и ffmpeg, аккаунт не нужен (избранное хранится в utuimp).",
+	"Use your own SoundCloud API app instead (your likes and playlists; needs Artist Pro)?":     "Использовать вместо этого своё приложение SoundCloud API (ваши лайки и плейлисты; нужен Artist Pro)?",
+
+	// cover view hints
+	"COVER": "ОБЛОЖКА", "volume": "громкость",
+	"translation failed:": "перевод не удался:",
 }

@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -36,8 +37,16 @@ type Player struct {
 	idx      int
 	deviceID string
 
-	kick      chan struct{} // re-read the state soon (after a command)
-	done      chan struct{}
+	kick chan struct{} // re-read the state soon (after a command)
+	done chan struct{}
+
+	// Volume goes to Spotify from one goroutine, latest value first: a
+	// burst of +/- becomes one request instead of several that may land out
+	// of order. volSetAt holds the polled device volume off for a while, as
+	// Spotify applies changes late and would report the old level.
+	volTarget int // percent waiting to be sent; -1 = none
+	volSetAt  time.Time
+	volKick   chan struct{}
 	closeOnce sync.Once
 }
 
@@ -46,9 +55,11 @@ func New(prov *spotify.Provider, log func(string)) *Player {
 	if log == nil {
 		log = func(string) {}
 	}
-	p := &Player{c: prov.Client(), prov: prov, log: log, done: make(chan struct{}), kick: make(chan struct{}, 1)}
+	p := &Player{c: prov.Client(), prov: prov, log: log, done: make(chan struct{}), kick: make(chan struct{}, 1),
+		volTarget: -1, volKick: make(chan struct{}, 1)}
 	p.state.Volume = 1
 	go p.poll()
+	go p.sendVolume()
 	return p
 }
 
@@ -245,13 +256,51 @@ func (p *Player) Seek(pos time.Duration) error {
 	return p.simple(http.MethodPut, "/me/player/seek", url.Values{"position_ms": {strconv.FormatInt(pos.Milliseconds(), 10)}})
 }
 
+// volumeHold is how long after a local change the polled device volume is
+// ignored (unless it already matches).
+const volumeHold = 3 * time.Second
+
+// volumeDebounce gathers a burst of volume changes into one request.
+const volumeDebounce = 120 * time.Millisecond
+
+// SetVolume shows the new volume at once and has sendVolume pass it on.
 func (p *Player) SetVolume(v float64) error {
-	v = min(max(v, 0), 1)
+	pct := int(math.Round(min(max(v, 0), 1) * 100))
 	p.mu.Lock()
-	p.state.Volume = v
+	p.state.Volume = float64(pct) / 100
+	p.volTarget = pct
+	p.volSetAt = time.Now()
 	p.mu.Unlock()
 	p.broadcast()
-	return p.simple(http.MethodPut, "/me/player/volume", url.Values{"volume_percent": {strconv.Itoa(int(v * 100))}})
+	select {
+	case p.volKick <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+// sendVolume sends the latest requested volume, one request at a time.
+func (p *Player) sendVolume() {
+	for {
+		select {
+		case <-p.done:
+			return
+		case <-p.volKick:
+		}
+		select {
+		case <-p.done:
+			return
+		case <-time.After(volumeDebounce):
+		}
+		p.mu.Lock()
+		pct := p.volTarget
+		p.volTarget = -1
+		p.mu.Unlock()
+		if pct < 0 {
+			continue
+		}
+		_ = p.simple(http.MethodPut, "/me/player/volume", url.Values{"volume_percent": {strconv.Itoa(pct)}})
+	}
 }
 
 func (p *Player) SetAudioBitrate(kbps int) error {
@@ -475,8 +524,14 @@ func (p *Player) poll() {
 		default:
 			p.state.RepeatMode = player.RepeatModeOff
 		}
-		if st.Device.VolumePercent != nil {
-			p.state.Volume = float64(*st.Device.VolumePercent) / 100
+		if v := st.Device.VolumePercent; v != nil {
+			// Right after a local change the device may still report the
+			// old level: keep ours until it catches up or the hold ends.
+			reported := float64(*v) / 100
+			if time.Since(p.volSetAt) > volumeHold || math.Abs(reported-p.state.Volume) < 0.015 {
+				p.state.Volume = reported
+				p.volSetAt = time.Time{}
+			}
 		}
 		p.mu.Unlock()
 		p.broadcast()

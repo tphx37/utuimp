@@ -134,7 +134,44 @@ func upstreamBinary(ctx context.Context, cacheDir string) (path string, fresh bo
 	return path, true, nil
 }
 
+// httpRetryDelays are the pauses before httpGet tries again after a
+// transient failure (GitHub's release CDN now and then answers 502/504).
+var httpRetryDelays = []time.Duration{2 * time.Second, 5 * time.Second} //nolint:gochecknoglobals // shortened in tests
+
+// errHTTPStatus is a non-200 answer.
+type errHTTPStatus int
+
+func (e errHTTPStatus) Error() string { return fmt.Sprintf("HTTP %d", int(e)) }
+
+// transient reports whether a failed download is worth retrying: network
+// errors, rate limits and server errors.
+func transient(err error) bool {
+	var st errHTTPStatus
+	if errors.As(err, &st) {
+		return st == http.StatusTooManyRequests || st >= 500
+	}
+	return err != nil && !errors.Is(err, context.Canceled) && err.Error() != "response too large"
+}
+
+// httpGet downloads url, retrying transient failures.
 func httpGet(ctx context.Context, url string, limit int64) ([]byte, error) {
+	data, err := httpGetOnce(ctx, url, limit)
+	for _, d := range httpRetryDelays {
+		if !transient(err) {
+			break
+		}
+		logBroker(fmt.Sprintf("[upstream] %s: %v, retrying in %s", url, err, d))
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(d):
+		}
+		data, err = httpGetOnce(ctx, url, limit)
+	}
+	return data, err
+}
+
+func httpGetOnce(ctx context.Context, url string, limit int64) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -148,7 +185,7 @@ func httpGet(ctx context.Context, url string, limit int64) ([]byte, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, errHTTPStatus(resp.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {

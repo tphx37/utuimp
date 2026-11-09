@@ -47,6 +47,7 @@ type mockPlayer struct {
 	removeFromQueueIdx []int // all calls to RemoveFromQueue, in call order
 	err                error
 	stateCh            chan player.State
+	volume             *float64 // last SetVolume
 }
 
 func newMockPlayer() *mockPlayer {
@@ -63,7 +64,7 @@ func (m *mockPlayer) Seek(pos time.Duration) error {
 	m.seekPos = pos
 	return m.err
 }
-func (m *mockPlayer) SetVolume(_ float64) error { return m.err }
+func (m *mockPlayer) SetVolume(v float64) error { m.volume = &v; return m.err }
 func (m *mockPlayer) SetAudioBitrate(kbps int) error {
 	m.bitrateKbps = kbps
 	return m.err

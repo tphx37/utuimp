@@ -5,31 +5,39 @@ Items are roughly ordered by expected implementation complexity.
 
 ---
 
+## Done
+
+- **Local files** — MP3, FLAC, M4A from your music folder (2.1)
+- **Yandex Music** — search, library, My Wave, synced lyrics (2.1)
+- **Spotify** — Web API library and search, playback through librespot
+- **YouTube Music** — through yt-dlp and ffmpeg (2.2)
+- **SoundCloud** — through yt-dlp, or the official API with your own app (2.2)
+- **Cover view** — frameless fullscreen layout with fading lyrics (2.2)
+- **One volume for all services** (2.2)
+- **Demo mode** — `--demo` for credential-free UI development
+
+---
+
 ## In progress
 
 - **MPRIS icon** — resolve the GIO / GTK icon-theme lookup for the MPRIS notification
-- **Demo mode** — `--demo` flag for credential-free UI development
+- **YouTube Music search metadata** — search results come without artist and
+  length until a song plays (yt-dlp lists them by title only)
 
 ---
 
 ## Planned
 
-### Local tracks
+### Larger lyrics in kitty
 
-Stream audio files from your local filesystem without any external service account.
+Use kitty's text sizing protocol for genuinely bigger lyrics in the cover
+view. It has to work around Bubble Tea's renderer, which drops those escape
+sequences, so it needs care with resizes, overlays and panels.
 
-- M4A, FLAC, MP3 support on all platforms; OGG on Linux only (GStreamer)
-- Auto-scan a configured music directory and surface tracks in the Library panel
-- Works offline; no DRM or authentication required
+### YouTube Music account
 
-### Spotify
-
-Full-track streaming via Spotify's API.
-
-- OAuth 2.0 PKCE flow (no client secret needed)
-- Search, library, playlists via Spotify Web API
-- Playback through Spotify Connect or librespot (open-source client)
-- Requires a Spotify Premium subscription
+Sign-in through browser cookies, to show your own YouTube Music likes and
+playlists instead of utuimp's local ones.
 
 ### Deezer
 

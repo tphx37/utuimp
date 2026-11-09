@@ -62,3 +62,44 @@ func TestSetQueuePlaysOnTheComputerAndMirrorsState(t *testing.T) {
 	}
 	p.mu.Unlock()
 }
+
+// A burst of volume changes reaches Spotify as one request with the last
+// value (rounded, not truncated), and the device's late report of the old
+// level doesn't pull the volume back.
+func TestVolumeBurstAndStaleReport(t *testing.T) {
+	var mu sync.Mutex
+	var sent []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "PUT /me/player/volume":
+			mu.Lock()
+			sent = append(sent, r.URL.Query().Get("volume_percent"))
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		case "GET /me/player":
+			// Spotify still reports the level from before the change.
+			_, _ = w.Write([]byte(`{"is_playing":true,"device":{"id":"pc","volume_percent":20},"item":{"id":"t1","name":"S","duration_ms":1000,"artists":[{"id":"a","name":"A"}]}}`))
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer srv.Close()
+	c := spotify.NewClient("cid", spotify.Token{AccessToken: "at"}, nil)
+	c.SetBaseURL(srv.URL)
+	p := New(spotify.New(c), nil)
+	defer p.Close()
+	p.SetDevice("pc")
+
+	for _, v := range []float64{0.25, 0.30, 0.35} {
+		_ = p.SetVolume(v)
+	}
+	time.Sleep(1500 * time.Millisecond) // the send and a poll
+	mu.Lock()
+	if len(sent) != 1 || sent[0] != "35" {
+		t.Errorf("sent %v, want one request for 35", sent)
+	}
+	mu.Unlock()
+	if st, _ := p.GetState(); st.Volume != 0.35 {
+		t.Errorf("volume = %v after a stale report, want 0.35", st.Volume)
+	}
+}

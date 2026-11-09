@@ -82,3 +82,52 @@ func TestApp_RoutesMessagesToTheirService(t *testing.T) {
 		t.Error("quit must reach the runtime untagged")
 	}
 }
+
+// runCmd runs cmd and the commands it batches, returning their messages.
+func runCmd(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	msg := cmd()
+	if b, ok := msg.(tea.BatchMsg); ok {
+		var out []tea.Msg
+		for _, c := range b {
+			out = append(out, runCmd(c)...)
+		}
+		return out
+	}
+	return []tea.Msg{msg}
+}
+
+// update sends msg to the app and runs what it returns.
+func update(app *App, msg tea.Msg) {
+	_, cmd := app.Update(msg)
+	runCmd(cmd)
+}
+
+// One volume for all players: a change in one tab reaches the others,
+// mute included, and a tab opened later starts with it.
+func TestApp_VolumeIsShared(t *testing.T) {
+	app, services := testApp(t)
+	yandex := services[0].Model
+	apple := services[1].Model
+	applePlayer := apple.player.(*mockPlayer)
+
+	update(app, sessionMsg{idx: 0, msg: saveVolumeMsg{vol: 0.3}})
+	if applePlayer.volume != nil {
+		t.Fatal("a tab that hasn't started yet has no player to set")
+	}
+	app.switchTo(1) // Apple starts: it takes the shared volume (its start-up commands aren't run)
+	if apple.playerState.Volume != 0.3 {
+		t.Errorf("apple volume = %v, want 0.3", apple.playerState.Volume)
+	}
+
+	update(app, sessionMsg{idx: 1, msg: saveVolumeMsg{muted: true, preMute: 0.3}})
+	if yandex.preMuteVol != 0.3 || yandex.player.(*mockPlayer).volume == nil || *yandex.player.(*mockPlayer).volume != 0 {
+		t.Errorf("mute in Apple should mute Yandex: preMute %v, volume %v", yandex.preMuteVol, yandex.player.(*mockPlayer).volume)
+	}
+	update(app, sessionMsg{idx: 1, msg: saveVolumeMsg{vol: 0.6}})
+	if yandex.preMuteVol != -1 || *yandex.player.(*mockPlayer).volume != 0.6 {
+		t.Errorf("unmute should reach Yandex: preMute %v, volume %v", yandex.preMuteVol, *yandex.player.(*mockPlayer).volume)
+	}
+}

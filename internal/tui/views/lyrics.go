@@ -640,20 +640,45 @@ func (l *LyricsModel) litChars(line lyrics.Line, lineEnd time.Duration) float64 
 // a soft gradient edge that advances with playback. Without word timing the
 // whole line is highlighted.
 func (l *LyricsModel) renderActiveLine(line lyrics.Line, lineEnd time.Duration) string {
-	sungC, dimC, ok := styles.LyricColors()
-	in := easeOut(l.fade(lineFadeIn))
+	return l.renderActiveRange(line, lineEnd, 0, -1)
+}
+
+// lineText is the text of a line as the karaoke fill counts it: its words
+// joined when it has word timing.
+func lineText(line lyrics.Line) string {
 	if len(line.Words) == 0 {
-		if ok {
-			c := styles.LerpColor(dimC, sungC, in)
-			return lipgloss.NewStyle().Bold(true).Foreground(c).Render(line.Text)
-		}
-		return styles.Playing.Bold(true).Render(line.Text)
+		return line.Text
 	}
 	var text strings.Builder
 	for _, w := range line.Words {
 		text.WriteString(w.Text)
 	}
-	runes := []rune(text.String())
+	return text.String()
+}
+
+// renderActiveRange renders runes [from, to) of the active line (to < 0:
+// to the end), so a wrapped line keeps its karaoke fill on every row.
+func (l *LyricsModel) renderActiveRange(line lyrics.Line, lineEnd time.Duration, from, to int) string {
+	sungC, dimC, ok := styles.LyricColors()
+	fadeIn := lineFadeIn
+	if l.bare {
+		fadeIn = coverSlide // the cover view: in step with the slide
+	}
+	in := easeOut(l.fade(fadeIn))
+	all := []rune(lineText(line))
+	if to < 0 || to > len(all) {
+		to = len(all)
+	}
+	from = min(max(from, 0), to)
+	if len(line.Words) == 0 {
+		part := string(all[from:to])
+		if ok {
+			c := styles.LerpColor(dimC, sungC, in)
+			return lipgloss.NewStyle().Bold(true).Foreground(c).Render(part)
+		}
+		return styles.Playing.Bold(true).Render(part)
+	}
+	runes := all
 	lit := l.litChars(line, lineEnd)
 
 	level := func(i int) float64 { // 0 = unsung … 1 = sung
@@ -666,7 +691,8 @@ func (l *LyricsModel) renderActiveLine(line lyrics.Line, lineEnd time.Duration) 
 		sung := styles.Playing.Bold(true)
 		edge := lipgloss.NewStyle().Foreground(styles.ColorFg).Bold(true)
 		dim := lipgloss.NewStyle().Foreground(styles.ColorMuted).Bold(true)
-		for i, r := range runes {
+		for i := from; i < to; i++ {
+			r := runes[i]
 			switch v := level(i); {
 			case v >= 0.75:
 				sb.WriteString(sung.Render(string(r)))
@@ -692,7 +718,8 @@ func (l *LyricsModel) renderActiveLine(line lyrics.Line, lineEnd time.Duration) 
 	// The unsung part of the active line sits a little above the other
 	// lines' grey, faded in with the line.
 	unsungC := styles.LerpColor(dimC, sungC, 0.22*in)
-	for i, r := range runes {
+	for i := from; i < to; i++ {
+		r := runes[i]
 		hex := styles.ColorHex(styles.LerpColor(unsungC, sungC, level(i)))
 		if hex != runHex {
 			flush()

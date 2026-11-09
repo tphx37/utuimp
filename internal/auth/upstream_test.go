@@ -10,9 +10,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,5 +143,33 @@ func TestResolveWithoutBroker(t *testing.T) {
 	cfg = &config.Config{AppleDeveloperToken: old}
 	if err := resolveWithoutBroker(cfg, now); err != nil || cfg.AppleDeveloperToken != old {
 		t.Errorf("failed refresh: err=%v kept=%v", err, cfg.AppleDeveloperToken == old)
+	}
+}
+
+// GitHub's release CDN sometimes answers 504: the download is retried.
+func TestHTTPGetRetriesServerErrors(t *testing.T) {
+	old := httpRetryDelays
+	httpRetryDelays = []time.Duration{time.Millisecond, time.Millisecond}
+	defer func() { httpRetryDelays = old }()
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls < 3 {
+			w.WriteHeader(http.StatusGatewayTimeout)
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	b, err := httpGet(context.Background(), srv.URL, 10)
+	if err != nil || string(b) != "ok" || calls != 3 {
+		t.Fatalf("got %q, %v after %d calls", b, err, calls)
+	}
+
+	// A 404 is not retried.
+	srv404 := httptest.NewServer(http.NotFoundHandler())
+	defer srv404.Close()
+	if _, err := httpGet(context.Background(), srv404.URL, 10); err == nil || !strings.Contains(err.Error(), "404") {
+		t.Errorf("404: %v", err)
 	}
 }

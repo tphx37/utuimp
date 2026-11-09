@@ -452,3 +452,18 @@ func LyricColors() (sung, dim color.Color, ok bool) {
 	}
 	return sung, LerpColor(fg, bg, 0.55), true
 }
+
+// LyricFadeColors returns the lyrics' resting grey and the background they
+// fade into (the cover view's lines above the current one); ok is false
+// without RGB colours to blend.
+func LyricFadeColors() (dim, bg color.Color, ok bool) {
+	_, dim, ok = LyricColors()
+	if !ok {
+		return nil, nil, false
+	}
+	bg = ColorBg
+	if ANSIMode {
+		bg = TermBg
+	}
+	return dim, bg, true
+}

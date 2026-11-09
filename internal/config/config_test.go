@@ -445,8 +445,10 @@ func TestSave_ConcurrentWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 || entries[0].Name() != "config.json" {
-		t.Errorf("unexpected leftover files in config dir: %v", entries)
+	for _, e := range entries {
+		if e.Name() != "config.json" && e.Name() != "credentials.json" {
+			t.Errorf("unexpected leftover file in config dir: %s", e.Name())
+		}
 	}
 }
 

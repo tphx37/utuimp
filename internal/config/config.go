@@ -2,22 +2,37 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sync"
+	"testing"
 
 	"github.com/tphx37/utuimp/internal/audioquality"
 )
 
 var saveMu sync.Mutex
 
+// startHome is the home directory the process started with; see
+// errTestDefaultPath.
+var startHome, _ = os.UserHomeDir() //nolint:gochecknoglobals // read once at start-up
+
+// errTestDefaultPath stops a test from overwriting the real config: a
+// config built in a test has no path, and Save("") would otherwise land in
+// the user's ~/.config/utuimp/config.json. Tests that mean to save there set
+// HOME to a temporary directory first.
+var errTestDefaultPath = errors.New("config: a test may not save to the real default config path")
+
 type Config struct {
 	// path remembers where this config was loaded from. It is deliberately not
 	// serialized; it only ensures that Save("") persists back to the selected
 	// --config file instead of silently falling back to the default profile.
 	path string
+	// extra holds keys of the file this build doesn't know (written by a
+	// newer one), saved back unchanged; see keep.go.
+	extra map[string]json.RawMessage
 
 	AppleDeveloperToken string `json:"apple_developer_token"`
 	AppleUserToken      string `json:"apple_user_token"`
@@ -227,6 +242,7 @@ func Load(override string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 	cfg.path = path
+	cfg.absorb(data, path)
 	cfg.normalize()
 	return cfg, nil
 }
@@ -254,6 +270,9 @@ func (c *Config) Save(override string) error {
 		path = c.path
 	}
 	if path == "" {
+		if home, _ := os.UserHomeDir(); testing.Testing() && home == startHome {
+			return errTestDefaultPath
+		}
 		var err error
 		path, err = ConfigPath("")
 		if err != nil {
@@ -275,7 +294,7 @@ func (c *Config) save(path string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("creating config dir: %w", err)
 	}
-	data, err := json.MarshalIndent(c, "", "  ")
+	data, err := c.marshal()
 	if err != nil {
 		return fmt.Errorf("marshalling config: %w", err)
 	}
@@ -307,5 +326,13 @@ func (c *Config) save(path string) error {
 		return fmt.Errorf("replacing config: %w", err)
 	}
 	cleanup = false
+	// Mirror the credentials (see keep.go). A failure here leaves the
+	// config itself saved, so it isn't reported.
+	if creds := credentialsJSON(data); creds != nil {
+		cp := credentialsPath(path)
+		if err := os.WriteFile(cp+".tmp", creds, 0o600); err == nil {
+			_ = os.Rename(cp+".tmp", cp)
+		}
+	}
 	return nil
 }

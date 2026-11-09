@@ -58,7 +58,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&noDiscord, "no-discord", false, "disable Discord Rich Presence")
 	rootCmd.Flags().BoolVar(&newWindow, "window", false, "open utuimp in its own terminal window (with the utuimp icon)")
 	rootCmd.PersistentFlags().BoolVar(&useApple, "apple", false, "start on the Apple Music tab")
-	rootCmd.PersistentFlags().StringSliceVar(&relogin, "relogin", nil, "sign out and sign in again (switch accounts): --relogin=yandex, --relogin=apple, --relogin=spotify, or --relogin for all")
+	rootCmd.PersistentFlags().StringSliceVar(&relogin, "relogin", nil, "sign out and sign in again (switch accounts): --relogin=yandex, --relogin=apple, --relogin=spotify, --relogin=soundcloud, or --relogin for all")
 	rootCmd.PersistentFlags().Lookup("relogin").NoOptDefVal = "all"
 }
 
@@ -85,7 +85,11 @@ func signOut(cfg *config.Config, services []string) ([]string, error) {
 			cfg.AppleUserToken = ""
 			cfg.YandexToken, cfg.YandexRefreshToken, cfg.YandexTokenExpiry = "", "", 0
 			cfg.SpotifyToken, cfg.SpotifyRefreshToken, cfg.SpotifyTokenExpiry = "", "", 0
-			names = append(names, "Yandex Music", "Apple Music", "Spotify")
+			cfg.SoundCloudToken, cfg.SoundCloudRefreshToken, cfg.SoundCloudTokenExpiry = "", "", 0
+			names = append(names, "Yandex Music", "Apple Music", "Spotify", "SoundCloud")
+		case "soundcloud", "sc":
+			cfg.SoundCloudToken, cfg.SoundCloudRefreshToken, cfg.SoundCloudTokenExpiry = "", "", 0
+			names = append(names, "SoundCloud")
 		case "spotify", "sp":
 			cfg.SpotifyToken, cfg.SpotifyRefreshToken, cfg.SpotifyTokenExpiry = "", "", 0
 			names = append(names, "Spotify")
@@ -96,7 +100,7 @@ func signOut(cfg *config.Config, services []string) ([]string, error) {
 			cfg.AppleUserToken = ""
 			names = append(names, "Apple Music")
 		default:
-			return nil, fmt.Errorf("--relogin: unknown service %q (use yandex, apple, spotify or all)", svc)
+			return nil, fmt.Errorf("--relogin: unknown service %q (use yandex, apple, spotify, soundcloud or all)", svc)
 		}
 	}
 	return names, nil

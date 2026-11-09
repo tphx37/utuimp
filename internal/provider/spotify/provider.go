@@ -7,6 +7,7 @@ import (
 	"github.com/tphx37/utuimp/internal/i18n"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -185,6 +186,10 @@ func (p *Provider) Lookup(ctx context.Context, id string) (provider.Track, error
 	return p.toTrack(st, nil), nil
 }
 
+// maxLimit is the largest page Spotify serves development-mode apps for
+// search and artist albums (since February 2026; more is "Invalid limit").
+const maxLimit = 10
+
 // all follows "next" links, collecting up to max items.
 func all[T any](ctx context.Context, c *Client, path string, q url.Values, max int) ([]T, error) {
 	var out []T
@@ -208,7 +213,7 @@ func (p *Provider) Search(ctx context.Context, query string) (*provider.SearchRe
 	q := url.Values{}
 	q.Set("q", query)
 	q.Set("type", "track,album,artist,playlist")
-	q.Set("limit", "20")
+	q.Set("limit", strconv.Itoa(maxLimit))
 	var res struct {
 		Tracks    page[spTrack]     `json:"tracks"`
 		Albums    page[spAlbum]     `json:"albums"`
@@ -270,14 +275,20 @@ func (p *Provider) GetPlaylistTracks(ctx context.Context, playlistID string) ([]
 	if playlistID == likedID {
 		return p.GetLibraryTracks(ctx)
 	}
+	// /playlists/{id}/tracks answers 403 since Spotify's February 2026 API
+	// change; /items replaces it and puts the track under "item".
 	q := url.Values{}
-	q.Set("limit", "100")
+	q.Set("limit", "50")
 	items, err := all[struct {
+		Item  *spTrack `json:"item"`
 		Track *spTrack `json:"track"`
-	}](ctx, p.c, "/playlists/"+url.PathEscape(playlistID)+"/tracks", q, 5000)
+	}](ctx, p.c, "/playlists/"+url.PathEscape(playlistID)+"/items", q, 5000)
 	ts := make([]spTrack, 0, len(items))
 	for _, it := range items {
-		if it.Track != nil {
+		switch {
+		case it.Item != nil:
+			ts = append(ts, *it.Item)
+		case it.Track != nil:
 			ts = append(ts, *it.Track)
 		}
 	}
@@ -318,7 +329,7 @@ func (p *Provider) GetLibraryAlbumTracks(ctx context.Context, albumID string) ([
 func (p *Provider) GetArtistAlbums(ctx context.Context, artistID string) ([]provider.Album, error) {
 	q := url.Values{}
 	q.Set("include_groups", "album,single")
-	q.Set("limit", "50")
+	q.Set("limit", strconv.Itoa(maxLimit))
 	as, err := all[spAlbum](ctx, p.c, "/artists/"+url.PathEscape(artistID)+"/albums", q, 500)
 	if err != nil && len(as) == 0 {
 		return nil, err
@@ -345,7 +356,7 @@ func (p *Provider) CreatePlaylist(ctx context.Context, name string, trackIDs []s
 	}
 	for start := 0; start < len(trackIDs); start += 100 {
 		end := min(start+100, len(trackIDs))
-		if err := p.c.call(ctx, http.MethodPost, "/playlists/"+url.PathEscape(pl.ID)+"/tracks", nil,
+		if err := p.c.call(ctx, http.MethodPost, "/playlists/"+url.PathEscape(pl.ID)+"/items", nil,
 			map[string]any{"uris": uris(trackIDs[start:end])}, nil); err != nil {
 			return toPlaylist(pl), err
 		}
@@ -357,25 +368,27 @@ func (p *Provider) AddToPlaylist(ctx context.Context, playlistID, trackID string
 	if playlistID == likedID {
 		return p.LoveSong(ctx, trackID, true)
 	}
-	return p.c.call(ctx, http.MethodPost, "/playlists/"+url.PathEscape(playlistID)+"/tracks", nil,
+	return p.c.call(ctx, http.MethodPost, "/playlists/"+url.PathEscape(playlistID)+"/items", nil,
 		map[string]any{"uris": uris([]string{trackID})}, nil)
 }
 
+// LoveSong saves or removes a track through /me/library, which replaced the
+// /me/tracks write endpoints in February 2026.
 func (p *Provider) LoveSong(ctx context.Context, trackID string, loved bool) error {
 	q := url.Values{}
-	q.Set("ids", trackID)
+	q.Set("uris", uris([]string{trackID})[0])
 	method := http.MethodPut
 	if !loved {
 		method = http.MethodDelete
 	}
-	return p.c.call(ctx, method, "/me/tracks", q, nil, nil)
+	return p.c.call(ctx, method, "/me/library", q, nil, nil)
 }
 
 func (p *Provider) GetSongRating(ctx context.Context, trackID string) (bool, error) {
 	q := url.Values{}
-	q.Set("ids", trackID)
+	q.Set("uris", uris([]string{trackID})[0])
 	var res []bool
-	if err := p.c.get(ctx, "/me/tracks/contains", q, &res); err != nil {
+	if err := p.c.get(ctx, "/me/library/contains", q, &res); err != nil {
 		return false, err
 	}
 	return len(res) > 0 && res[0], nil
@@ -397,8 +410,9 @@ func (p *Provider) GetRecommendations(ctx context.Context) ([]provider.Recommend
 	return []provider.RecommendationGroup{g}, nil
 }
 
-// GetStationTracks approximates radio with the seed artist's top tracks
-// (Spotify's radio/recommendations endpoints aren't open to new apps).
+// GetStationTracks approximates radio with songs by the seed's artist found
+// through search (Spotify's radio, recommendations and artist top-tracks
+// endpoints aren't open to new apps).
 func (p *Provider) GetStationTracks(ctx context.Context, seed string) ([]provider.Track, error) {
 	var st spTrack
 	if err := p.c.get(ctx, "/tracks/"+url.PathEscape(seed), nil, &st); err != nil {
@@ -407,15 +421,41 @@ func (p *Provider) GetStationTracks(ctx context.Context, seed string) ([]provide
 	if len(st.Artists) == 0 {
 		return nil, errors.New("no artist to build a radio from")
 	}
-	var res struct {
-		Tracks []spTrack `json:"tracks"`
+	var ts []spTrack
+	for offset := 0; offset < 3*maxLimit; offset += maxLimit {
+		q := url.Values{}
+		q.Set("q", `artist:"`+strings.ReplaceAll(st.Artists[0].Name, `"`, "")+`"`)
+		q.Set("type", "track")
+		q.Set("limit", strconv.Itoa(maxLimit))
+		q.Set("offset", strconv.Itoa(offset))
+		var res struct {
+			Tracks page[spTrack] `json:"tracks"`
+		}
+		if err := p.c.get(ctx, "/search", q, &res); err != nil {
+			if len(ts) > 0 {
+				break
+			}
+			return nil, err
+		}
+		for _, t := range res.Tracks.Items {
+			if t.ID != seed && hasArtist(t.Artists, st.Artists[0].ID) {
+				ts = append(ts, t)
+			}
+		}
+		if res.Tracks.Next == "" {
+			break
+		}
 	}
-	q := url.Values{}
-	q.Set("market", "from_token")
-	if err := p.c.get(ctx, "/artists/"+url.PathEscape(st.Artists[0].ID)+"/top-tracks", q, &res); err != nil {
-		return nil, err
+	return p.toTracks(ts, nil), nil
+}
+
+func hasArtist(as []spArtist, id string) bool {
+	for _, a := range as {
+		if a.ID == id {
+			return true
+		}
 	}
-	return p.toTracks(res.Tracks, nil), nil
+	return false
 }
 
 // GetSongDetails implements provider.SongDetailer.

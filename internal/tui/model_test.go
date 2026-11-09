@@ -4738,3 +4738,29 @@ func TestMouseWheelMovesOneItem(t *testing.T) {
 		t.Error("the view must ask for mouse events")
 	}
 }
+
+// Radio keeps radioLookahead songs queued after the current one: a refill
+// that leaves fewer asks for more, one that reaches it stops.
+func TestRadio_KeepsLookaheadQueued(t *testing.T) {
+	m := newModel(newMockPlayer())
+	cur := provider.Track{Title: "Now", Artist: "A", ID: "now"}
+	m.queueTracks = []provider.Track{cur}
+	m.queueIDs = []string{"now"}
+	m.playerState.Track = &cur
+	m.radio.enabled = true
+	m.radio.seed = &cur
+	m.radio.refilling = true
+
+	_, cmd := m.Update(radioResultMsg{tracks: []provider.Track{{Title: "B", Artist: "A", ID: "b"}}})
+	if cmd == nil || !m.radio.refilling {
+		t.Fatal("one song ahead: radio should ask for more")
+	}
+	var more []provider.Track
+	for _, id := range []string{"c", "d", "e"} {
+		more = append(more, provider.Track{Title: id, Artist: "A", ID: id})
+	}
+	m.Update(radioResultMsg{tracks: more})
+	if m.radio.refilling {
+		t.Errorf("%d songs ahead: radio should stop refilling", m.radioTracksAhead(cur))
+	}
+}

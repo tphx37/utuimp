@@ -30,6 +30,15 @@ type Source interface {
 	StreamURL(ctx context.Context, id string) (link, codec string, err error)
 }
 
+// Opener is implemented by sources that produce the audio themselves (a
+// helper program, an HLS playlist) instead of handing out a link. When it
+// is implemented StreamURL is not called. The stream must be MP3 or ADTS
+// AAC (codec "mp3" or "aac"). meta, when not nil, is fresher metadata for
+// the track, found while opening it.
+type Opener interface {
+	OpenStream(ctx context.Context, id string) (rc io.ReadCloser, codec string, meta *provider.Track, err error)
+}
+
 // trackData is one track's audio, downloaded into memory while it plays.
 type trackData struct {
 	mu     sync.Mutex
@@ -47,31 +56,38 @@ func newTrackData(codec string, cancel context.CancelFunc) *trackData {
 	return d
 }
 
+func (d *trackData) finish(err error) {
+	d.mu.Lock()
+	d.done, d.err = true, err
+	d.cond.Broadcast()
+	d.mu.Unlock()
+}
+
 func (d *trackData) download(ctx context.Context, link string) {
-	finish := func(err error) {
-		d.mu.Lock()
-		d.done, d.err = true, err
-		d.cond.Broadcast()
-		d.mu.Unlock()
-	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, link, nil)
 	if err != nil {
-		finish(err)
+		d.finish(err)
 		return
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		finish(err)
+		d.finish(err)
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		finish(fmt.Errorf("audio download: HTTP %d", resp.StatusCode))
+		d.finish(fmt.Errorf("audio download: HTTP %d", resp.StatusCode))
 		return
 	}
+	d.read(resp.Body)
+}
+
+// read buffers r until it ends.
+func (d *trackData) read(r io.Reader) {
+	finish := d.finish
 	chunk := make([]byte, 64<<10)
 	for {
-		n, rerr := resp.Body.Read(chunk)
+		n, rerr := r.Read(chunk)
 		if n > 0 {
 			d.mu.Lock()
 			d.buf = append(d.buf, chunk[:n]...)
@@ -89,12 +105,14 @@ func (d *trackData) download(ctx context.Context, link string) {
 	}
 }
 
-// Player implements player.Player for Yandex Music.
+// Player implements player.Player for Yandex Music, and for any other
+// service whose Source hands out MP3 or AAC.
 type Player struct {
-	gst browserless.AudioSink // platform audio output
-	src Source
-	ln  net.Listener
-	tok string
+	name string                // service name for the debug log
+	gst  browserless.AudioSink // platform audio output
+	src  Source
+	ln   net.Listener
+	tok  string
 
 	mu         sync.RWMutex
 	state      player.State
@@ -112,11 +130,22 @@ type Player struct {
 	closeOnce sync.Once
 }
 
+// Option configures a Player.
+type Option func(*Player)
+
+// WithName sets the service name used in log lines (default "yandex").
+func WithName(name string) Option { return func(p *Player) { p.name = name } }
+
 // New starts the GStreamer pipeline and the loopback server.
-func New(src Source, log func(string)) (*Player, error) {
+func New(src Source, log func(string), opts ...Option) (*Player, error) {
+	cfg := &Player{name: "yandex"}
+	for _, o := range opts {
+		o(cfg)
+	}
+	name := cfg.name
 	g, err := browserless.NewAudioSink()
 	if err != nil {
-		return nil, fmt.Errorf("yandex player: %w", err)
+		return nil, fmt.Errorf("%s player: %w", name, err)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -129,7 +158,8 @@ func New(src Source, log func(string)) (*Player, error) {
 		log = func(string) {}
 	}
 	p := &Player{
-		gst: g, src: src, ln: ln, tok: hex.EncodeToString(b),
+		name: name,
+		gst:  g, src: src, ln: ln, tok: hex.EncodeToString(b),
 		meta: map[string]provider.Track{}, tracks: map[int]*trackData{},
 		log: log, done: make(chan struct{}),
 	}
@@ -143,7 +173,7 @@ func New(src Source, log func(string)) (*Player, error) {
 		p.state.Error = e.Error()
 		s := p.state
 		p.mu.Unlock()
-		p.log("[yandex] playback error: " + e.Error())
+		p.log("[" + p.name + "] playback error: " + e.Error())
 		p.broadcast(s)
 	})
 	go p.pollState()
@@ -285,12 +315,36 @@ func (p *Player) start(gen, idx int) {
 	p.mu.Unlock()
 	p.broadcast(s)
 
-	rctx, rcancel := context.WithTimeout(ctx, 15*time.Second)
-	link, codec, err := p.src.StreamURL(rctx, id)
-	rcancel()
+	var (
+		link, codec string
+		body        io.ReadCloser
+		err         error
+	)
+	if op, ok := p.src.(Opener); ok {
+		// The stream lives as long as the track (ctx), not just the 15s
+		// a link gets to resolve.
+		var meta *provider.Track
+		body, codec, meta, err = op.OpenStream(ctx, id)
+		if err == nil && meta != nil {
+			m := *meta
+			m.ID = id
+			p.mu.Lock()
+			if gen == p.gen {
+				p.meta[id] = m
+				t = m
+				tc := m
+				p.state.Track = &tc
+			}
+			p.mu.Unlock()
+		}
+	} else {
+		rctx, rcancel := context.WithTimeout(ctx, 15*time.Second)
+		link, codec, err = p.src.StreamURL(rctx, id)
+		rcancel()
+	}
 	if err != nil {
 		cancel()
-		p.log(fmt.Sprintf("[yandex] %s: %v", t.Title, err))
+		p.log(fmt.Sprintf("[%s] %s: %v", p.name, t.Title, err))
 		p.mu.Lock()
 		stale := gen != p.gen
 		if !stale {
@@ -311,6 +365,9 @@ func (p *Player) start(gen, idx int) {
 	if gen != p.gen {
 		p.mu.Unlock()
 		cancel()
+		if body != nil {
+			_ = body.Close()
+		}
 		return
 	}
 	for g, old := range p.tracks {
@@ -330,7 +387,14 @@ func (p *Player) start(gen, idx int) {
 	s = p.state
 	p.mu.Unlock()
 
-	go d.download(ctx, link)
+	if body != nil {
+		go func() {
+			defer func() { _ = body.Close() }()
+			d.read(body)
+		}()
+	} else {
+		go d.download(ctx, link)
+	}
 	p.gst.PlayURI(p.streamURL(gen, 0))
 	p.broadcast(s)
 }

@@ -6,8 +6,9 @@
 
 <p align="center">universal terminal user interface media player</p>
 
-A music player for the terminal. It plays Yandex Music, Apple Music and the
-music files on your computer, and everything is done from the keyboard.
+A music player for the terminal. It plays Yandex Music, Apple Music, Spotify,
+YouTube Music, SoundCloud and the music files on your computer, and
+everything is done from the keyboard.
 
 ## Install
 
@@ -41,6 +42,17 @@ The tab bar at the top shows which number is which.
   [librespot](https://github.com/librespot-org/librespot), which plays the
   sound (Arch: `sudo pacman -S librespot`). The first time, approve access on
   the Spotify page that opens. The Spotify app doesn't need to be open.
+- **YouTube Music.** Needs [yt-dlp](https://github.com/yt-dlp/yt-dlp) and
+  ffmpeg (Arch: `sudo pacman -S yt-dlp ffmpeg`). No sign-in: favorites (`f`)
+  and playlists are kept by utuimp in `~/.config/utuimp/library-youtube.json`,
+  and the feed has a mix for each favorite. If YouTube asks to confirm you're
+  not a bot, see [Problems](#problems).
+- **SoundCloud.** Works through the official SoundCloud API with your own
+  app. Registering one needs a SoundCloud Artist Pro subscription. Open
+  [your apps](https://soundcloud.com/you/apps), create an app with redirect URI
+  `http://127.0.0.1:5590/soundcloud`, then run `utuimp setup` and paste its
+  Client ID and Client Secret. The first time, approve access on the
+  SoundCloud page that opens. Likes and playlists are your SoundCloud ones.
 - **Local files.** Plays the music in your `Music` folder. You can pick another
   folder in `utuimp setup`.
 
@@ -50,6 +62,7 @@ To sign in with a different account:
 utuimp --relogin=yandex
 utuimp --relogin=apple
 utuimp --relogin=spotify
+utuimp --relogin=soundcloud
 ```
 
 ## Keys
@@ -64,6 +77,7 @@ utuimp --relogin=spotify
 | `s` | shuffle |
 | `r` | repeat |
 | `R` | radio from the current song (Yandex Music: My Wave by this song) |
+| `v` | switch between the boxed view and the cover view |
 | `/` | search |
 | `l` | your library |
 | `q` | recently played |
@@ -73,6 +87,15 @@ utuimp --relogin=spotify
 | `i` | song menu: go to the album or an artist, copy the link |
 | `?` | about |
 | `esc` | back |
+
+**Radio and My Wave** keep at least four songs queued after the current one,
+so you always see what plays next.
+
+**Cover view.** `v` switches to a view without frames: the cover, the song
+and its lyrics side by side. The queue (`esc` on the lyrics), the feed, the
+library and every other panel open in a frame in place of the lyrics; closing
+them brings the lyrics back. `v` again returns to the boxed view. utuimp
+remembers which one you used.
 
 **Queue.** Pick a song with the arrow keys. `enter` plays it, `d` removes it,
 `K` and `J` move it up and down.
@@ -92,6 +115,10 @@ Most settings are in `utuimp setup`. Everything else is in
 - `theme`: colors. `system` uses your terminal's colors; others are
   `classic`, `dracula`, `gruvbox`, `nord`.
 - `translate_lang`: the language lyrics are translated into, e.g. `"en"`.
+- `layout`: `"cover"` starts in the cover view (`v` sets it).
+- `youtube_cookies`: where yt-dlp takes YouTube cookies from, a browser name
+  (`"firefox"`, `"chrome"`…) or the path of a `cookies.txt`.
+- `ytdlp_path`, `ffmpeg_path`: where yt-dlp and ffmpeg are, if not on `PATH`.
 
 ## Problems
 
@@ -106,6 +133,20 @@ Most settings are in `utuimp setup`. Everything else is in
   open the [Spotify dashboard](https://developer.spotify.com/dashboard),
   create an app with redirect URI `http://127.0.0.1:5588/login` and
   Web API ticked, then run `utuimp setup` and paste its Client ID.
+- **YouTube Music: "confirm you're not a bot".** YouTube sometimes refuses
+  yt-dlp without a signed-in browser. Open YouTube in your browser, then run
+  `utuimp setup` and name that browser for the cookies (or set
+  `youtube_cookies` in the config). yt-dlp reads the browser's YouTube
+  cookies itself; they stay on your computer.
+- **YouTube Music search shows songs without the artist.** yt-dlp lists
+  search results by title only; the artist, album and cover appear once the
+  song plays. Albums and mixes show everything at once.
+- **SoundCloud: no app.** SoundCloud only lets Artist Pro members register
+  API apps, so without one the SoundCloud tab can't sign in.
+- **Spotify feed or playlists say "Forbidden (HTTP 403)".** Update utuimp:
+  Spotify changed its API in 2026 and older versions use the retired paths.
+  Spotify's radio (`R`) is built from songs by the same artist, since its
+  recommendations aren't open to new apps.
 - **Something went wrong.** Type `:debug-logs` to see what happened.
 
 ## Credits
@@ -118,7 +159,10 @@ Yandex Music support is based on the unofficial API documented by
 [oklookat/goym](https://github.com/oklookat/goym). Spotify support uses the
 [Spotify Web API](https://developer.spotify.com/documentation/web-api) and
 plays through [librespot](https://github.com/librespot-org/librespot).
-utuimp is not affiliated with Yandex, Apple or Spotify.
+YouTube Music support runs [yt-dlp](https://github.com/yt-dlp/yt-dlp) and
+[FFmpeg](https://ffmpeg.org). SoundCloud support uses the
+[SoundCloud API](https://developers.soundcloud.com/docs/api/guide).
+utuimp is not affiliated with Yandex, Apple, Spotify, Google or SoundCloud.
 
 Lyrics come from [LRCLIB](https://lrclib.net), NetEase Cloud Music,
 [lyrics.ovh](https://lyrics.ovh) and Yandex Music. The interface is built with

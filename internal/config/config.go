@@ -53,10 +53,26 @@ type Config struct {
 	SpotifyRefreshToken string `json:"spotify_refresh_token,omitempty"`
 	SpotifyTokenExpiry  int64  `json:"spotify_token_expiry,omitempty"`
 
+	// YouTube Music plays through yt-dlp and ffmpeg (YtDlpPath / FFmpegPath
+	// when they aren't on PATH). YouTubeCookies is yt-dlp's cookie source,
+	// for when YouTube asks to prove you're not a bot: a browser name
+	// ("firefox", "chrome"…) or the path of a cookies.txt file.
+	YtDlpPath      string `json:"ytdlp_path,omitempty"`
+	FFmpegPath     string `json:"ffmpeg_path,omitempty"`
+	YouTubeCookies string `json:"youtube_cookies,omitempty"`
+
+	// SoundCloud: the user's own app (soundcloud.com/you/apps) and the
+	// OAuth tokens from signing in with it.
+	SoundCloudClientID     string `json:"soundcloud_client_id,omitempty"`
+	SoundCloudClientSecret string `json:"soundcloud_client_secret,omitempty"`
+	SoundCloudToken        string `json:"soundcloud_token,omitempty"`
+	SoundCloudRefreshToken string `json:"soundcloud_refresh_token,omitempty"`
+	SoundCloudTokenExpiry  int64  `json:"soundcloud_token_expiry,omitempty"`
+
 	// Language is the interface language ("en", "ru"); "" = from the locale.
 	Language string `json:"language,omitempty"`
 	// Services lists the enabled service tabs ("yandex", "apple", "spotify",
-	// "local") in order; empty means all.
+	// "youtube", "soundcloud", "local") in order; empty means all.
 	Services []string `json:"services,omitempty"`
 	// SetupDone is set once `utuimp setup` has run.
 	SetupDone bool `json:"setup_done,omitempty"`
@@ -75,6 +91,9 @@ type Config struct {
 	// AlbumArt starts the now-playing panel in the album-art view (the :art
 	// command toggles it at runtime and persists the choice here).
 	AlbumArt bool `json:"album_art,omitempty"`
+	// Layout picks the interface: "" for the boxed one, "cover" for the
+	// frameless cover view (the v key toggles it and saves it here).
+	Layout string `json:"layout,omitempty"`
 	// MusicDir is the local directory to scan for audio files
 	// Supports MP3, FLAC, M4A. Scanned recursively.
 	MusicDir string `json:"music_dir,omitempty"`

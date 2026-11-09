@@ -72,6 +72,8 @@ func serviceDefs(audioBitrateKbps int) []serviceDef {
 			startAppleEngine(cfg, send, env, idx, audioBitrateKbps)
 		}},
 		{key: "spotify", name: i18n.T("Spotify"), history: "history-spotify", start: startSpotifyEngine},
+		{key: "youtube", name: i18n.T("YouTube Music"), history: "history-youtube", start: startYouTubeEngine},
+		{key: "soundcloud", name: i18n.T("SoundCloud"), history: "history-soundcloud", start: startSoundCloudEngine},
 		{key: "local", name: i18n.T("Local files"), history: "history-local", start: startLocalEngine},
 	}
 }

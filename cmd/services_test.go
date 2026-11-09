@@ -16,7 +16,8 @@ func TestServiceKeys(t *testing.T) {
 		t.Fatal("local files must be the last tab")
 	}
 	k := serviceKeys(&config.Config{}, defs)
-	if k["1"] != "yandex" || k["2"] != "apple" || k["3"] != "spotify" || k["4"] != "local" {
+	if k["1"] != "yandex" || k["2"] != "apple" || k["3"] != "spotify" ||
+		k["4"] != "youtube" || k["5"] != "soundcloud" || k["6"] != "local" {
 		t.Errorf("defaults = %v", k)
 	}
 	// Rebinding a service moves it; its default key is freed.
@@ -50,8 +51,9 @@ func TestSetupSavesAnswers(t *testing.T) {
 	cfgFile = filepath.Join(dir, "config.json")
 	t.Cleanup(func() { cfgFile = ""; i18n.Set("en") })
 	cfg := &config.Config{}
-	// Russian, no Discord, services: yandex y, apple n, spotify (default n), local y + folder.
-	in := strings.NewReader("2\nн\nд\nн\n\nд\n/music\n")
+	// Russian, no Discord, services: yandex y, apple n, spotify, youtube and
+	// soundcloud (default n), local y + folder.
+	in := strings.NewReader("2\nн\nд\nн\n\n\n\nд\n/music\n")
 	var out strings.Builder
 	if err := runSetup(cfg, in, &out); err != nil {
 		t.Fatal(err)

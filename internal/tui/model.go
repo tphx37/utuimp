@@ -278,6 +278,21 @@ type radioMode struct {
 
 const radioMaxRetries = 5 // give up re-arming after this many consecutive failures
 
+// radioLookahead is how many songs radio keeps queued after the current one.
+const radioLookahead = 4
+
+// radioTracksAhead counts the queued songs after cur (all of them when cur
+// is not in the queue yet).
+func (m *Model) radioTracksAhead(cur provider.Track) int {
+	id := views.PlaybackID(cur)
+	for i, t := range m.queueTracks {
+		if views.PlaybackID(t) == id {
+			return len(m.queueTracks) - 1 - i
+		}
+	}
+	return len(m.queueTracks)
+}
+
 // ── Model ─────────────────────────────────────────────────────────────────
 
 type Model struct {
@@ -294,6 +309,7 @@ type Model struct {
 	// fetched per track and the rendered lines are cached per size so they
 	// only re-render on a track change or a resize.
 	artMode          bool
+	coverView        bool                                 // the frameless cover layout (v), see cover.go
 	renderArt        func(image.Image, art.Size) []string // cover renderer, see artRenderer
 	artwork          artworkCache
 	artworkGen       int
@@ -431,6 +447,7 @@ func New(cfg *config.Config, prov provider.Provider, plyr player.Player, opts Op
 		memProfiling: opts.MemProfiling,
 		preMuteVol:   -1,
 		artMode:      cfg.AlbumArt,
+		coverView:    cfg.Layout == LayoutCover,
 		artwork:      artworkCache{rendered: map[art.Size][]string{}},
 		artHTTP:      &http.Client{Timeout: 5 * time.Second},
 		// Album art needs at least a 256-colour terminal to look reasonable;
@@ -463,6 +480,9 @@ func New(cfg *config.Config, prov provider.Provider, plyr player.Player, opts Op
 	m.history = loadHistory(m.historyPath)
 	m.historyP.m.SetTracks(m.history)
 	m.panels = []ContentView{m.library, m.historyP, m.lyricsP, m.feedP, m.eqP, m.aboutP}
+	if m.coverView {
+		m.activePanel = m.lyricsPanelIdx() // the cover view opens on the lyrics
+	}
 	for _, line := range opts.InitialLogs {
 		m.appendLog(line)
 	}
@@ -718,7 +738,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.artwork = artworkCache{url: s.Track.ArtworkURL, rendered: map[art.Size][]string{}}
 			// Only download covers while the art view is active; toggling
 			// :art on fetches the current track's cover on demand.
-			if m.artMode {
+			if m.artMode || m.coverView {
 				cmds = append(cmds, m.fetchArtworkCmd(s.Track.ArtworkURL, m.artworkGen))
 			}
 		}
@@ -763,13 +783,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		// Radio: refill as soon as the last queued track starts playing, which
-		// gives the request the most time before the queue runs dry.
-		// triggeredForID makes it fire once per track.
-		isLastQueued := len(m.queueTracks) > 0 && s.Track != nil &&
-			views.PlaybackID(*s.Track) == views.PlaybackID(m.queueTracks[len(m.queueTracks)-1])
-		if m.radio.enabled && !m.radio.refilling &&
-			isLastQueued &&
+		// Radio: keep at least radioLookahead songs queued after the current
+		// one, so the queue always shows what comes next.
+		// triggeredForID makes it fire once per track (a refill that comes
+		// back short asks again by itself, see radioResultMsg).
+		if m.radio.enabled && !m.radio.refilling && s.Track != nil &&
+			m.radioTracksAhead(*s.Track) < radioLookahead &&
 			m.radio.triggeredForID != s.Track.ID {
 			m.radio.triggeredForID = s.Track.ID
 			m.radio.refilling = true
@@ -1004,6 +1023,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.radio.refilling = false
 		m.radio.retries = 0 // successful refill — reset circuit breaker
 		m.appendLog(fmt.Sprintf("[radio] refilled %d tracks", len(tracks)))
+		// Stations often hand out a song or two at a time: top up until
+		// radioLookahead songs wait after the current one.
+		if cur := m.playerState.Track; cur != nil && m.radioTracksAhead(*cur) < radioLookahead {
+			m.radio.refilling = true
+			cmds = append(cmds, m.runRadioSearch())
+		}
 
 	case loveSongMsg:
 		if msg.err != nil {
@@ -2430,6 +2455,17 @@ func (m *Model) handleNormalKey(msg tea.KeyPressMsg, k string) tea.Cmd {
 		return m.openSongMenu()
 	}
 
+	if k == "v" && !m.lyricsP.m.PickerOpen() {
+		m.lastKey = ""
+		return m.toggleCoverView()
+	}
+
+	// Cover view: esc on the queue goes back to the lyrics.
+	if m.coverView && k == "esc" && m.activePanel < 0 && m.queueMiniCursor < 0 {
+		m.lastKey = ""
+		return m.openLyricsPanel()
+	}
+
 	if k == "L" {
 		m.library.m.ResetTopLevel()
 		for i, p := range m.panels {
@@ -2446,6 +2482,10 @@ func (m *Model) handleNormalKey(msg tea.KeyPressMsg, k string) tea.Cmd {
 		if k == p.NavKey() {
 			if m.activePanel == i {
 				m.activePanel = -1 // toggle off
+				if m.coverView && p != m.lyricsP {
+					m.lastKey = ""
+					return m.openLyricsPanel() // the cover view falls back to the lyrics
+				}
 			} else {
 				m.activePanel = i
 				// Trigger a feed load when opening the feed panel for the first time.
@@ -2606,7 +2646,7 @@ func (m *Model) handleNormalKey(msg tea.KeyPressMsg, k string) tea.Cmd {
 
 	case "left":
 		m.lastKey = ""
-		if m.activePanel >= 0 {
+		if m.activePanel >= 0 && !m.lyricsVisible() { // the lyrics don't use ←/→: seek
 			return m.forwardToActivePanel(msg)
 		}
 		if m.playerState.Track != nil {
@@ -2619,7 +2659,7 @@ func (m *Model) handleNormalKey(msg tea.KeyPressMsg, k string) tea.Cmd {
 
 	case "right":
 		m.lastKey = ""
-		if m.activePanel >= 0 {
+		if m.activePanel >= 0 && !m.lyricsVisible() { // the lyrics don't use ←/→: seek
 			return m.forwardToActivePanel(msg)
 		}
 		if m.playerState.Track != nil {
@@ -2641,8 +2681,12 @@ func (m *Model) handleNormalKey(msg tea.KeyPressMsg, k string) tea.Cmd {
 				m.lastKey = ""
 				return nil
 			}
+			closed := m.panels[m.activePanel]
 			m.activePanel = -1
 			m.lastKey = ""
+			if m.coverView && closed != m.lyricsP {
+				return m.openLyricsPanel() // the cover view falls back to the lyrics
+			}
 			return nil
 		}
 		return m.forwardToActivePanel(msg)
@@ -3124,7 +3168,11 @@ func (m *Model) View() tea.View {
 	case m.introStep != introDone:
 		content = m.renderIntro()
 	default:
-		content = m.renderBoxLayout()
+		if m.coverView {
+			content = m.renderCoverLayout()
+		} else {
+			content = m.renderBoxLayout()
+		}
 		if m.songMenu != nil {
 			content = m.overlay(content, m.renderSongMenu())
 		}
@@ -3170,6 +3218,7 @@ func (m *Model) windowTitle() string {
 //
 // The focused box's border uses the accent colour.
 func (m *Model) renderBoxLayout() string {
+	m.lyricsP.m.SetBare(false)
 	w := m.width
 	inner := w - 2 // visual width between the │ border chars
 	npH := m.nowPlayingHeight()
@@ -3949,6 +3998,14 @@ func (m *Model) statusNavLines(w int) []string {
 				accent.Render(i18n.T("g/G")) + muted.Render(i18n.T(" top/bottom")),
 				accent.Render(i18n.T("esc")) + muted.Render(i18n.T(" close")),
 			}
+			if m.coverView {
+				parts[len(parts)-1] = accent.Render(i18n.T("esc")) + muted.Render(i18n.T(" queue"))
+				parts = append(parts,
+					accent.Render(i18n.T("l"))+muted.Render(i18n.T(" library")),
+					accent.Render("/")+muted.Render(i18n.T(" search")),
+					accent.Render(i18n.T("F"))+muted.Render(i18n.T(" feed")),
+					accent.Render("v")+muted.Render(i18n.T(" boxed view")))
+			}
 			if m.lyricsP.m.PickerOpen() {
 				parts = []string{
 					styles.ModeNormal.Render(i18n.T("PICK")),
@@ -3994,6 +4051,7 @@ func (m *Model) statusNavLines(w int) []string {
 				accent.Render(i18n.T("F")) + muted.Render(i18n.T(" feed")),
 				accent.Render(i18n.T("e")) + muted.Render(i18n.T(" equalizer")),
 				accent.Render(i18n.T("i")) + muted.Render(i18n.T(" song menu")),
+				accent.Render("v") + muted.Render(m.layoutHint()),
 				accent.Render("?") + muted.Render(i18n.T(" about")),
 				accent.Render(i18n.T(":q")) + muted.Render(i18n.T(" quit")),
 			}
@@ -4080,6 +4138,9 @@ func (m *Model) statusLines(w int) []string {
 // grow as hints wrap on a narrow terminal — so both are measured rather than
 // assumed.
 func (m *Model) panelHeight() int {
+	if m.coverView {
+		return m.coverPanelHeight()
+	}
 	fixedOverhead := 4 + m.nowPlayingHeight() + len(m.statusLines(m.width-4))
 	return max(3, m.height-fixedOverhead)
 }

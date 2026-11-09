@@ -202,3 +202,42 @@ func TestOwnClientUsesPublicScopes(t *testing.T) {
 		t.Error("shared client should keep librespot's scopes")
 	}
 }
+
+// Since February 2026 playlists are read from /items, with the track under
+// "item"; /tracks answers 403.
+func TestPlaylistItems(t *testing.T) {
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/playlists/p1/items" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_, _ = w.Write([]byte(`{"items":[{"item":` + trackJSON + `},{"item":null}],"next":null}`))
+	})
+	ts, err := New(c).GetPlaylistTracks(context.Background(), "p1")
+	if err != nil || len(ts) != 1 || ts[0].ID != "t1" {
+		t.Fatalf("tracks = %+v, %v", ts, err)
+	}
+}
+
+func TestLibraryUsesURIs(t *testing.T) {
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("uris") != "spotify:track:t1" {
+			t.Errorf("%s %s: want uris=spotify:track:t1", r.Method, r.URL)
+		}
+		switch {
+		case r.URL.Path == "/me/library/contains":
+			_, _ = w.Write([]byte(`[true]`))
+		case r.URL.Path == "/me/library" && r.Method == http.MethodPut:
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	})
+	p := New(c)
+	if ok, err := p.GetSongRating(context.Background(), "t1"); !ok || err != nil {
+		t.Errorf("rating = %v, %v", ok, err)
+	}
+	if err := p.LoveSong(context.Background(), "t1", true); err != nil {
+		t.Error(err)
+	}
+}

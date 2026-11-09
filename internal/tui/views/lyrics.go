@@ -85,6 +85,10 @@ type LyricsTranslateRequestMsg struct{}
 // Call SetLoading when a fetch starts, SetLyrics when it completes, and
 // SetPosition on every player-state update so the current line is highlighted.
 type LyricsModel struct {
+	// bare drops the "Lyrics · source" header (the cover view shows the
+	// words alone).
+	bare bool
+
 	lines      []lyrics.Line
 	synced     bool
 	loading    bool
@@ -365,7 +369,15 @@ func (l *LyricsModel) lineRows(i int) int {
 }
 
 // availRows is the number of rows below the two-row header.
-func (l *LyricsModel) availRows() int { return max(l.height-2, 1) }
+func (l *LyricsModel) availRows() int {
+	if l.bare {
+		return max(l.height, 1)
+	}
+	return max(l.height-2, 1)
+}
+
+// SetBare shows the lyrics without their header line.
+func (l *LyricsModel) SetBare(on bool) { l.bare = on }
 
 // visibleEnd returns the index after the last line that fits from scroll.
 func (l *LyricsModel) visibleEnd(scroll int) int {
@@ -837,6 +849,9 @@ func (l *LyricsModel) View() string {
 	hint := "  " + styles.KeyName.Render(i18n.T("c")) + muted.Render(i18n.T(" choose another source"))
 
 	header := l.headerLine() + "\n" + muted.Render(strings.Repeat("─", 5)) + "\n"
+	if l.bare {
+		header = ""
+	}
 
 	if l.loading {
 		return header + "\n" + muted.Render(i18n.T("fetching lyrics…"))

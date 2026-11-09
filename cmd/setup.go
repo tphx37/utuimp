@@ -14,6 +14,7 @@ import (
 	"github.com/tphx37/utuimp/internal/config"
 	"github.com/tphx37/utuimp/internal/i18n"
 	"github.com/tphx37/utuimp/internal/player/spotifyconnect"
+	"github.com/tphx37/utuimp/internal/provider/soundcloud"
 	"github.com/tphx37/utuimp/internal/provider/spotify"
 )
 
@@ -44,6 +45,8 @@ var setupServices = []struct {
 	{"yandex", "Yandex Music", true},
 	{"apple", "Apple Music", true},
 	{"spotify", "Spotify (Premium)", false},
+	{"youtube", "YouTube Music", false},
+	{"soundcloud", "SoundCloud (your own API app)", false},
 	{"local", "Local files", true},
 }
 
@@ -141,6 +144,43 @@ func runSetup(cfg *config.Config, in io.Reader, out io.Writer) error {
 				// Another app: the old sign-in doesn't apply.
 				cfg.SpotifyToken, cfg.SpotifyRefreshToken, cfg.SpotifyTokenExpiry = "", "", 0
 				cfg.SpotifyClientID = id
+			}
+		}
+		if s.key == "youtube" && slices.Contains(services, "youtube") {
+			if _, err := findTool(cfg.YtDlpPath, "yt-dlp"); err != nil {
+				fmt.Fprintln(out, "     "+i18n.T("YouTube Music plays through yt-dlp and ffmpeg:"))
+				fmt.Fprintln(out, "       "+ytInstallHint())
+			} else if _, err := findTool(cfg.FFmpegPath, "ffmpeg"); err != nil {
+				fmt.Fprintln(out, "     "+i18n.T("YouTube Music plays through yt-dlp and ffmpeg:"))
+				fmt.Fprintln(out, "       "+ytInstallHint())
+			}
+			fmt.Fprintln(out, "     "+i18n.T("If YouTube asks to confirm you're not a bot, yt-dlp needs your browser's YouTube cookies."))
+			def := cfg.YouTubeCookies
+			prompt := "     " + i18n.T("Browser to take cookies from (firefox, chrome…) or a cookies.txt path") + " (" + i18n.T("Enter = none") + "):"
+			if def != "" {
+				prompt = "     " + i18n.T("Browser to take cookies from (firefox, chrome…) or a cookies.txt path") + " [" + def + "] (" + i18n.T("\"-\" = none") + "):"
+			}
+			v := strings.TrimSpace(ask(prompt, def))
+			if v == "-" {
+				v = ""
+			}
+			cfg.YouTubeCookies = v
+		}
+		if s.key == "soundcloud" && slices.Contains(services, "soundcloud") {
+			fmt.Fprintln(out, "     "+i18n.T("SoundCloud works through its official API with your own app (registering one needs SoundCloud Artist Pro):"))
+			fmt.Fprintln(out, "       1. "+i18n.T("Open https://soundcloud.com/you/apps and create an app."))
+			fmt.Fprintln(out, "       2. "+i18n.T("Redirect URI:")+" "+soundcloud.RedirectURI)
+			fmt.Fprintln(out, "       3. "+i18n.T("Paste its Client ID and Client Secret here."))
+			id := strings.TrimSpace(ask("     Client ID ["+cfg.SoundCloudClientID+"]:", cfg.SoundCloudClientID))
+			secretHint := ""
+			if cfg.SoundCloudClientSecret != "" {
+				secretHint = " [" + i18n.T("saved") + "]"
+			}
+			secret := strings.TrimSpace(ask("     Client Secret"+secretHint+":", cfg.SoundCloudClientSecret))
+			if id != cfg.SoundCloudClientID || secret != cfg.SoundCloudClientSecret {
+				// Another app: the old sign-in doesn't apply.
+				cfg.SoundCloudToken, cfg.SoundCloudRefreshToken, cfg.SoundCloudTokenExpiry = "", "", 0
+				cfg.SoundCloudClientID, cfg.SoundCloudClientSecret = id, secret
 			}
 		}
 		if s.key == "local" && slices.Contains(services, "local") {

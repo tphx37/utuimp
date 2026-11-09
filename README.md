@@ -100,7 +100,7 @@ remembers which one you used.
 **Queue.** Pick a song with the arrow keys. `enter` plays it, `d` removes it,
 `K` and `J` move it up and down.
 
-**Lyrics.** The words light up as they are sung. `t` shows a translation next
+**Lyrics.** Word-by-word if available or line-by-line. `t` shows a translation next
 to each line, `T` chooses the language, `c` chooses where the lyrics come
 from if the text is wrong.
 

@@ -3,26 +3,24 @@ BINDIR ?= $(PREFIX)/bin
 
 .PHONY: build run test lint clean release build-with-token refresh-token install uninstall check-deps
 
+# check-deps looks for what the build and the services need and offers to
+# install what is missing with the system's package manager (see
+# scripts/install.sh; it only asks on a terminal, CI=... or NO_DEPS=1 skips).
 check-deps:
-ifeq ($(shell uname -s),Linux)
-	@echo "Checking dependencies..."
-	@pkg-config --exists gstreamer-1.0 2>/dev/null || \
-		{ echo ""; \
-		echo "ERROR: gstreamer-1.0 not found."; \
-		echo "Please install: gstreamer, gstreamer-plugins-base, gstreamer-plugins-good, and gst-libav (or gstreamer1.0-libav / gstreamer1.0-plugins-bad)"; \
-		echo ""; exit 1; }
-
-	@echo "All dependencies found."
+ifndef NO_DEPS
+	@sh scripts/install.sh --deps
 endif
 
 # build also refreshes the installed `utuimp` command ($(BINDIR)/utuimp), so
-# `make build && ./utuimp` and plain `utuimp` run the same version.
-# NO_INSTALL=1 skips that.
+# `make build && ./utuimp` and plain `utuimp` run the same version, and adds
+# utuimp to the desktop's application list (launcher + icon).
+# NO_INSTALL=1 skips both.
 build: check-deps
 	go build -o utuimp .
 ifndef NO_INSTALL
 	@install -d "$(BINDIR)"
 	@install -m 755 utuimp "$(BINDIR)/utuimp"
+	@"$(BINDIR)/utuimp" setup-desktop >/dev/null 2>&1 || true
 	@echo "Updated $(BINDIR)/utuimp"
 endif
 

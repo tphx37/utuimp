@@ -93,12 +93,9 @@ archives:
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     formats:
       - tar.gz
-    # Setting files replaces GoReleaser's default list, so the three it adds on
-    # its own are restated. The desktop file and icon let a distro package
-    # (#53) install everything from this one archive; they are the same two
-    # files the install script and the Flatpak manifest already ship.
     files:
       - LICENSE*
+      - NOTICE
       - README*
       - CHANGELOG*
       - flatpak/io.github.tphx37.utuimp.desktop
@@ -112,6 +109,7 @@ archives:
       - zip
     files:
       - LICENSE*
+      - NOTICE
       - README*
       - CHANGELOG*
 

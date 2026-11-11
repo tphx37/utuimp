@@ -36,6 +36,18 @@ type Player struct {
 	queue    []string
 	idx      int
 	deviceID string
+	// out plays librespot's sound when utuimp does that itself (see
+	// Librespot.Output); nil otherwise.
+	out Output
+	// A skip or a seek holds the output (see Output.Hold) until librespot
+	// says the new place is playing: held is the hold's number (0: none),
+	// heldPlay whether to play after it. cmdAt is when a command was last
+	// given here: the next polls may still report the state before it.
+	held     int
+	heldGen  int
+	heldPlay bool
+	events   bool // librespot's events are followed
+	cmdAt    time.Time
 
 	kick chan struct{} // re-read the state soon (after a command)
 	done chan struct{}
@@ -104,6 +116,154 @@ type device struct {
 	Name     string `json:"name"`
 	Type     string `json:"type"`
 	IsActive bool   `json:"is_active"`
+}
+
+// SetOutput tells the player what plays librespot's sound, so that pause,
+// play, skips and seeks given here act on it at once instead of when
+// librespot's stream gets round to it.
+func (p *Player) SetOutput(out Output) {
+	p.mu.Lock()
+	p.out = out
+	p.mu.Unlock()
+}
+
+// FollowEvents reads librespot's playback events: they end a skip's or a
+// seek's hold the moment the new place plays, and show a pause or a resume
+// given elsewhere (a phone) at once.
+func (p *Player) FollowEvents(events <-chan Event) {
+	if events == nil {
+		return
+	}
+	go func() {
+		for {
+			select {
+			case <-p.done:
+				return
+			case ev, ok := <-events:
+				if !ok {
+					p.mu.Lock()
+					p.events = false
+					play := p.heldPlay
+					p.mu.Unlock()
+					p.release(0, play, 0)
+					return
+				}
+				// Holds wait for events only once they are known to come.
+				p.mu.Lock()
+				p.events = true
+				p.mu.Unlock()
+				p.event(ev)
+			}
+		}
+	}()
+}
+
+// commandHold is how long after a command given here the polled state is
+// not trusted where it disagrees: Spotify reports the change late.
+const commandHold = 2500 * time.Millisecond
+
+// holdFor is how long a hold lasts at most when librespot sends no event.
+const holdFor = 2 * time.Second
+
+// holdFallback is how long a hold lasts without librespot's events.
+const holdFallback = 700 * time.Millisecond
+
+// event handles one of librespot's playback events.
+func (p *Player) event(ev Event) {
+	p.mu.Lock()
+	held, play, out := p.held, p.heldPlay, p.out
+	p.mu.Unlock()
+	if out == nil {
+		return
+	}
+	switch ev.Name {
+	case "playing":
+		if held != 0 {
+			p.release(held, true, ev.Pending)
+			return
+		}
+		if p.setPlaying(true) {
+			out.Play()
+		}
+	case "seeked":
+		if held != 0 {
+			p.release(held, play, ev.Pending)
+		}
+	case "paused":
+		if held != 0 {
+			p.release(held, false, ev.Pending)
+			return
+		}
+		if p.setPlaying(false) {
+			out.Pause()
+		}
+	case "stopped":
+		if held != 0 {
+			p.release(held, false, ev.Pending)
+		}
+	}
+}
+
+// setPlaying shows a play or a pause reported by librespot, unless the
+// opposite was just asked for here (the event may be about an earlier
+// state). It reports whether the report was taken.
+func (p *Player) setPlaying(on bool) bool {
+	p.mu.Lock()
+	if time.Since(p.cmdAt) < commandHold && p.state.Playing != on {
+		p.mu.Unlock()
+		return false
+	}
+	changed := p.state.Playing != on
+	p.state.Playing = on
+	p.mu.Unlock()
+	if changed {
+		p.broadcast()
+	}
+	return true
+}
+
+// hold starts a skip's or a seek's hold: the output is silent and drops
+// the old place until librespot plays the new one (or the time is up).
+// play is whether to play once it does. Without an output it does nothing.
+func (p *Player) hold(play bool) {
+	p.mu.Lock()
+	p.cmdAt = time.Now()
+	out := p.out
+	if out == nil {
+		p.mu.Unlock()
+		return
+	}
+	p.heldGen++
+	gen := p.heldGen
+	p.held = gen
+	p.heldPlay = play
+	wait := holdFor
+	if !p.events {
+		wait = holdFallback
+	}
+	p.mu.Unlock()
+	out.Hold()
+	time.AfterFunc(wait, func() {
+		p.mu.Lock()
+		play := p.heldPlay
+		p.mu.Unlock()
+		p.release(gen, play, 0)
+	})
+}
+
+// release ends hold number gen (0: whichever is on).
+func (p *Player) release(gen int, play bool, skip int) {
+	p.mu.Lock()
+	if p.held == 0 || gen != 0 && gen != p.held {
+		p.mu.Unlock()
+		return
+	}
+	p.held = 0
+	out := p.out
+	p.mu.Unlock()
+	if out != nil {
+		out.Release(play, skip)
+	}
 }
 
 // SetDevice makes id (the utuimp librespot device) the playback device.
@@ -179,8 +339,10 @@ func (p *Player) playFrom(idx int) error {
 		uris[i] = "spotify:track:" + id
 	}
 	p.state.Loading = true
+	p.state.Playing = true // it is asked to play
 	p.state.Error = ""
 	p.mu.Unlock()
+	p.hold(true)
 	p.broadcast()
 
 	ctx, cancel := ctx10()
@@ -228,7 +390,13 @@ func (p *Player) Play() error {
 	}
 	p.mu.Lock()
 	p.state.Playing = true
+	p.cmdAt = time.Now()
+	p.heldPlay = true // a skip under way plays once it gets there
+	out := p.out
 	p.mu.Unlock()
+	if out != nil {
+		out.Play()
+	}
 	p.broadcast()
 	return p.simple(http.MethodPut, "/me/player/play", nil)
 }
@@ -236,23 +404,44 @@ func (p *Player) Play() error {
 func (p *Player) Pause() error {
 	p.mu.Lock()
 	p.state.Playing = false
+	p.cmdAt = time.Now()
+	p.heldPlay = false // a skip under way stays paused once it gets there
+	out := p.out
 	p.mu.Unlock()
+	if out != nil {
+		out.Pause() // silence now, not when the request gets there
+	}
 	p.broadcast()
 	return p.simple(http.MethodPut, "/me/player/pause", nil)
 }
 
 func (p *Player) Stop() error { return p.Pause() }
 
+// Next, Previous and Seek hold the output until the new place plays (see
+// hold): until Spotify gets the command to librespot, what it sends is
+// still the old place.
 func (p *Player) Next() error {
 	p.mu.Lock()
 	p.state.Loading = true
+	playing := p.state.Playing
 	p.mu.Unlock()
+	p.hold(playing)
 	return p.simple(http.MethodPost, "/me/player/next", nil)
 }
 
-func (p *Player) Previous() error { return p.simple(http.MethodPost, "/me/player/previous", nil) }
+func (p *Player) Previous() error {
+	p.mu.Lock()
+	playing := p.state.Playing
+	p.mu.Unlock()
+	p.hold(playing)
+	return p.simple(http.MethodPost, "/me/player/previous", nil)
+}
 
 func (p *Player) Seek(pos time.Duration) error {
+	p.mu.Lock()
+	playing := p.state.Playing
+	p.mu.Unlock()
+	p.hold(playing)
 	return p.simple(http.MethodPut, "/me/player/seek", url.Values{"position_ms": {strconv.FormatInt(pos.Milliseconds(), 10)}})
 }
 
@@ -512,7 +701,15 @@ func (p *Player) poll() {
 		if st.Device.ID != "" {
 			p.deviceID = st.Device.ID
 		}
-		p.state.Playing = st.IsPlaying
+		// Right after a command given here Spotify may still report the
+		// state before it: keep ours until it agrees or the time is up.
+		if time.Since(p.cmdAt) >= commandHold || st.IsPlaying == p.state.Playing {
+			p.state.Playing = st.IsPlaying
+			if st.IsPlaying && p.out != nil && p.held == 0 {
+				// Started from somewhere else (a phone) while paused here.
+				p.out.Play()
+			}
+		}
 		p.state.Loading = false
 		p.state.Position = time.Duration(st.ProgressMs) * time.Millisecond
 		p.state.ShuffleMode = st.ShuffleState

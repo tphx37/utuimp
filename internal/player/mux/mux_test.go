@@ -43,3 +43,19 @@ func TestStartingOneServicePausesTheOther(t *testing.T) {
 		t.Fatal("no state forwarded from the new service")
 	}
 }
+
+// A subscriber that is behind still gets the newest state: a pause dropped
+// for a full buffer left Discord showing the song as playing.
+func TestSendLatestKeepsNewest(t *testing.T) {
+	ch := make(chan player.State, 2)
+	sendLatest(ch, player.State{Playing: true})
+	sendLatest(ch, player.State{Playing: true})
+	sendLatest(ch, player.State{Playing: false})
+	var last player.State
+	for len(ch) > 0 {
+		last = <-ch
+	}
+	if last.Playing {
+		t.Fatal("the pause sent last was dropped")
+	}
+}

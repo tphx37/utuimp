@@ -11,8 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/tphx37/utuimp/internal/player/tap"
 )
 
 func buildTestADTSStream() []byte {
@@ -306,5 +309,77 @@ func TestLocalAIFFMissingParserHint(t *testing.T) {
 				t.Fatal("timed out waiting for unsupported AIFF error")
 			}
 		})
+	}
+}
+
+// The tap must hand out the sound being heard, not the sound being decoded:
+// a WAV whose samples spell out their own time is played, and what the tap
+// returns is compared with the player's position.
+func TestTapFollowsThePosition(t *testing.T) {
+	t.Setenv("UTUIMP_NULL_AUDIO", "1")
+	if !hasElement("wavparse") {
+		t.Skip("wavparse missing: " + goodPluginsHelp)
+	}
+	const rate, secs = 48000, 3
+	// 16-bit stereo; the sample value rises by one every 8 frames.
+	wav := pcmWAV(16, rate, rate*secs)
+	body := wav[len(wav)-rate*secs*4:]
+	for f := range rate * secs {
+		v := uint16(f / 8) //nolint:gosec // below 18000
+		binary.LittleEndian.PutUint16(body[f*4:], v)
+		binary.LittleEndian.PutUint16(body[f*4+2:], v)
+	}
+	path := filepath.Join(t.TempDir(), "ramp.wav")
+	if err := os.WriteFile(path, wav, 0o600); err != nil {
+		t.Fatalf("writing fixture: %v", err)
+	}
+	p, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Destroy()
+	p.PlayURI("file://" + path)
+
+	buf := make([]float32, 64)
+	checked := 0
+	var worst time.Duration
+	deadline := time.Now().Add(2500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		pos := p.Position()
+		got, ahead, _ := readTap(buf)
+		if pos < 300*time.Millisecond || got == 0 {
+			continue
+		}
+		frame := float64(buf[len(buf)-1]) * 32768 * 8
+		heard := time.Duration(frame / rate * float64(time.Second))
+		diff := heard - pos - time.Duration(ahead*float64(time.Second))
+		if diff < 0 {
+			diff = -diff
+		}
+		worst = max(worst, diff)
+		checked++
+	}
+	if checked < 10 {
+		t.Fatalf("the tap gave samples only %d times", checked)
+	}
+	if worst > 40*time.Millisecond {
+		t.Errorf("the tap is up to %v away from the position", worst)
+	}
+	t.Logf("%d reads, worst offset %v", checked, worst)
+}
+
+// Whatever reaches GStreamer first, a plugin check included (Yandex and
+// Apple look for an AAC decoder before they make a player), must leave the
+// visualizer's tap registered: it once stayed unset for the whole session,
+// and the visualizer danced to a made-up beat for every service.
+func TestPluginCheckRegistersTheTap(t *testing.T) {
+	once = sync.Once{}
+	t.Cleanup(func() { once = sync.Once{}; initGst() })
+	// A stand-in no real reader would ever answer with.
+	tap.Register(func([]float32) (int, float64, int64) { return 1, 0, 0 })
+	_ = hasElement("identity")
+	if rate, _, _ := tap.Read(make([]float32, 64)); rate == 1 {
+		t.Fatal("GStreamer was started by a plugin check without handing the visualizer its tap")
 	}
 }

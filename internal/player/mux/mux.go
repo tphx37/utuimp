@@ -74,10 +74,7 @@ func (m *Mux) update(idx int, st player.State) {
 	}
 	if forward {
 		for _, ch := range subs {
-			select {
-			case ch <- st:
-			default:
-			}
+			sendLatest(ch, st)
 		}
 	}
 }
@@ -118,4 +115,21 @@ func (m *Mux) SetRepeat(mode int) error {
 }
 func (m *Mux) SetShuffle(on bool) error {
 	return m.do(func(p player.Player) error { return p.SetShuffle(on) })
+}
+
+// sendLatest delivers st without blocking. When the subscriber is behind,
+// the oldest buffered state makes room: the newest one is what matters (a
+// pause dropped here would leave Discord showing the song still playing).
+func sendLatest(ch chan player.State, st player.State) {
+	for {
+		select {
+		case ch <- st:
+			return
+		default:
+		}
+		select {
+		case <-ch:
+		default:
+		}
+	}
 }

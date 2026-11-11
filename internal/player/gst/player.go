@@ -948,8 +948,19 @@ static void utuimp_gst_init(void) {
     // 23 ms frames at the start of every track. Our stream always comes from
     // our own server as clean ADTS, which utuimpaacparse frames exactly.
     gst_element_register(NULL, "utuimpaacparse", GST_RANK_PRIMARY + 2, utuimp_aac_parse_get_type());
-    // utuimpmpaparse frames MP3 when mpegaudioparse (PRIMARY + 2) is missing.
-    gst_element_register(NULL, "utuimpmpaparse", GST_RANK_MARGINAL + 1, utuimp_mpa_parse_get_type());
+    // utuimpmpaparse frames MP3 when gst-plugins-good's mpegaudioparse and
+    // id3demux are missing. With them installed it must not exist at all: it
+    // also takes files that start with an ID3 tag, and decodebin tries
+    // parsers before demuxers whatever their rank, so it would be plugged
+    // in front of the real ones. It starts every segment at zero and knows
+    // nothing of seeking, so a seek in such a file landed in the wrong place
+    // and the position restarted from 0:00.
+    GstElementFactory* mpa = gst_element_factory_find("mpegaudioparse");
+    GstElementFactory* id3 = gst_element_factory_find("id3demux");
+    if (!mpa || !id3)
+        gst_element_register(NULL, "utuimpmpaparse", GST_RANK_MARGINAL + 1, utuimp_mpa_parse_get_type());
+    if (mpa) gst_object_unref(mpa);
+    if (id3) gst_object_unref(id3);
     // utuimphttpsrc only takes over when souphttpsrc (gst-plugins-good) is absent.
     gst_element_register(NULL, "utuimphttpsrc", GST_RANK_MARGINAL + 1, utuimp_http_src_get_type());
 }
@@ -1060,6 +1071,339 @@ static GstPadProbeReturn on_filter_buffer(GstPad* pad, GstPadProbeInfo* info, gp
     return GST_PAD_PROBE_OK;
 }
 
+// ── Sample tap (for the visualizer) ──────────────────────────────────────────
+// Every pipeline copies what it plays, mixed down to mono, into one shared
+// ring. Only one track plays at a time, so sharing it across pipelines is
+// fine; a pipeline that stops writing simply goes stale.
+
+// Long enough for the sink's buffer (over a second with PipeWire) at high
+// sample rates: the sound being heard must still be in the ring.
+#define UTUIMP_TAP_LEN (1 << 19)
+
+static GMutex utuimp_tap_mu;
+static float utuimp_tap_buf[UTUIMP_TAP_LEN];
+static guint64 utuimp_tap_written;
+static gint utuimp_tap_rate;
+static gint64 utuimp_tap_time; // monotonic µs of the last write
+static gint64 utuimp_tap_heard; // monotonic µs at which the last written sample is heard; 0: unknown
+
+// When sample 0 of the ring would have been heard (monotonic µs): while the
+// sound plays on without a break this is one fixed moment, and sample n is
+// heard n/rate after it. Each buffer gives a reading of it from the
+// pipeline's clock, but that clock is not steady: for the first ten seconds
+// or so of a stream the audio server is still working out its own timing,
+// and the readings wander late by up to 80 ms and back. So while a stretch
+// is young a low reading of it is trusted (the wandering only goes late);
+// after that, the middle of the latest ones.
+#define UTUIMP_TAP_OBS 256
+#define UTUIMP_TAP_SETTLE 240 // readings (20 a second) until the clock is trusted
+static gint64 utuimp_tap_obs[UTUIMP_TAP_OBS];
+static int utuimp_tap_obs_n;      // readings taken in this stretch
+static gint64 utuimp_tap_obs_at;  // when the last one was taken
+static gint64 utuimp_tap_origin;  // the trusted value
+static gboolean utuimp_tap_origin_ok;
+static int utuimp_tap_off;        // buffers in a row that disagree with it
+
+static int utuimp_cmp_i64(const void* a, const void* b) {
+    gint64 x = *(const gint64*)a, y = *(const gint64*)b;
+    return x < y ? -1 : x > y;
+}
+
+// utuimp_tap_observe takes one reading (call with the lock held): origin is
+// when sample 0 would be heard according to the buffer just written.
+static void utuimp_tap_observe(gint64 origin, gint64 now) {
+    if (utuimp_tap_origin_ok) {
+        gint64 d = origin - utuimp_tap_origin;
+        if (d < -150000 || d > 150000) {
+            // A pause, a seek or a new stream moved it: start over, once a
+            // few buffers agree that it is not a glitch.
+            if (++utuimp_tap_off >= 3) {
+                utuimp_tap_obs_n = 0;
+                utuimp_tap_origin_ok = FALSE;
+            } else {
+                return;
+            }
+        } else {
+            utuimp_tap_off = 0;
+        }
+    }
+    if (utuimp_tap_origin_ok && now - utuimp_tap_obs_at < 50000) return;
+    utuimp_tap_obs[utuimp_tap_obs_n % UTUIMP_TAP_OBS] = origin;
+    utuimp_tap_obs_n++;
+    utuimp_tap_obs_at = now;
+    utuimp_tap_off = 0;
+    gint64 sorted[UTUIMP_TAP_OBS];
+    int n;
+    if (utuimp_tap_obs_n <= UTUIMP_TAP_SETTLE) {
+        // The stream is young and the clock still wanders: a low reading of
+        // all there are.
+        n = utuimp_tap_obs_n;
+        memcpy(sorted, utuimp_tap_obs, sizeof(gint64) * (size_t)n);
+        qsort(sorted, (size_t)n, sizeof(gint64), utuimp_cmp_i64);
+        utuimp_tap_origin = sorted[n / 5];
+    } else {
+        // The clock has settled and reads true within a few ms: the middle
+        // of the last two seconds. That follows a real shift quickly: a
+        // stream that stalled for a moment (the network, for one) plays
+        // everything after it that much later.
+        n = 40;
+        for (int i = 0; i < n; i++)
+            sorted[i] = utuimp_tap_obs[(utuimp_tap_obs_n - 1 - i) % UTUIMP_TAP_OBS];
+        qsort(sorted, (size_t)n, sizeof(gint64), utuimp_cmp_i64);
+        utuimp_tap_origin = sorted[n / 2];
+    }
+    utuimp_tap_origin_ok = TRUE;
+}
+
+// utuimp_tap_heard_at tells when the start of buf will come out of the
+// speakers, as a monotonic time in µs, or 0 when that can't be told. The
+// sink plays a buffer when the pipeline's clock reaches the buffer's running
+// time, so the wait is the difference between the two.
+static gint64 utuimp_tap_heard_at(GstPad* pad, GstBuffer* buf) {
+    GstClockTime pts = GST_BUFFER_PTS(buf);
+    if (!GST_CLOCK_TIME_IS_VALID(pts)) return 0;
+    gint64 heard = 0;
+    GstEvent* ev = gst_pad_get_sticky_event(pad, GST_EVENT_SEGMENT, 0);
+    GstElement* el = gst_pad_get_parent_element(pad);
+    GstClock* clock = el ? gst_element_get_clock(el) : NULL;
+    if (ev && clock) {
+        const GstSegment* seg = NULL;
+        gst_event_parse_segment(ev, &seg);
+        if (seg && seg->format == GST_FORMAT_TIME) {
+            guint64 rt = gst_segment_to_running_time(seg, GST_FORMAT_TIME, pts);
+            GstClockTime now = gst_clock_get_time(clock);
+            GstClockTime base = gst_element_get_base_time(el);
+            if (rt != (guint64)-1 && GST_CLOCK_TIME_IS_VALID(now) && now >= base) {
+                gint64 wait_us = ((gint64)rt - (gint64)(now - base)) / 1000;
+                // Anything else is a clock that isn't running yet, or a seek
+                // in flight: better no answer than a wild one.
+                if (wait_us > -100000 && wait_us < 3000000) heard = g_get_monotonic_time() + wait_us;
+            }
+        }
+    }
+    if (clock) gst_object_unref(clock);
+    if (el) gst_object_unref(el);
+    if (ev) gst_event_unref(ev);
+    return heard;
+}
+
+static GstPadProbeReturn on_tap_buffer(GstPad* pad, GstPadProbeInfo* info, gpointer user_data) {
+    GstBuffer* buf = GST_PAD_PROBE_INFO_BUFFER(info);
+    if (!buf) return GST_PAD_PROBE_OK;
+    gint rate = 0, channels = 0;
+    const gchar* fmt = NULL;
+    GstCaps* caps = gst_pad_get_current_caps(pad);
+    if (!caps) return GST_PAD_PROBE_OK;
+    GstStructure* s = gst_caps_get_structure(caps, 0);
+    gst_structure_get_int(s, "rate", &rate);
+    gst_structure_get_int(s, "channels", &channels);
+    fmt = gst_structure_get_string(s, "format");
+    if (rate <= 0 || channels <= 0 || !fmt) {
+        gst_caps_unref(caps);
+        return GST_PAD_PROBE_OK;
+    }
+    int kind = 0;
+    if (strcmp(fmt, "S16LE") == 0) kind = 1;
+    else if (strcmp(fmt, "F32LE") == 0) kind = 2;
+    else if (strcmp(fmt, "S32LE") == 0) kind = 3;
+    else if (strcmp(fmt, "F64LE") == 0) kind = 4;
+    gst_caps_unref(caps);
+    if (kind == 0) return GST_PAD_PROBE_OK;
+
+    GstMapInfo map;
+    if (!gst_buffer_map(buf, &map, GST_MAP_READ)) return GST_PAD_PROBE_OK;
+    size_t width = kind == 1 ? 2 : kind == 4 ? 8 : 4;
+    size_t frames = map.size / (width * (size_t)channels);
+    gint64 heard = utuimp_tap_heard_at(pad, buf);
+    if (heard != 0) heard += (gint64)frames * 1000000 / rate;
+    gint64 now = g_get_monotonic_time();
+    g_mutex_lock(&utuimp_tap_mu);
+    utuimp_tap_heard = heard;
+    if (utuimp_tap_rate != rate || now - utuimp_tap_time > 300000) {
+        // Another stream, or the sound stopped for a while.
+        utuimp_tap_obs_n = 0;
+        utuimp_tap_origin_ok = FALSE;
+    }
+    if (utuimp_tap_rate != rate) {
+        utuimp_tap_rate = rate;
+        utuimp_tap_written = 0;
+    }
+    for (size_t f = 0; f < frames; f++) {
+        double sum = 0.0;
+        for (int c = 0; c < channels; c++) {
+            size_t i = f * (size_t)channels + (size_t)c;
+            switch (kind) {
+            case 1: sum += ((const gint16*)map.data)[i] / 32768.0; break;
+            case 2: sum += ((const gfloat*)map.data)[i]; break;
+            case 3: sum += ((const gint32*)map.data)[i] / 2147483648.0; break;
+            default: sum += ((const gdouble*)map.data)[i]; break;
+            }
+        }
+        utuimp_tap_buf[utuimp_tap_written % UTUIMP_TAP_LEN] = (float)(sum / channels);
+        utuimp_tap_written++;
+    }
+    utuimp_tap_time = now;
+    if (heard != 0) {
+        utuimp_tap_observe(heard - (gint64)((double)utuimp_tap_written * 1e6 / rate), now);
+    }
+    g_mutex_unlock(&utuimp_tap_mu);
+    gst_buffer_unmap(buf, &map);
+    return GST_PAD_PROBE_OK;
+}
+
+
+// utuimp_tap_read copies the n samples that end ahead_s seconds after the
+// one being heard now into dst and returns the sample rate, or 0 when
+// nothing is playing; got_ahead is how far ahead they really end (less than
+// asked when the sink holds less than that). The tap sits before the audio sink, so it runs ahead
+// of the sound: by how much is known from the pipeline's clock (see
+// utuimp_tap_heard_at), or taken to be lead_s when it isn't.
+static int utuimp_tap_read(float* dst, int n, double lead_s, double ahead_s, double* got_ahead, gint64* got_end) {
+    g_mutex_lock(&utuimp_tap_mu);
+    gint rate = utuimp_tap_rate;
+    guint64 written = utuimp_tap_written;
+    gint64 now = g_get_monotonic_time();
+    gint64 age = now - utuimp_tap_time;
+    gint64 heard = utuimp_tap_heard;
+    if (rate <= 0 || written == 0 || age > 400000 || n <= 0 || n > UTUIMP_TAP_LEN / 2) {
+        g_mutex_unlock(&utuimp_tap_mu);
+        return 0;
+    }
+    double end = (double)written - lead_s * rate + (double)age * rate / 1e6;
+    if (heard != 0) end = (double)written - (double)(heard - now) * rate / 1e6;
+    if (utuimp_tap_origin_ok) end = (double)(now - utuimp_tap_origin) * rate / 1e6;
+    double heard_now = end;
+    end += ahead_s * rate;
+    if (end > (double)written) end = (double)written; // no more than there is
+    *got_ahead = (end - heard_now) / rate;
+    gint64 e = (gint64)end;
+    *got_end = e;
+    gint64 oldest = (gint64)written - UTUIMP_TAP_LEN;
+    for (int i = 0; i < n; i++) {
+        gint64 idx = e - n + i;
+        dst[i] = (idx < 0 || idx < oldest) ? 0.0f : utuimp_tap_buf[(guint64)idx % UTUIMP_TAP_LEN];
+    }
+    g_mutex_unlock(&utuimp_tap_mu);
+    return rate;
+}
+
+// ── Raw PCM player ───────────────────────────────────────────────────────────
+// Plays 16-bit 44.1 kHz stereo PCM handed over in pieces (librespot's
+// output, for Spotify), through the same sample tap as everything else.
+
+typedef struct {
+    GstElement* pipeline;
+    GstElement* src;
+    GstClockTime next; // running time at which the next sample pushed plays
+} UtuimpRaw;
+
+static UtuimpRaw* utuimp_raw_new(void) {
+    const char* null_env = getenv("UTUIMP_NULL_AUDIO");
+    const char* sink = "autoaudiosink";
+    if (null_env && strcmp(null_env, "1") == 0) {
+        sink = "fakesink sync=true";
+    } else if (utuimp_gst_has_element("pulsesink")) {
+        // Little is held ahead of the speakers, so a pause that comes from
+        // outside (the phone) is heard soon; but enough for the visualizer
+        // to look ahead.
+        sink = "pulsesink buffer-time=200000 latency-time=20000";
+    }
+    gchar* desc = g_strdup_printf(
+        "appsrc name=utuimpraw format=time block=true max-bytes=17640 "
+        "caps=audio/x-raw,format=S16LE,rate=44100,channels=2,layout=interleaved "
+        "! audioconvert ! audioresample ! identity name=utuimptap "
+        // A quarter of a second waits here, past the tap: that is the
+        // visualizer's look ahead, whatever the sink holds.
+        "! queue max-size-time=250000000 max-size-bytes=0 max-size-buffers=0 ! %s", sink);
+    GError* err = NULL;
+    GstElement* p = gst_parse_launch(desc, &err);
+    g_free(desc);
+    if (err) g_error_free(err);
+    if (!p) return NULL;
+    GstElement* src = gst_bin_get_by_name(GST_BIN(p), "utuimpraw");
+    GstElement* tap = gst_bin_get_by_name(GST_BIN(p), "utuimptap");
+    if (!src || !tap) {
+        if (src) gst_object_unref(src);
+        if (tap) gst_object_unref(tap);
+        gst_object_unref(p);
+        return NULL;
+    }
+    GstPad* tp = gst_element_get_static_pad(tap, "src");
+    if (tp) {
+        gst_pad_add_probe(tp, GST_PAD_PROBE_TYPE_BUFFER, on_tap_buffer, NULL, NULL);
+        gst_object_unref(tp);
+    }
+    gst_object_unref(tap);
+    UtuimpRaw* r = g_new0(UtuimpRaw, 1);
+    r->pipeline = p;
+    r->src = src;
+    gst_element_set_state(p, GST_STATE_PLAYING);
+    return r;
+}
+
+// utuimp_raw_push hands over len bytes of samples; it waits while the
+// player has enough in hand, which is what paces the source. The samples are
+// stamped to follow one another without a gap, except after the source has
+// been silent for a while (paused, or between songs): then they are due at
+// once, not at the moment they would have been without the silence, which is
+// long past and would get them thrown away as late.
+static int utuimp_raw_push(UtuimpRaw* r, const void* data, int len) {
+    GstBuffer* buf = gst_buffer_new_allocate(NULL, (gsize)len, NULL);
+    if (!buf) return -1;
+    gst_buffer_fill(buf, 0, data, (gsize)len);
+    GstState st = GST_STATE_NULL;
+    gst_element_get_state(r->pipeline, &st, NULL, 0);
+    GstClock* clock = gst_element_get_clock(r->pipeline);
+    if (clock) {
+        GstClockTime now = gst_clock_get_time(clock);
+        GstClockTime base = gst_element_get_base_time(r->pipeline);
+        if (st == GST_STATE_PLAYING && GST_CLOCK_TIME_IS_VALID(now) && now > base) {
+            GstClockTime running = now - base;
+            if (running > r->next + 60 * GST_MSECOND) {
+                r->next = running + 30 * GST_MSECOND;
+                GST_BUFFER_FLAG_SET(buf, GST_BUFFER_FLAG_DISCONT);
+            }
+        }
+        gst_object_unref(clock);
+    }
+    GstClockTime dur = gst_util_uint64_scale((guint64)(len / 4), GST_SECOND, 44100);
+    GST_BUFFER_PTS(buf) = r->next;
+    GST_BUFFER_DURATION(buf) = dur;
+    r->next += dur;
+    GstFlowReturn ret = GST_FLOW_ERROR;
+    g_signal_emit_by_name(r->src, "push-buffer", buf, &ret);
+    gst_buffer_unref(buf);
+    return (int)ret;
+}
+
+// utuimp_raw_flush throws away what has been handed over but not played yet
+// (a skip or a seek: the old song must stop at once). Call it from the
+// thread that pushes.
+static void utuimp_raw_flush(UtuimpRaw* r) {
+    gst_element_send_event(r->src, gst_event_new_flush_start());
+    gst_element_send_event(r->src, gst_event_new_flush_stop(TRUE));
+    r->next = 0;
+}
+
+static void utuimp_raw_play(UtuimpRaw* r)  { gst_element_set_state(r->pipeline, GST_STATE_PLAYING); }
+static void utuimp_raw_pause(UtuimpRaw* r) { gst_element_set_state(r->pipeline, GST_STATE_PAUSED); }
+static void utuimp_raw_stop(UtuimpRaw* r)  { gst_element_set_state(r->pipeline, GST_STATE_NULL); }
+
+// utuimp_raw_restart starts the pipeline from nothing, as on its first day:
+// after it was put to rest (state NULL), or to get it out of whatever state
+// a long silence left the sound server's clock in.
+static void utuimp_raw_restart(UtuimpRaw* r) {
+    gst_element_set_state(r->pipeline, GST_STATE_NULL);
+    r->next = 0;
+    gst_element_set_state(r->pipeline, GST_STATE_PLAYING);
+}
+
+static void utuimp_raw_free(UtuimpRaw* r) {
+    gst_object_unref(r->src);
+    gst_object_unref(r->pipeline);
+    g_free(r);
+}
+
 // utuimp_gst_new creates a playbin3 pipeline, falling back to playbin, and
 // attaches a 10-band equalizer audio-filter when gstreamer1.0-plugins-good is
 // installed (an identity filter with embedded biquad DSP otherwise, to carry
@@ -1107,6 +1451,11 @@ static GstElement* utuimp_gst_new(GstElement** eqOut, UtuimpGstState* st) {
                     gst_pad_add_probe(sp, GST_PAD_PROBE_TYPE_BUFFER, on_filter_buffer, st, NULL);
                 }
                 gst_object_unref(sp);
+            }
+            GstPad* tp = gst_element_get_static_pad(filter, "src");
+            if (tp) {
+                gst_pad_add_probe(tp, GST_PAD_PROBE_TYPE_BUFFER, on_tap_buffer, NULL, NULL);
+                gst_object_unref(tp);
             }
         }
     }
@@ -1218,13 +1567,39 @@ static void utuimp_gst_destroy(GstElement* p) {
 import "C"
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
+
+	"github.com/tphx37/utuimp/internal/player/tap"
 )
+
+// tapLead is how far the audio sink plays behind the tap (its buffer), used
+// only when the pipeline's clock can't tell.
+const tapLead = 0.2
+
+// tapAhead is how far ahead of the sound the visualizer may read (the sink
+// holds a second or so that hasn't been played yet): enough to find a hit
+// before it sounds and show it exactly on time.
+const tapAhead = 0.18
+
+// readTap fills dst with mono samples ending ahead seconds after the sound
+// being heard now and returns their sample rate, or 0 when nothing is playing.
+func readTap(dst []float32) (rate int, ahead float64, end int64) {
+	if len(dst) == 0 {
+		return 0, 0, 0
+	}
+	var got C.double
+	var e C.gint64
+	rate = int(C.utuimp_tap_read((*C.float)(unsafe.Pointer(&dst[0])), C.int(len(dst)), C.double(tapLead), C.double(tapAhead), &got, &e))
+	return rate, float64(got), int64(e)
+}
 
 const aacDecoderHelp = "install gstreamer1.0-libav or gstreamer1.0-plugins-bad (Debian/Ubuntu) / gst-libav or gst-plugins-bad (Arch/Fedora)"
 
@@ -1239,6 +1614,17 @@ func missingGoodPlugins() bool {
 const aiffParserHelp = "24/32-bit AIFF playback needs aiffparse: install gstreamer1.0-plugins-bad (Debian/Ubuntu) / gst-plugins-bad (Arch/Fedora)"
 
 var once sync.Once
+
+// initGst starts GStreamer and hands the visualizer the sample tap. Every
+// entry point goes through it: whichever comes first (a plugin check, a
+// player, the raw player) must leave the tap registered, or the visualizer
+// hears nothing for the whole session.
+func initGst() {
+	once.Do(func() {
+		C.utuimp_gst_init()
+		tap.Register(readTap)
+	})
+}
 
 // Player wraps a GStreamer playbin3 pipeline for URI-based audio playback.
 type Player struct {
@@ -1257,7 +1643,7 @@ type Player struct {
 
 // New initialises GStreamer once and returns a ready Player.
 func New() (*Player, error) {
-	once.Do(func() { C.utuimp_gst_init() })
+	initGst()
 	st := C.utuimp_gst_state_new()
 	p := &Player{
 		st:   st,
@@ -1282,7 +1668,7 @@ func New() (*Player, error) {
 // handling and ADTS frame parsing have embedded fallbacks (utuimphttpsrc and
 // utuimpaacparse) so gstreamer1.0-plugins-good is not required.
 func EnsureAACDecoder() error {
-	once.Do(func() { C.utuimp_gst_init() })
+	initGst()
 	if C.utuimp_gst_has_aac_decoder() == 0 {
 		return fmt.Errorf("gst: no GStreamer AAC decoder plugin found — %s", aacDecoderHelp)
 	}
@@ -1290,14 +1676,14 @@ func EnsureAACDecoder() error {
 }
 
 func setElementRank(name string, rank int) {
-	once.Do(func() { C.utuimp_gst_init() })
+	initGst()
 	cs := C.CString(name)
 	defer C.free(unsafe.Pointer(cs))
 	C.utuimp_gst_set_element_rank(cs, C.int(rank))
 }
 
 func hasElement(name string) bool {
-	once.Do(func() { C.utuimp_gst_init() })
+	initGst()
 	cs := C.CString(name)
 	defer C.free(unsafe.Pointer(cs))
 	return C.utuimp_gst_has_element(cs) != 0
@@ -1564,4 +1950,218 @@ func (p *Player) drainBus() {
 			}
 		}
 	}
+}
+
+// ── RawPlayer ────────────────────────────────────────────────────────────────
+
+// RawPlayer plays a stream of raw PCM (16-bit little-endian, 44.1 kHz,
+// stereo), read from src as fast as it is played: a full buffer makes the
+// reads wait, and that is what paces whoever writes the stream. Spotify's
+// librespot is played this way, so that its sound goes through the same
+// pipeline, and the same visualizer tap, as every other service.
+type RawPlayer struct {
+	r      *C.UtuimpRaw
+	flush  atomic.Bool
+	closed atomic.Bool
+	fed    chan struct{}
+	once   sync.Once
+
+	// hold drops the stream (at the speed it would play, so its writer
+	// keeps going at its own pace) while a skip or a seek is on its way to
+	// the source; skip is how much more to drop at once after it, and
+	// resume plays the pipeline again with the first sound that follows.
+	hold   atomic.Bool
+	skip   atomic.Int64
+	resume atomic.Bool
+}
+
+// NewRaw starts playing src. The error means GStreamer can't build the
+// pipeline here; nothing has been read from src then.
+func NewRaw(src io.Reader) (*RawPlayer, error) {
+	initGst()
+	r := C.utuimp_raw_new()
+	if r == nil {
+		return nil, errors.New("gst: cannot build the raw audio pipeline")
+	}
+	p := &RawPlayer{r: r, fed: make(chan struct{})}
+	go p.feed(src)
+	return p, nil
+}
+
+// rawChunk is 20 ms of sound.
+const rawChunk = 3528
+
+// feed reads src and hands it to the pipeline in pieces of 20 ms.
+//
+// The pipeline must never run dry while the source merely hesitates (a song
+// loading after a skip, a pause given from a phone): the sound server's
+// clock jumps when it does, and the sink then throws away seconds of what
+// comes next as late. So a silent source is covered with silence. Only when
+// it has been silent for seconds is the pipeline shut down, and the first
+// sound after that starts it from nothing.
+func (p *RawPlayer) feed(src io.Reader) {
+	defer close(p.fed)
+	chunks := make(chan []byte, 1)
+	go func() {
+		defer close(chunks)
+		buf := make([]byte, rawChunk)
+		have := 0
+		for {
+			n, err := src.Read(buf[have:])
+			have += n
+			if whole := have &^ 3; whole > 0 {
+				chunks <- append([]byte(nil), buf[:whole]...)
+				have = copy(buf, buf[whole:have])
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	push := func(c []byte) bool {
+		if p.closed.Load() {
+			return false
+		}
+		if p.flush.Swap(false) {
+			C.utuimp_raw_flush(p.r)
+		}
+		if p.resume.Swap(false) {
+			C.utuimp_raw_play(p.r)
+		}
+		return C.utuimp_raw_push(p.r, unsafe.Pointer(&c[0]), C.int(len(c))) == 0
+	}
+	// sound plays c; false when it was dropped (closed, or held).
+	sound := func(c []byte, resting bool) bool {
+		if p.closed.Load() {
+			return false
+		}
+		if p.hold.Load() {
+			// Still the old place: drop it as fast as it would play.
+			time.Sleep(time.Duration(len(c)/4) * time.Second / 44100)
+			return false
+		}
+		if n := p.skip.Load(); n > 0 {
+			d := min(n, int64(len(c)))
+			p.skip.Add(-d)
+			if c = c[d:]; len(c) < 4 {
+				return false
+			}
+			c = c[:len(c)&^3]
+		}
+		if resting {
+			p.flush.Store(false)
+			C.utuimp_raw_restart(p.r)
+		}
+		push(c)
+		return true
+	}
+	silence := make([]byte, rawChunk)
+	const rest = 5 * time.Second
+	resting := false
+	wait := time.NewTimer(time.Hour)
+	defer wait.Stop()
+	for {
+		wait.Reset(40 * time.Millisecond)
+		select {
+		case c, ok := <-chunks:
+			if !ok {
+				return
+			}
+			if sound(c, resting) {
+				resting = false
+			}
+			continue
+		case <-wait.C:
+		}
+		// The source is silent.
+		for quiet := time.Duration(0); !resting && !p.closed.Load(); quiet += 20 * time.Millisecond {
+			select {
+			case c, ok := <-chunks:
+				if !ok {
+					return
+				}
+				sound(c, false)
+				quiet = -time.Hour // back to sound: leave the loop
+			default:
+				if p.hold.Load() {
+					time.Sleep(20 * time.Millisecond) // nothing is to be heard now
+				} else if quiet >= rest {
+					// Closed down: no stream is held open on the sound
+					// server while nothing plays.
+					resting = true
+					C.utuimp_raw_stop(p.r)
+				} else if !push(silence) {
+					time.Sleep(20 * time.Millisecond) // paused or flushing: don't spin
+				}
+			}
+			if quiet < 0 {
+				break
+			}
+		}
+		if p.closed.Load() {
+			return
+		}
+	}
+}
+
+// Play resumes after Pause.
+// While held it does nothing: Release says whether to play.
+func (p *RawPlayer) Play() {
+	if !p.closed.Load() && !p.hold.Load() {
+		C.utuimp_raw_play(p.r)
+	}
+}
+
+// Pause stops the sound at once; what has been read stays in hand.
+func (p *RawPlayer) Pause() {
+	if !p.closed.Load() {
+		p.resume.Store(false)
+		C.utuimp_raw_pause(p.r)
+	}
+}
+
+// Flush drops the sound read but not played yet: after a skip or a seek the
+// next thing heard is the new place.
+func (p *RawPlayer) Flush() { p.flush.Store(true) }
+
+// Hold silences the player at once and throws away what it holds, and from
+// then on drops the stream, until Release: a skip or a seek has been asked
+// for, but the source goes on with the old place until it gets there.
+// Playing that would be heard as the old song going on, or jumping ahead.
+func (p *RawPlayer) Hold() {
+	if p.closed.Load() {
+		return
+	}
+	p.resume.Store(false)
+	p.hold.Store(true)
+	C.utuimp_raw_pause(p.r)
+	// From here: a push waiting in the paused pipeline must give up now.
+	C.utuimp_raw_flush(p.r)
+	p.flush.Store(true)
+}
+
+// Release ends Hold: skip more bytes of the stream (what was written before
+// the new place started) are dropped, and what follows is played, or kept
+// paused when play is false.
+func (p *RawPlayer) Release(play bool, skip int) {
+	if p.closed.Load() || !p.hold.Load() {
+		return
+	}
+	p.skip.Store(int64(max(skip, 0)))
+	p.resume.Store(play)
+	p.hold.Store(false)
+}
+
+// Holding reports whether a Hold is in force.
+func (p *RawPlayer) Holding() bool { return p.hold.Load() }
+
+// Close stops the player. src must be closed (or at its end) by then, so
+// that the read it may be waiting in returns.
+func (p *RawPlayer) Close() {
+	p.once.Do(func() {
+		p.closed.Store(true)
+		C.utuimp_raw_stop(p.r)
+		<-p.fed
+		C.utuimp_raw_free(p.r)
+	})
 }

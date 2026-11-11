@@ -19,7 +19,9 @@ type Activity struct {
 	Assets     *Assets     `json:"assets,omitempty"`
 }
 
-// Timestamps defines start/end epoch milliseconds or seconds for Discord.
+// Timestamps defines start/end epoch seconds for Discord. An empty one
+// (not a missing one) is what stops the clock: with no timestamps at all
+// Discord counts the time since the activity was set.
 type Timestamps struct {
 	Start int64 `json:"start,omitempty"`
 	End   int64 `json:"end,omitempty"`
@@ -35,7 +37,10 @@ type Assets struct {
 
 // BuildActivity constructs a Discord Activity from player.State.
 func BuildActivity(st player.State) *Activity {
-	if st.Track == nil {
+	// Nothing to show while paused: the presence goes away and comes back
+	// on play. Discord has no paused state of its own, and a frozen card
+	// reads as still playing.
+	if st.Track == nil || !st.Playing {
 		return nil
 	}
 
@@ -68,23 +73,12 @@ func BuildActivity(st player.State) *Activity {
 		act.Assets.LargeText = "utuimp"
 	}
 
-	if st.Playing {
-		act.Assets.SmallImage = "play"
-		act.Assets.SmallText = "Playing"
-
-		// Calculate progress timestamps if duration is known
-		if st.Track.Duration > 0 {
-			now := time.Now()
-			start := now.Add(-st.Position)
-			end := start.Add(st.Track.Duration)
-			act.Timestamps = &Timestamps{
-				Start: start.Unix(),
-				End:   end.Unix(),
-			}
-		}
-	} else {
-		act.Assets.SmallImage = "pause"
-		act.Assets.SmallText = "Paused"
+	// The time shows how far into the song it is, from the song's start.
+	// No play/pause badge: in Discord it would look like a button.
+	start := time.Now().Add(-st.Position)
+	act.Timestamps = &Timestamps{Start: start.Unix()}
+	if st.Track.Duration > 0 {
+		act.Timestamps.End = start.Add(st.Track.Duration).Unix()
 	}
 
 	return act

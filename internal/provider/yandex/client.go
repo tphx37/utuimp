@@ -562,3 +562,83 @@ func (c *Client) Lyrics(ctx context.Context, trackID string, synced bool) (strin
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	return string(data), err
 }
+
+// deleteTrack removes the track at position at from a playlist.
+func (c *Client) deleteTrack(ctx context.Context, uid, kind string, at, revision int) error {
+	diff, _ := json.Marshal([]map[string]any{{"op": "delete", "from": at, "to": at + 1}})
+	form := url.Values{}
+	form.Set("diff", string(diff))
+	form.Set("revision", strconv.Itoa(revision))
+	return c.post(ctx, "/users/"+url.PathEscape(uid)+"/playlists/"+url.PathEscape(kind)+"/change-relative", form, nil)
+}
+
+// renamePlaylist gives a playlist a new title.
+func (c *Client) renamePlaylist(ctx context.Context, uid, kind, title string) error {
+	form := url.Values{}
+	form.Set("value", title)
+	return c.post(ctx, "/users/"+url.PathEscape(uid)+"/playlists/"+url.PathEscape(kind)+"/name", form, nil)
+}
+
+// deletePlaylist deletes a playlist.
+func (c *Client) deletePlaylist(ctx context.Context, uid, kind string) error {
+	return c.post(ctx, "/users/"+url.PathEscape(uid)+"/playlists/"+url.PathEscape(kind)+"/delete", url.Values{}, nil)
+}
+
+// likedAlbums returns the albums the user liked.
+func (c *Client) likedAlbums(ctx context.Context, uid string) ([]ymAlbum, error) {
+	q := url.Values{}
+	q.Set("rich", "true")
+	var res []struct {
+		Album *ymAlbum    `json:"album"`
+		ID    json.Number `json:"id"`
+	}
+	if err := c.get(ctx, "/users/"+url.PathEscape(uid)+"/likes/albums", q, &res); err != nil {
+		return nil, err
+	}
+	out := make([]ymAlbum, 0, len(res))
+	for _, r := range res {
+		switch {
+		case r.Album != nil:
+			out = append(out, *r.Album)
+		case r.ID != "":
+			out = append(out, ymAlbum{ID: r.ID})
+		}
+	}
+	return out, nil
+}
+
+// likedArtists returns the artists the user liked.
+func (c *Client) likedArtists(ctx context.Context, uid string) ([]ymArtist, error) {
+	q := url.Values{}
+	q.Set("with-timestamps", "true")
+	var res []json.RawMessage
+	if err := c.get(ctx, "/users/"+url.PathEscape(uid)+"/likes/artists", q, &res); err != nil {
+		return nil, err
+	}
+	out := make([]ymArtist, 0, len(res))
+	for _, raw := range res {
+		var wrapped struct {
+			Artist *ymArtist `json:"artist"`
+		}
+		if json.Unmarshal(raw, &wrapped) == nil && wrapped.Artist != nil {
+			out = append(out, *wrapped.Artist)
+			continue
+		}
+		var a ymArtist
+		if json.Unmarshal(raw, &a) == nil && a.ID != "" {
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+
+// setLikeOf likes or unlikes an album or an artist (kind "album", "artist").
+func (c *Client) setLikeOf(ctx context.Context, uid, kind, id string, liked bool) error {
+	action := "add-multiple"
+	if !liked {
+		action = "remove"
+	}
+	form := url.Values{}
+	form.Set(kind+"-ids", id)
+	return c.post(ctx, "/users/"+url.PathEscape(uid)+"/likes/"+kind+"s/"+action, form, nil)
+}

@@ -398,3 +398,44 @@ var (
 	_ provider.Provider     = (*Public)(nil)
 	_ provider.SongDetailer = (*Public)(nil)
 )
+
+// RemoveFromPlaylist, RenamePlaylist and DeletePlaylist edit the playlists
+// kept on disk.
+func (p *Public) RemoveFromPlaylist(_ context.Context, playlistID string, index int, t provider.Track) error {
+	if playlistID == provider.FavoritesPlaylistID {
+		return p.store.SetFavorite(t, false)
+	}
+	return p.store.RemoveFromPlaylist(playlistID, index, t.ID)
+}
+
+func (p *Public) RenamePlaylist(_ context.Context, playlistID, name string) error {
+	return p.store.RenamePlaylist(playlistID, name)
+}
+
+func (p *Public) DeletePlaylist(_ context.Context, playlistID string) error {
+	return p.store.DeletePlaylist(playlistID)
+}
+
+var _ provider.PlaylistEditor = (*Public)(nil)
+
+// Saved albums and followed artists are kept on disk, like the playlists.
+func (p *Public) GetSavedAlbums(context.Context) ([]provider.Album, error) {
+	return p.store.SavedAlbums(), nil
+}
+
+func (p *Public) GetSavedArtists(context.Context) ([]provider.Artist, error) {
+	return p.store.SavedArtists(), nil
+}
+
+func (p *Public) SaveAlbum(_ context.Context, a provider.Album, save bool) error {
+	return p.store.SetAlbumSaved(a, save)
+}
+
+func (p *Public) FollowArtist(_ context.Context, a provider.Artist, follow bool) error {
+	return p.store.SetArtistFollowed(a, follow)
+}
+
+var (
+	_ provider.LibraryCollections = (*Public)(nil)
+	_ provider.CollectionSaver    = (*Public)(nil)
+)

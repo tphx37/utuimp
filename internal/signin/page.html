@@ -1,0 +1,144 @@
+
+{{define "style"}}<style>
+    :root { --bg: #0a0a0a; --panel: #000; --line: #2c2c2c; --text: #fff; --dim: #8c8c8c; --err: #ff6b6b; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      background: var(--bg); color: var(--text);
+      font-family: ui-monospace, "JetBrains Mono", "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+      display: flex; align-items: center; justify-content: center;
+      padding: 16px; overflow: hidden;
+    }
+    canvas#ribbons { position: fixed; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; z-index: 0; }
+    .card {
+      position: relative; z-index: 1; width: 100%; max-width: 420px;
+      background: var(--panel); border: 2px solid var(--line); box-shadow: 6px 6px 0 #000;
+      padding: 40px 36px 32px; text-align: center;
+      animation: up .5s ease-out both;
+    }
+    @keyframes up { from { opacity: 0; transform: translateY(8px); } }
+    .logo { width: 104px; height: 104px; image-rendering: pixelated; border-radius: 19.8%; } /* the icon's corners: 9.5 of 48 */
+    h1 { margin-top: 16px; font-size: 1.7rem; font-weight: 700; letter-spacing: 1px; }
+    .subtitle { margin-top: 6px; color: var(--dim); font-size: .8rem; }
+    .what { margin: 26px 0 18px; font-size: .9rem; line-height: 1.5; }
+    .code {
+      margin: 0 0 18px; padding: 14px; border: 2px dashed var(--line);
+      font-size: 1.6rem; font-weight: 700; letter-spacing: 4px; cursor: pointer; user-select: all;
+    }
+    .code small { display: block; margin-top: 6px; font-size: .68rem; font-weight: 400; letter-spacing: 0; color: var(--dim); }
+    .btn {
+      display: flex; align-items: center; justify-content: center; gap: 10px;
+      width: 100%; padding: 13px 20px; background: #fff; color: #000; text-decoration: none;
+      border: 0; box-shadow: 4px 4px 0 #555;
+      font: inherit; font-size: .95rem; font-weight: 700; cursor: pointer;
+      transition: transform .08s, box-shadow .08s, background .2s;
+    }
+    .btn:hover { background: #dcdcdc; }
+    .btn:active { transform: translate(3px, 3px); box-shadow: 1px 1px 0 #555; }
+    .btn:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+    .btn:disabled { background: var(--line); color: var(--dim); box-shadow: none; cursor: default; transform: none; }
+    .status { margin-top: 18px; min-height: 1.4em; font-size: .82rem; color: var(--dim); }
+    .status.error { color: var(--err); }
+    .box { display: none; margin-top: 18px; padding: 16px; border: 2px solid #fff; text-align: left; }
+    .box.show { display: block; }
+    .box.bad { border-color: var(--err); }
+    .box h3 { font-size: .95rem; margin-bottom: 6px; }
+    .box.bad h3 { color: var(--err); }
+    .box p { font-size: .82rem; line-height: 1.5; overflow-wrap: anywhere; }
+    .foot { margin-top: 22px; color: var(--dim); font-size: .7rem; line-height: 1.5; }
+    @media (prefers-reduced-motion: reduce) { .card { animation: none; } }
+  </style>{{end}}
+
+{{define "logo"}}<img class="logo" alt="utuimp" src="data:image/png;base64,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" />{{end}}
+
+
+{{define "ribbons"}}<canvas id="ribbons" aria-hidden="true"></canvas>
+  <script>
+    (function () {
+      const cols = {{.}};
+      const cv = document.getElementById("ribbons"), cx = cv.getContext("2d");
+      const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      let w = 0, h = 0;
+      function size() { w = cv.width = Math.ceil(innerWidth / 12); h = cv.height = Math.ceil(innerHeight / 12); }
+      function draw(ms) {
+        const t = still ? 3 : ms / 1000, img = cx.createImageData(w, h), d = img.data;
+        for (let x = 0; x < w; x++) {
+          const u = (x / w) * 2 - 1;
+          for (let y = 0; y < h; y++) {
+            const v = (y / h) * 2 - 1;
+            let r = 10, g = 10, b = 10;
+            for (let i = 0; i < 5; i++) {
+              const ph = i * 1.7, c = cols[i % cols.length];
+              const yy = (i - 2) * 0.3 + 0.16 * Math.sin(u * (1.2 + i * 0.25) + t * (0.25 + i * 0.07) + ph) + 0.08 * Math.sin(u * 2.6 - t * 0.3 + ph * 2);
+              const th = 0.035 + 0.03 * (0.5 + 0.5 * Math.sin(u * 0.9 + t * 0.2 + ph));
+              const k = Math.exp(-Math.pow((v - yy) / th, 2)) * 0.2 + Math.exp(-Math.abs(v - yy) / 0.12) * 0.03;
+              r += c[0] * k; g += c[1] * k; b += c[2] * k;
+            }
+            const o = (y * w + x) * 4;
+            d[o] = Math.min(255, r) & ~7; d[o + 1] = Math.min(255, g) & ~7; d[o + 2] = Math.min(255, b) & ~7; d[o + 3] = 255;
+          }
+        }
+        cx.putImageData(img, 0, 0);
+        if (!still) requestAnimationFrame(draw);
+      }
+      addEventListener("resize", () => { size(); if (still) draw(0); });
+      size(); requestAnimationFrame(draw);
+    })();
+  </script>{{end}}
+
+
+{{define "page"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>utuimp · {{.Service}}</title>
+  {{template "style"}}
+</head>
+<body>
+  {{template "ribbons" .Colors}}
+  <main class="card">
+    {{template "logo"}}
+    <h1>utuimp</h1>
+    {{if .Text}}<p class="what">{{.Text}}</p>{{end}}
+    {{if .Code}}<div class="code" id="code" title="Click to copy">{{.Code}}<small id="codeHint">click to copy</small></div>{{end}}
+    {{if .ButtonURL}}<a class="btn" id="go" href="{{.ButtonURL}}"{{if .NewTab}} target="_blank" rel="noopener"{{end}}>{{.Button}}</a>{{end}}
+    <div class="status" id="status" role="status">{{if .Poll}}waiting for you to confirm…{{end}}</div>
+    <div class="box{{if .Done}} show{{end}}" id="okBox">
+      <h3>signed in</h3>
+      <p>utuimp is now linked to {{.Service}}.<br/>you can close this tab</p>
+    </div>
+    <div class="box bad{{if .Error}} show{{end}}" id="errBox">
+      <h3>sign-in failed</h3>
+      <p id="errText">{{.Error}}</p>
+    </div>
+  </main>
+  <script>
+    (function () {
+      const code = document.getElementById("code");
+      if (code) code.addEventListener("click", () => {
+        navigator.clipboard.writeText(code.firstChild.textContent.trim()).then(
+          () => { document.getElementById("codeHint").textContent = "copied"; }, () => {});
+      });
+      if (!{{.Poll}}) return;
+      const status = document.getElementById("status");
+      const timer = setInterval(async () => {
+        try {
+          const s = await (await fetch("/status", { cache: "no-store" })).json();
+          if (!s.done) return;
+          clearInterval(timer);
+          status.textContent = "";
+          const go = document.getElementById("go"); if (go) go.style.display = "none";
+          if (code) code.style.display = "none";
+          if (s.error) {
+            document.getElementById("errText").textContent = s.error;
+            document.getElementById("errBox").classList.add("show");
+          } else {
+            document.getElementById("okBox").classList.add("show");
+          }
+        } catch (_) { clearInterval(timer); status.textContent = "utuimp is no longer waiting. Go back to your terminal."; }
+      }, 1500);
+    })();
+  </script>
+</body>
+</html>{{end}}

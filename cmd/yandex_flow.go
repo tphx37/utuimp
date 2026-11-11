@@ -14,6 +14,7 @@ import (
 	"github.com/tphx37/utuimp/internal/openurl"
 	"github.com/tphx37/utuimp/internal/player/ystream"
 	"github.com/tphx37/utuimp/internal/provider/yandex"
+	"github.com/tphx37/utuimp/internal/signin"
 	"github.com/tphx37/utuimp/internal/tui"
 )
 
@@ -26,8 +27,21 @@ func yandexSignIn(cfg *config.Config, status func(string)) error {
 		return fmt.Errorf("yandex sign-in: %w", err)
 	}
 	status(fmt.Sprintf(i18n.T("Yandex sign-in: open %s and enter the code %s"), dc.VerificationURL, dc.UserCode))
-	_ = openurl.Open(dc.VerificationURL)
+	// The browser gets utuimp's own page with the code and a button to
+	// Yandex's; it says when the sign-in is over. Without it (no free
+	// port), Yandex's page is opened as before.
+	page, finish, perr := signin.ServeWaiting(signin.Page{
+		Service: "Yandex Music", Colors: signin.Yandex,
+		Text:   "Open Yandex's page and enter this code there to confirm the sign-in.",
+		Code:   dc.UserCode,
+		Button: "Open Yandex", ButtonURL: dc.VerificationURL, NewTab: true,
+	})
+	if perr != nil {
+		page, finish = dc.VerificationURL, func(error) {}
+	}
+	_ = openurl.Open(page)
 	tok, err := yandex.WaitForToken(ctx, dc)
+	finish(err)
 	if err != nil {
 		return err
 	}

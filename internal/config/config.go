@@ -109,11 +109,41 @@ type Config struct {
 	// Layout picks the interface: "" for the boxed one, "cover" for the
 	// frameless cover view (the v key toggles it and saves it here).
 	Layout string `json:"layout,omitempty"`
+	// CoverHideLyrics hides the lyrics in the cover view (y), which then
+	// shows the song and its controls beside the cover.
+	CoverHideLyrics bool `json:"cover_hide_lyrics,omitempty"`
+	// VisualizerScene is the visualizer scene last picked with tab
+	// ("tunnel", "terrain", "ribbons" or "orb").
+	VisualizerScene string `json:"visualizer_scene,omitempty"`
+	// VisualizerStrength is how hard the visualizer moves, in percent of
+	// its full swing (nil = 100): less for anyone it makes dizzy.
+	VisualizerStrength *int `json:"visualizer_strength,omitempty"`
+	// VisualizerBrightness is how bright the visualizer's picture is, in
+	// percent (nil = 100).
+	VisualizerBrightness *int `json:"visualizer_brightness,omitempty"`
+	// VisualizerBackground is drawn behind every scene: "" for none,
+	// "sparks" (drifting, as behind the ribbons) or "stars" (standing
+	// still, a steady backdrop for the eye).
+	VisualizerBackground string `json:"visualizer_background,omitempty"`
+	// UIMotion is how lively the interface is: "off", "calm" (a flash on
+	// keys and song changes), "lively" (and the borders move to the beat;
+	// the default) or "wild".
+	UIMotion string `json:"ui_motion,omitempty"`
+	// LibraryDelete allows deleting from the library in utuimp: playlists,
+	// songs from playlists, and likes taken back (songs, saved albums,
+	// followed artists). Off by default.
+	LibraryDelete bool `json:"library_delete,omitempty"`
+	// LibraryEdit allows changing what is in the library: renaming
+	// playlists (off by default). Adding is always allowed.
+	LibraryEdit bool `json:"library_edit,omitempty"`
 	// MusicDir is the local directory to scan for audio files
 	// Supports MP3, FLAC, M4A. Scanned recursively.
 	MusicDir string `json:"music_dir,omitempty"`
 	// DiscordRPC enables Discord Rich Presence (defaults to true).
 	DiscordRPC *bool `json:"discord_rpc,omitempty"`
+	// Intro shows the start screen (the logo over dancing ribbons) while
+	// the services connect (defaults to true).
+	Intro *bool `json:"intro,omitempty"`
 	// DiscordClientID overrides the default Discord application client ID.
 	DiscordClientID string `json:"discord_client_id,omitempty"`
 	// TranslateLang is the language lyrics are translated into (ISO code such
@@ -170,6 +200,48 @@ func (c *Config) DiscordRPCEnabled() bool {
 		return *c.DiscordRPC
 	}
 	return true
+}
+
+// IntroEnabled reports whether the start screen is shown (default true).
+func (c *Config) IntroEnabled() bool {
+	if c.Intro != nil {
+		return *c.Intro
+	}
+	return true
+}
+
+// VizStrength is the visualizer's strength as a factor (1 = full swing).
+func (c *Config) VizStrength() float64 {
+	if c.VisualizerStrength == nil {
+		return 1
+	}
+	return float64(min(200, max(0, *c.VisualizerStrength))) / 100
+}
+
+// VizBrightness is the visualizer's brightness as a factor (1 = as drawn).
+func (c *Config) VizBrightness() float64 {
+	if c.VisualizerBrightness == nil {
+		return 1
+	}
+	return float64(min(150, max(10, *c.VisualizerBrightness))) / 100
+}
+
+// UI motion levels, see UIMotion.
+const (
+	MotionOff    = "off"
+	MotionCalm   = "calm"
+	MotionLively = "lively"
+	MotionWild   = "wild"
+)
+
+// Motion is the interface's animation level; an unknown value is the
+// default.
+func (c *Config) Motion() string {
+	switch c.UIMotion {
+	case MotionOff, MotionCalm, MotionWild:
+		return c.UIMotion
+	}
+	return MotionLively
 }
 
 // SetVolume updates the in-memory volume field. Call Save to persist it.

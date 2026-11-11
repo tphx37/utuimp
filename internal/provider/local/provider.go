@@ -8,8 +8,10 @@ package local
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/dhowden/tag"
 	"github.com/tphx37/utuimp/internal/provider"
+	"github.com/tphx37/utuimp/internal/provider/localstore"
 )
 
 // Provider scans a local directory and exposes tracks via the provider interface.
@@ -29,7 +32,13 @@ type Provider struct {
 	// unreadable counts files with a supported extension that would not open.
 	skipped    map[string]int
 	unreadable int
+
+	// store keeps the playlists made here (nil: none can be made).
+	store *localstore.Store
 }
+
+// SetStore keeps the playlists made in utuimp in st.
+func (p *Provider) SetStore(st *localstore.Store) { p.store = st }
 
 // New creates a Provider and performs the initial directory scan.
 func New(dir string) (*Provider, error) {
@@ -179,8 +188,14 @@ func trackFromFile(path string) (provider.Track, error) {
 	artist := "Unknown Artist"
 	album := "Unknown Album"
 	var genres []string
+	cover := ""
 
 	if err == nil {
+		if pic := m.Picture(); pic != nil && len(pic.Data) > 0 {
+			// The cover stays in the file: the URL only says where it is
+			// (the TUI's artwork loader reads it from the tags when needed).
+			cover = (&url.URL{Scheme: "utuimp-cover", Path: path}).String()
+		}
 		if m.Title() != "" {
 			title = m.Title()
 		}
@@ -196,11 +211,12 @@ func trackFromFile(path string) (provider.Track, error) {
 	}
 
 	return provider.Track{
-		ID:     fmt.Sprintf("local:%s", path),
-		Title:  provider.Clean(title),
-		Artist: provider.Clean(artist),
-		Album:  provider.Clean(album),
-		Genres: provider.CleanAll(genres),
+		ID:         fmt.Sprintf("local:%s", path),
+		Title:      provider.Clean(title),
+		Artist:     provider.Clean(artist),
+		Album:      provider.Clean(album),
+		Genres:     provider.CleanAll(genres),
+		ArtworkURL: cover,
 		// Without a length the time shows 0:00 and the progress line
 		// can't move.
 		Duration: fileDuration(path),
@@ -238,11 +254,34 @@ func (p *Provider) Search(_ context.Context, query string) (*provider.SearchResu
 }
 
 func (p *Provider) GetLibraryPlaylists(_ context.Context) ([]provider.Playlist, error) {
-	return nil, nil
+	if p.store == nil {
+		return nil, nil
+	}
+	var out []provider.Playlist
+	for _, pl := range p.store.Playlists() {
+		out = append(out, provider.Playlist{ID: pl.ID, Name: pl.Name, TrackCount: len(pl.Tracks)})
+	}
+	return out, nil
 }
 
-func (p *Provider) GetPlaylistTracks(_ context.Context, _ string) ([]provider.Track, error) {
-	return nil, nil
+func (p *Provider) GetPlaylistTracks(_ context.Context, id string) ([]provider.Track, error) {
+	if p.store == nil {
+		return nil, nil
+	}
+	pl, ok := p.store.Playlist(id)
+	if !ok {
+		return nil, errors.New("no such playlist")
+	}
+	return pl.Tracks, nil
+}
+
+// track finds a scanned file by ID.
+func (p *Provider) track(id string) (provider.Track, bool) {
+	i := slices.IndexFunc(p.tracks, func(t provider.Track) bool { return t.ID == id })
+	if i < 0 {
+		return provider.Track{}, false
+	}
+	return p.tracks[i], true
 }
 
 func (p *Provider) GetAlbumTracks(_ context.Context, albumID string) ([]provider.Track, error) {
@@ -269,13 +308,56 @@ func (p *Provider) GetArtistAlbums(_ context.Context, _ string) ([]provider.Albu
 	return nil, nil
 }
 
-func (p *Provider) CreatePlaylist(_ context.Context, _ string, _ []string) (provider.Playlist, error) {
-	return provider.Playlist{}, nil
+func (p *Provider) CreatePlaylist(_ context.Context, name string, ids []string) (provider.Playlist, error) {
+	if p.store == nil {
+		return provider.Playlist{}, errors.New("playlists can't be saved here")
+	}
+	var ts []provider.Track
+	for _, id := range ids {
+		if t, ok := p.track(id); ok {
+			ts = append(ts, t)
+		}
+	}
+	pl, err := p.store.CreatePlaylist(name, ts)
+	return provider.Playlist{ID: pl.ID, Name: pl.Name, TrackCount: len(pl.Tracks)}, err
 }
 
 func (p *Provider) LoveSong(_ context.Context, _ string, _ bool) error      { return nil }
 func (p *Provider) GetSongRating(_ context.Context, _ string) (bool, error) { return false, nil }
-func (p *Provider) AddToPlaylist(_ context.Context, _, _ string) error      { return nil }
+
+func (p *Provider) AddToPlaylist(_ context.Context, playlistID, trackID string) error {
+	if p.store == nil {
+		return errors.New("playlists can't be saved here")
+	}
+	t, ok := p.track(trackID)
+	if !ok {
+		return errors.New("no such file")
+	}
+	return p.store.AddToPlaylist(playlistID, t)
+}
+
+func (p *Provider) RemoveFromPlaylist(_ context.Context, playlistID string, index int, t provider.Track) error {
+	if p.store == nil {
+		return errors.New("playlists can't be saved here")
+	}
+	return p.store.RemoveFromPlaylist(playlistID, index, t.ID)
+}
+
+func (p *Provider) RenamePlaylist(_ context.Context, playlistID, name string) error {
+	if p.store == nil {
+		return errors.New("playlists can't be saved here")
+	}
+	return p.store.RenamePlaylist(playlistID, name)
+}
+
+func (p *Provider) DeletePlaylist(_ context.Context, playlistID string) error {
+	if p.store == nil {
+		return errors.New("playlists can't be saved here")
+	}
+	return p.store.DeletePlaylist(playlistID)
+}
+
+var _ provider.PlaylistEditor = (*Provider)(nil)
 
 func (p *Provider) GetRecommendations(_ context.Context) ([]provider.RecommendationGroup, error) {
 	// Group tracks by genre using their metadata tags.

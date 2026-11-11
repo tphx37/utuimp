@@ -18,10 +18,17 @@ import (
 
 	"github.com/tphx37/utuimp/internal/config"
 	"github.com/tphx37/utuimp/internal/openurl"
+	"github.com/tphx37/utuimp/internal/signin"
 )
 
 //go:embed web/login.html
 var loginHTML []byte
+
+// loginTemplate is the sign-in page, with the look all services' pages
+// share (see package signin).
+func loginTemplate() (*template.Template, error) {
+	return signin.Base().New("login").Parse(string(loginHTML))
+}
 
 // stateHeader carries the per-login state on the /callback request. A custom
 // header also forces a CORS preflight, so a page on another origin cannot
@@ -59,7 +66,7 @@ To get one:
 	tokenCh := make(chan string, 1)
 	errCh := make(chan error, 1)
 
-	tmpl, err := template.New("login").Parse(string(loginHTML))
+	tmpl, err := loginTemplate()
 	if err != nil {
 		return fmt.Errorf("parsing login template: %w", err)
 	}
@@ -191,9 +198,10 @@ func buildMux(devToken, state string, tmpl *template.Template, tokenCh chan stri
 		// popup's document.referrer check records the caller origin in
 		// sessionStorage["ac"] for postMessage token delivery (see #182).
 		h.Set("Referrer-Policy", "strict-origin")
-		if err := tmpl.Execute(w, map[string]string{
+		if err := tmpl.ExecuteTemplate(w, "login", map[string]any{
 			"DeveloperToken": devToken,
 			"State":          state,
+			"Colors":         signin.Apple,
 		}); err != nil {
 			http.Error(w, "template error", http.StatusInternalServerError)
 		}

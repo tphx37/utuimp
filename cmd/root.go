@@ -8,12 +8,14 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/spf13/cobra"
 	"github.com/tphx37/utuimp/internal/assets"
 	"github.com/tphx37/utuimp/internal/config"
 	demoPlayer "github.com/tphx37/utuimp/internal/player/demo"
 	demoProvider "github.com/tphx37/utuimp/internal/provider/demo"
 	"github.com/tphx37/utuimp/internal/tui"
+	"github.com/tphx37/utuimp/internal/tui/art"
 	"github.com/tphx37/utuimp/internal/tui/styles"
 )
 
@@ -142,7 +144,16 @@ func runTUI(_ *cobra.Command, _ []string) error {
 	if themeErr != nil && debug {
 		fmt.Fprintf(os.Stderr, "debug: theme: %v (falling back to default)\n", themeErr)
 	}
+	if styles.DetectConsole() {
+		// The Linux console (no desktop): its own palette, glyphs and
+		// colour handling, see styles.ConsoleText.
+		pal, restore := styles.EnterConsole(theme)
+		defer restore()
+		art.SetConsolePalette(pal)
+		theme = styles.ConsoleTheme()
+	}
 	styles.Apply(theme)
+	styles.QueryPalette()
 
 	if musicDir != "" {
 		cfg.MusicDir = musicDir
@@ -169,7 +180,7 @@ func runTUI(_ *cobra.Command, _ []string) error {
 		dp := demoProvider.Provider{}
 		opts.IconPath = iconPath
 		opts.Backend = "Demo mode · built-in fake tracks, no credentials required"
-		prog := tea.NewProgram(tui.New(cfg, dp, p, opts))
+		prog := tea.NewProgram(tui.New(cfg, dp, p, opts), programOptions()...)
 		restoreStderr := captureStderr()
 		_, err = prog.Run()
 		restoreStderr()
@@ -187,4 +198,14 @@ func runTUI(_ *cobra.Command, _ []string) error {
 		initial = "local"
 	}
 	return runServices(cfg, opts, audioBitrateKbps, initial)
+}
+
+// programOptions are the Bubble Tea options every utuimp program uses. On
+// the Linux console the output is held to its 16 colours, so the palette
+// indices console mode draws with reach it as they are.
+func programOptions() []tea.ProgramOption {
+	if styles.Console {
+		return []tea.ProgramOption{tea.WithColorProfile(colorprofile.ANSI)}
+	}
+	return nil
 }

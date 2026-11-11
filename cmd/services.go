@@ -20,6 +20,7 @@ import (
 	localPlayer "github.com/tphx37/utuimp/internal/player/local"
 	"github.com/tphx37/utuimp/internal/player/mux"
 	localProvider "github.com/tphx37/utuimp/internal/provider/local"
+	"github.com/tphx37/utuimp/internal/provider/localstore"
 	"github.com/tphx37/utuimp/internal/tui"
 )
 
@@ -200,7 +201,7 @@ func runServices(cfg *config.Config, opts tui.Options, audioBitrateKbps int, ini
 		_ = cfg.Save(cfgFile)
 	}
 
-	prog := tea.NewProgram(app)
+	prog := tea.NewProgram(app, programOptions()...)
 	app.SetSend(prog.Send)
 
 	debugLog := func(msg string) { prog.Send(tui.DebugLogMsg(msg)) }
@@ -243,6 +244,9 @@ func startLocalEngine(cfg *config.Config, send func(tea.Msg), env *engineEnv, id
 	if err != nil {
 		send(tui.InitErrMsg{Err: fmt.Errorf("local files: %w", err)})
 		return
+	}
+	if st, err := localstore.Open(localstore.DefaultPath("library-local")); err == nil {
+		prov.SetStore(st) // playlists made in utuimp
 	}
 	plyr, err := localPlayer.New(func(msg string) { send(tui.DebugLogMsg(msg)) })
 	if err != nil {

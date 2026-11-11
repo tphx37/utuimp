@@ -12,7 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
+	"github.com/tphx37/utuimp/internal/signin"
 	"io"
 	"net"
 	"net/http"
@@ -76,7 +76,18 @@ func Login(ctx context.Context, app App, open func(string) error) (*Token, error
 		err  error
 	}
 	done := make(chan result, 1)
+	// The page the browser opens first (see package signin): its button
+	// goes to SoundCloud's own page, which comes back to u.Path.
+	var consent string
 	srv := &http.Server{ReadHeaderTimeout: 10 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" && u.Path != "/" {
+			signin.Render(w, signin.Page{
+				Service: "SoundCloud", Colors: signin.SoundCloud,
+				Text:   "Sign in to SoundCloud to play your library in the terminal.",
+				Button: "Continue with SoundCloud", ButtonURL: consent,
+			})
+			return
+		}
 		if r.URL.Path != u.Path {
 			http.NotFound(w, r)
 			return
@@ -91,11 +102,11 @@ func Login(ctx context.Context, app App, open func(string) error) (*Token, error
 		default:
 			res.code = q.Get("code")
 		}
-		msg := "Signed in to SoundCloud. You can close this tab."
+		page := signin.Page{Service: "SoundCloud", Colors: signin.SoundCloud, Done: res.err == nil}
 		if res.err != nil {
-			msg = "SoundCloud sign-in failed: " + res.err.Error()
+			page.Error = res.err.Error()
 		}
-		_, _ = fmt.Fprintf(w, "<!doctype html><meta charset=utf-8><title>utuimp</title><p style=\"font:16px sans-serif;margin:3em\">%s</p>", html.EscapeString(msg))
+		signin.Render(w, page)
 		select {
 		case done <- res:
 		default:
@@ -111,8 +122,9 @@ func Login(ctx context.Context, app App, open func(string) error) (*Token, error
 	auth.Set("code_challenge", challenge)
 	auth.Set("code_challenge_method", "S256")
 	auth.Set("state", state)
+	consent = secureURL + "/authorize?" + auth.Encode()
 	if open != nil {
-		_ = open(secureURL + "/authorize?" + auth.Encode())
+		_ = open("http://" + u.Host + "/")
 	}
 
 	var res result

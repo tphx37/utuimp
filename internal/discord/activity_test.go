@@ -40,8 +40,8 @@ func TestBuildActivity_PlayingTrack(t *testing.T) {
 	if act.Assets.LargeImage != "https://example.com/art/512x512bb.jpg" {
 		t.Errorf("LargeImage = %q, want resolved 512x512 URL", act.Assets.LargeImage)
 	}
-	if act.Assets.SmallImage != "play" || act.Assets.SmallText != "Playing" {
-		t.Errorf("SmallImage/Text = %q/%q, want play/Playing", act.Assets.SmallImage, act.Assets.SmallText)
+	if act.Assets.SmallImage != "" || act.Assets.SmallText != "" {
+		t.Errorf("no play/pause badge wanted, got %q/%q", act.Assets.SmallImage, act.Assets.SmallText)
 	}
 	if act.Timestamps == nil {
 		t.Fatal("expected timestamps for playing track with duration")
@@ -60,20 +60,9 @@ func TestBuildActivity_PausedTrack(t *testing.T) {
 		},
 		Playing: false,
 	}
-
-	act := BuildActivity(st)
-	if act == nil {
-		t.Fatal("expected non-nil activity")
-	}
-
-	if act.Timestamps != nil {
-		t.Errorf("expected nil timestamps for paused track, got %+v", act.Timestamps)
-	}
-	if act.Assets.SmallImage != "pause" || act.Assets.SmallText != "Paused" {
-		t.Errorf("SmallImage/Text = %q/%q, want pause/Paused", act.Assets.SmallImage, act.Assets.SmallText)
-	}
-	if act.Assets.LargeImage != "utuimp_logo" {
-		t.Errorf("LargeImage = %q, want fallback utuimp_logo", act.Assets.LargeImage)
+	// Paused clears the presence rather than freezing it.
+	if act := BuildActivity(st); act != nil {
+		t.Errorf("expected nil activity for a paused track, got %+v", act)
 	}
 }
 

@@ -14,6 +14,12 @@ import (
 // DefaultClientID is the registered Discord Application ID for utuimp.
 const DefaultClientID = "1553056382482129088"
 
+// clearReassert is how long after a pause the cleared presence is sent
+// again. Discord rate-limits SET_ACTIVITY (about 5 per 20s) and can drop
+// an update that comes in a quick play/pause burst; the repeat makes sure
+// the card does not stay up showing the song as playing.
+const clearReassert = 20 * time.Second
+
 // reconnectCooldown is the time to wait before retrying to connect after a failure.
 const reconnectCooldown = 15 * time.Second
 
@@ -96,9 +102,26 @@ func (s *Service) Update(st player.State) {
 		drift = -drift
 	}
 
+	s.send(trackID, st.Playing, currentStart, act, drift)
+}
+
+// reassertClear sends the cleared presence again if the last one sent was
+// a clear (paused or stopped).
+func (s *Service) reassertClear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.lastPlaying || s.client == nil {
+		return
+	}
+	s.send(s.lastTrackID, false, 0, nil, -1)
+}
+
+// send writes act to Discord unless it repeats what was last sent. A
+// negative drift forces the write. Must be called with s.mu held.
+func (s *Service) send(trackID string, playing bool, currentStart int64, act *Activity, drift int64) {
 	// Avoid re-sending identical presence if track and playing status haven't changed
 	// and timestamp hasn't drifted (e.g. from seek or repeat-one loop).
-	if trackID == s.lastTrackID && st.Playing == s.lastPlaying && drift <= 2 && s.client != nil {
+	if trackID == s.lastTrackID && playing == s.lastPlaying && drift >= 0 && drift <= 2 && s.client != nil {
 		return
 	}
 
@@ -132,11 +155,11 @@ func (s *Service) Update(st player.State) {
 	}
 
 	s.lastTrackID = trackID
-	s.lastPlaying = st.Playing
+	s.lastPlaying = playing
 	s.lastStart = currentStart
 
 	if act != nil {
-		s.log(fmt.Sprintf("presence updated: %s — %s (%s)", act.State, act.Details, act.Assets.SmallText))
+		s.log(fmt.Sprintf("presence updated: %s — %s", act.State, act.Details))
 	} else {
 		s.log("presence cleared")
 	}
@@ -224,10 +247,29 @@ func Start(clientID string, p interface{ Subscribe() <-chan player.State }, log 
 		s.SetLogger(log)
 	}
 	go func() {
-		for st := range p.Subscribe() {
-			s.Update(st)
+		ch := p.Subscribe()
+		t := time.NewTimer(clearReassert)
+		t.Stop()
+		playing := false
+		for {
+			select {
+			case st, ok := <-ch:
+				if !ok {
+					t.Stop()
+					_ = s.Close()
+					return
+				}
+				s.Update(st)
+				if st.Playing {
+					t.Stop()
+				} else if playing {
+					t.Reset(clearReassert)
+				}
+				playing = st.Playing
+			case <-t.C:
+				s.reassertClear()
+			}
 		}
-		_ = s.Close()
 	}()
 	return s
 }

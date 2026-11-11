@@ -448,12 +448,24 @@ func (p *Provider) ResetStation(seed string) {
 	p.mu.Unlock()
 }
 
-// TrackStarted tells the wave a track began (it learns from this).
-func (p *Provider) TrackStarted(ctx context.Context, seed, trackID string) {
-	p.stationFeedback(ctx, seed, "trackStarted", trackID, 0)
+// RadioTrackStarted tells the station seeded by seed that a track began
+// playing, so it learns what was listened to.
+func (p *Provider) RadioTrackStarted(ctx context.Context, seed, trackID string) error {
+	return p.stationFeedback(ctx, seed, "trackStarted", trackID, 0)
 }
 
-func (p *Provider) stationFeedback(ctx context.Context, seed, event, trackID string, played time.Duration) {
+// RadioTrackEnded tells the station that a track ended after played:
+// listened to the end (finished), or skipped. A skip teaches the station
+// to send fewer songs like it.
+func (p *Provider) RadioTrackEnded(ctx context.Context, seed, trackID string, played time.Duration, finished bool) error {
+	event := "skip"
+	if finished {
+		event = "trackFinished"
+	}
+	return p.stationFeedback(ctx, seed, event, trackID, played)
+}
+
+func (p *Provider) stationFeedback(ctx context.Context, seed, event, trackID string, played time.Duration) error {
 	key := "track:" + numericID(seed)
 	if IsWave(seed) {
 		key = "user:onyourwave"
@@ -461,9 +473,10 @@ func (p *Provider) stationFeedback(ctx context.Context, seed, event, trackID str
 	p.mu.Lock()
 	st := p.stations[key]
 	p.mu.Unlock()
-	if st != nil {
-		_ = p.c.rotorFeedback(ctx, st.sid, st.batchID, event, trackID, played)
+	if st == nil {
+		return nil // no session (yet): nothing to tell
 	}
+	return p.c.rotorFeedback(ctx, st.sid, st.batchID, event, trackID, played)
 }
 
 func lastN(s []string, n int) []string {
@@ -517,3 +530,97 @@ func (p *Provider) StreamURL(ctx context.Context, id string) (string, string, er
 func (p *Provider) TrackLyrics(ctx context.Context, trackID string, synced bool) (string, error) {
 	return p.c.Lyrics(ctx, trackID, synced)
 }
+
+// ownPlaylist splits a playlist ID of the user's own into uid and kind.
+func (p *Provider) ownPlaylist(playlistID string) (uid, kind string, err error) {
+	uid, kind, ok := strings.Cut(playlistID, ":")
+	if !ok || playlistID == likedPlaylistID || playlistID == waveID {
+		return "", "", errors.New("this playlist can't be changed")
+	}
+	return uid, kind, nil
+}
+
+// RemoveFromPlaylist takes the song out of the playlist: from its place
+// there (looked up again, as the list utuimp shows may be ordered
+// otherwise), with the playlist's current revision.
+func (p *Provider) RemoveFromPlaylist(ctx context.Context, playlistID string, _ int, t provider.Track) error {
+	if playlistID == likedPlaylistID {
+		return p.LoveSong(ctx, t.ID, false)
+	}
+	uid, kind, err := p.ownPlaylist(playlistID)
+	if err != nil {
+		return err
+	}
+	pl, err := p.c.playlist(ctx, uid, kind)
+	if err != nil {
+		return err
+	}
+	want := numericID(t.ID)
+	for i, ts := range pl.Tracks {
+		id := rawID(ts.ID)
+		if ts.Track != nil {
+			id = ts.Track.idString()
+		}
+		if numericID(id) == want {
+			return p.c.deleteTrack(ctx, uid, kind, i, pl.Revision)
+		}
+	}
+	return errors.New("the song is not in this playlist")
+}
+
+func (p *Provider) RenamePlaylist(ctx context.Context, playlistID, name string) error {
+	uid, kind, err := p.ownPlaylist(playlistID)
+	if err != nil {
+		return err
+	}
+	return p.c.renamePlaylist(ctx, uid, kind, name)
+}
+
+func (p *Provider) DeletePlaylist(ctx context.Context, playlistID string) error {
+	uid, kind, err := p.ownPlaylist(playlistID)
+	if err != nil {
+		return err
+	}
+	return p.c.deletePlaylist(ctx, uid, kind)
+}
+
+var _ provider.PlaylistEditor = (*Provider)(nil)
+
+// GetSavedAlbums returns the liked albums.
+func (p *Provider) GetSavedAlbums(ctx context.Context) ([]provider.Album, error) {
+	as, err := p.c.likedAlbums(ctx, p.uid)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]provider.Album, 0, len(as))
+	for _, a := range as {
+		out = append(out, toAlbum(a))
+	}
+	return out, nil
+}
+
+// GetSavedArtists returns the liked artists.
+func (p *Provider) GetSavedArtists(ctx context.Context) ([]provider.Artist, error) {
+	as, err := p.c.likedArtists(ctx, p.uid)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]provider.Artist, 0, len(as))
+	for _, a := range as {
+		out = append(out, provider.Artist{ID: a.ID.String(), Name: provider.Clean(a.Name)})
+	}
+	return out, nil
+}
+
+func (p *Provider) SaveAlbum(ctx context.Context, a provider.Album, save bool) error {
+	return p.c.setLikeOf(ctx, p.uid, "album", a.ID, save)
+}
+
+func (p *Provider) FollowArtist(ctx context.Context, a provider.Artist, follow bool) error {
+	return p.c.setLikeOf(ctx, p.uid, "artist", a.ID, follow)
+}
+
+var (
+	_ provider.LibraryCollections = (*Provider)(nil)
+	_ provider.CollectionSaver    = (*Provider)(nil)
+)

@@ -194,3 +194,35 @@ type SongDetails struct {
 type SongDetailer interface {
 	GetSongDetails(ctx context.Context, t Track) (SongDetails, error)
 }
+
+// PlaylistEditor is implemented by providers whose playlists can be edited
+// beyond adding songs: songs taken out, playlists renamed and deleted.
+type PlaylistEditor interface {
+	// RemoveFromPlaylist takes the song t out of the playlist. index is
+	// where it stands in the list GetPlaylistTracks returned (-1: unknown);
+	// a provider that removes by position checks that t is still there.
+	RemoveFromPlaylist(ctx context.Context, playlistID string, index int, t Track) error
+	RenamePlaylist(ctx context.Context, playlistID, name string) error
+	DeletePlaylist(ctx context.Context, playlistID string) error
+}
+
+// LibraryAdder is implemented by providers with a library of songs apart
+// from the favourites (Apple Music): AddToLibrary puts t in it.
+type LibraryAdder interface {
+	AddToLibrary(ctx context.Context, t Track) error
+}
+
+// LibraryCollections is implemented by providers whose library keeps albums
+// and artists of their own (saved albums, followed artists), apart from the
+// liked songs. The library shows those instead of grouping the liked songs.
+type LibraryCollections interface {
+	GetSavedAlbums(ctx context.Context) ([]Album, error)
+	GetSavedArtists(ctx context.Context) ([]Artist, error)
+}
+
+// CollectionSaver saves albums to the library and follows artists (false:
+// takes them out again).
+type CollectionSaver interface {
+	SaveAlbum(ctx context.Context, a Album, save bool) error
+	FollowArtist(ctx context.Context, a Artist, follow bool) error
+}

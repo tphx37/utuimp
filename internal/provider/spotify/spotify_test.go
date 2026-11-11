@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"html"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -125,7 +127,21 @@ func TestLoginPKCE(t *testing.T) {
 	defer func() { accountsURL = "https://accounts.spotify.com"; redirectURI = RedirectURI }()
 
 	// The "browser": follow the consent URL's redirect back with a code.
-	open := func(consent string) error {
+	open := func(start string) error {
+		// utuimp's own page first; its button is the consent URL.
+		resp, err := http.Get(start)
+		if err != nil {
+			t.Errorf("start page: %v", err)
+			return nil
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		m := regexp.MustCompile(`id="go" href="([^"]+)"`).FindSubmatch(body)
+		if m == nil || !strings.Contains(string(body), "Continue with Spotify") {
+			t.Errorf("start page has no button: %s", body)
+			return nil
+		}
+		consent := html.UnescapeString(string(m[1]))
 		u, _ := url.Parse(consent)
 		q := u.Query()
 		if q.Get("code_challenge_method") != "S256" || q.Get("code_challenge") == "" || !strings.Contains(q.Get("scope"), "user-modify-playback-state") {

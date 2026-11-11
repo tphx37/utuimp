@@ -11,7 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
+	"github.com/tphx37/utuimp/internal/signin"
 	"io"
 	"net"
 	"net/http"
@@ -104,7 +104,18 @@ func Login(ctx context.Context, clientID string, open func(string) error) (*Toke
 		err  error
 	}
 	done := make(chan result, 1)
+	// The page the browser opens first (see package signin): its button
+	// goes to Spotify's own page, which comes back to u.Path.
+	var consent string
 	srv := &http.Server{ReadHeaderTimeout: 10 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" && u.Path != "/" {
+			signin.Render(w, signin.Page{
+				Service: "Spotify", Colors: signin.Spotify,
+				Text:   "Sign in to Spotify to play your library in the terminal.",
+				Button: "Continue with Spotify", ButtonURL: consent,
+			})
+			return
+		}
 		if r.URL.Path != u.Path {
 			http.NotFound(w, r)
 			return
@@ -119,11 +130,11 @@ func Login(ctx context.Context, clientID string, open func(string) error) (*Toke
 		default:
 			res.code = q.Get("code")
 		}
-		msg := "Signed in to Spotify. You can close this tab."
+		page := signin.Page{Service: "Spotify", Colors: signin.Spotify, Done: res.err == nil}
 		if res.err != nil {
-			msg = "Spotify sign-in failed: " + res.err.Error()
+			page.Error = res.err.Error()
 		}
-		_, _ = fmt.Fprintf(w, "<!doctype html><meta charset=utf-8><title>utuimp</title><p style=\"font:16px sans-serif;margin:3em\">%s</p>", html.EscapeString(msg))
+		signin.Render(w, page)
 		select {
 		case done <- res:
 		default:
@@ -140,8 +151,9 @@ func Login(ctx context.Context, clientID string, open func(string) error) (*Toke
 	auth.Set("code_challenge", challenge)
 	auth.Set("state", state)
 	auth.Set("scope", strings.Join(scopesFor(clientID), " "))
+	consent = accountsURL + "/authorize?" + auth.Encode()
 	if open != nil {
-		_ = open(accountsURL + "/authorize?" + auth.Encode())
+		_ = open("http://" + u.Host + "/")
 	}
 
 	var res result

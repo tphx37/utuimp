@@ -127,7 +127,7 @@ func TestLoginHandler_ServesHTML(t *testing.T) {
 }
 
 func TestLoginHTML_UsesDirectAppleAuthorizePopupWithoutMusicKitCDN(t *testing.T) {
-	tmpl, err := template.New("login").Parse(string(loginHTML))
+	tmpl, err := loginTemplate()
 	if err != nil {
 		t.Fatalf("parsing loginHTML: %v", err)
 	}

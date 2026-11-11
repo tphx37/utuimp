@@ -493,3 +493,131 @@ func (p *Provider) ParseTrack(raw []byte) (provider.Track, error) {
 	}
 	return p.toTrack(st, nil), nil
 }
+
+// RemoveFromPlaylist takes the song out of the playlist (Spotify removes
+// every copy of it there).
+func (p *Provider) RemoveFromPlaylist(ctx context.Context, playlistID string, _ int, t provider.Track) error {
+	if playlistID == likedID {
+		return p.LoveSong(ctx, t.ID, false)
+	}
+	refs := []map[string]string{{"uri": uris([]string{t.ID})[0]}}
+	path := "/playlists/" + url.PathEscape(playlistID)
+	// /items replaced /tracks in February 2026; the old path is tried when
+	// the new one is refused.
+	err := p.c.call(ctx, http.MethodDelete, path+"/items", nil, map[string]any{"items": refs, "tracks": refs}, nil)
+	if err != nil {
+		if err2 := p.c.call(ctx, http.MethodDelete, path+"/tracks", nil, map[string]any{"tracks": refs}, nil); err2 == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+func (p *Provider) RenamePlaylist(ctx context.Context, playlistID, name string) error {
+	if playlistID == likedID {
+		return errors.New("this playlist can't be renamed")
+	}
+	return p.c.call(ctx, http.MethodPut, "/playlists/"+url.PathEscape(playlistID), nil, map[string]any{"name": name}, nil)
+}
+
+// DeletePlaylist unfollows the playlist, which is how Spotify deletes one.
+func (p *Provider) DeletePlaylist(ctx context.Context, playlistID string) error {
+	if playlistID == likedID {
+		return errors.New("this playlist can't be deleted")
+	}
+	return p.c.call(ctx, http.MethodDelete, "/playlists/"+url.PathEscape(playlistID)+"/followers", nil, nil, nil)
+}
+
+var _ provider.PlaylistEditor = (*Provider)(nil)
+
+// GetSavedAlbums returns the albums saved to the library, most recent first.
+func (p *Provider) GetSavedAlbums(ctx context.Context) ([]provider.Album, error) {
+	q := url.Values{}
+	q.Set("limit", "50")
+	items, err := all[struct {
+		Album spAlbum `json:"album"`
+	}](ctx, p.c, "/me/albums", q, 2000)
+	if err != nil && len(items) == 0 {
+		return nil, err
+	}
+	out := make([]provider.Album, 0, len(items))
+	for _, it := range items {
+		if it.Album.ID != "" {
+			out = append(out, toAlbum(it.Album))
+		}
+	}
+	return out, nil
+}
+
+// GetSavedArtists returns the followed artists.
+func (p *Provider) GetSavedArtists(ctx context.Context) ([]provider.Artist, error) {
+	q := url.Values{}
+	q.Set("type", "artist")
+	q.Set("limit", "50")
+	var out []provider.Artist
+	path := "/me/following"
+	for range 40 {
+		var res struct {
+			Artists page[spArtist] `json:"artists"`
+		}
+		if err := p.c.get(ctx, path, q, &res); err != nil {
+			if len(out) > 0 {
+				return out, nil
+			}
+			return nil, err
+		}
+		for _, a := range res.Artists.Items {
+			out = append(out, provider.Artist{ID: a.ID, Name: provider.Clean(a.Name)})
+		}
+		if res.Artists.Next == "" {
+			break
+		}
+		path, q = res.Artists.Next, nil
+	}
+	return out, nil
+}
+
+// SaveAlbum saves the album to the library or takes it out: through
+// /me/library (February 2026), else the older /me/albums.
+func (p *Provider) SaveAlbum(ctx context.Context, a provider.Album, save bool) error {
+	method := http.MethodPut
+	if !save {
+		method = http.MethodDelete
+	}
+	q := url.Values{}
+	q.Set("uris", "spotify:album:"+a.ID)
+	err := p.c.call(ctx, method, "/me/library", q, nil, nil)
+	if err != nil {
+		old := url.Values{}
+		old.Set("ids", a.ID)
+		if p.c.call(ctx, method, "/me/albums", old, nil, nil) == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+// FollowArtist follows the artist or stops.
+func (p *Provider) FollowArtist(ctx context.Context, a provider.Artist, follow bool) error {
+	method := http.MethodPut
+	if !follow {
+		method = http.MethodDelete
+	}
+	q := url.Values{}
+	q.Set("uris", "spotify:artist:"+a.ID)
+	err := p.c.call(ctx, method, "/me/library", q, nil, nil)
+	if err != nil {
+		old := url.Values{}
+		old.Set("type", "artist")
+		old.Set("ids", a.ID)
+		if p.c.call(ctx, method, "/me/following", old, nil, nil) == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+var (
+	_ provider.LibraryCollections = (*Provider)(nil)
+	_ provider.CollectionSaver    = (*Provider)(nil)
+)

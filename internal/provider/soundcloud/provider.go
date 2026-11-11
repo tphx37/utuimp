@@ -2,9 +2,12 @@ package soundcloud
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -495,3 +498,161 @@ var (
 	_ provider.Provider     = (*Provider)(nil)
 	_ provider.SongDetailer = (*Provider)(nil)
 )
+
+// RemoveFromPlaylist writes the playlist back without the song (the API
+// sets a playlist's whole track list).
+func (p *Provider) RemoveFromPlaylist(ctx context.Context, playlistID string, index int, t provider.Track) error {
+	if playlistID == likesID {
+		return p.LoveSong(ctx, t.ID, false)
+	}
+	ts, err := all[scTrack](ctx, p.c, "/playlists/"+playlistID+"/tracks", nil, 5000)
+	if err != nil {
+		return err
+	}
+	ids := make([]string, 0, len(ts))
+	for _, x := range ts {
+		ids = append(ids, x.urn())
+	}
+	at := -1
+	if index >= 0 && index < len(ids) && ids[index] == t.ID {
+		at = index
+	} else {
+		at = slices.Index(ids, t.ID)
+	}
+	if at < 0 {
+		return errors.New("the song is not in this playlist")
+	}
+	ids = slices.Delete(ids, at, at+1)
+	return p.c.call(ctx, http.MethodPut, "/playlists/"+playlistID, nil,
+		map[string]any{"playlist": map[string]any{"tracks": trackRefs(ids)}}, nil)
+}
+
+func (p *Provider) RenamePlaylist(ctx context.Context, playlistID, name string) error {
+	if playlistID == likesID {
+		return errors.New("this playlist can't be renamed")
+	}
+	return p.c.call(ctx, http.MethodPut, "/playlists/"+playlistID, nil,
+		map[string]any{"playlist": map[string]any{"title": name}}, nil)
+}
+
+func (p *Provider) DeletePlaylist(ctx context.Context, playlistID string) error {
+	if playlistID == likesID {
+		return errors.New("this playlist can't be deleted")
+	}
+	return p.c.call(ctx, http.MethodDelete, "/playlists/"+playlistID, nil, nil, nil)
+}
+
+var _ provider.PlaylistEditor = (*Provider)(nil)
+
+// GetSavedAlbums returns the liked albums (liked sets that are albums,
+// EPs, singles or compilations).
+func (p *Provider) GetSavedAlbums(ctx context.Context) ([]provider.Album, error) {
+	q := url.Values{}
+	q.Set("limit", "50")
+	q.Set("show_tracks", "false")
+	pls, err := all[scPlaylist](ctx, p.c, "/me/likes/playlists", q, 1000)
+	if err != nil && len(pls) == 0 {
+		return nil, err
+	}
+	var out []provider.Album
+	for _, pl := range pls {
+		if pl.isAlbum() {
+			out = append(out, toAlbum(pl))
+		}
+	}
+	return out, nil
+}
+
+// GetSavedArtists returns the users the user follows.
+func (p *Provider) GetSavedArtists(ctx context.Context) ([]provider.Artist, error) {
+	q := url.Values{}
+	q.Set("limit", "200")
+	us, err := all[scUser](ctx, p.c, "/me/followings", q, 2000)
+	if err != nil && len(us) == 0 {
+		return nil, err
+	}
+	out := make([]provider.Artist, 0, len(us))
+	for _, u := range us {
+		if u.urn() != "" {
+			out = append(out, provider.Artist{ID: u.urn(), Name: provider.Clean(u.Username)})
+		}
+	}
+	return out, nil
+}
+
+// SaveAlbum likes or unlikes the album (a set).
+func (p *Provider) SaveAlbum(ctx context.Context, a provider.Album, save bool) error {
+	method := http.MethodPost
+	if !save {
+		method = http.MethodDelete
+	}
+	return p.c.call(ctx, method, "/likes/playlists/"+a.ID, nil, nil, nil)
+}
+
+// FollowArtist follows or unfollows the user.
+func (p *Provider) FollowArtist(ctx context.Context, a provider.Artist, follow bool) error {
+	method := http.MethodPut
+	if !follow {
+		method = http.MethodDelete
+	}
+	return p.c.call(ctx, method, "/me/followings/"+a.ID, nil, nil, nil)
+}
+
+var (
+	_ provider.LibraryCollections = (*Provider)(nil)
+	_ provider.CollectionSaver    = (*Provider)(nil)
+)
+
+// ResolveLink implements provider.LinkResolver: the API knows tracks,
+// sets and users by number, links name them by permalink.
+func (p *Provider) ResolveLink(ctx context.Context, l provider.Link) (*provider.SearchResult, error) {
+	page := l.URL
+	if !strings.HasPrefix(l.ID, "http") {
+		page = pageURL(l.ID)
+	}
+	q := url.Values{}
+	q.Set("url", page)
+	var raw json.RawMessage
+	if err := p.c.get(ctx, "/resolve", q, &raw); err != nil {
+		return nil, err
+	}
+	var head struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(raw, &head); err != nil {
+		return nil, err
+	}
+	switch head.Kind {
+	case "track":
+		var t scTrack
+		if err := json.Unmarshal(raw, &t); err != nil {
+			return nil, err
+		}
+		if !t.playable() {
+			return nil, errors.New(i18n.T("this track can't be played (SoundCloud Go+ or blocked)"))
+		}
+		return &provider.SearchResult{Tracks: []provider.Track{p.toTrack(t)}}, nil
+	case "playlist":
+		var pl scPlaylist
+		if err := json.Unmarshal(raw, &pl); err != nil {
+			return nil, err
+		}
+		ts, err := p.GetPlaylistTracks(ctx, pl.urn())
+		if err != nil {
+			return nil, err
+		}
+		if pl.isAlbum() {
+			return &provider.SearchResult{Albums: []provider.Album{toAlbum(pl)}, Tracks: ts}, nil
+		}
+		return &provider.SearchResult{Playlists: []provider.Playlist{toPlaylist(pl)}, Tracks: ts}, nil
+	case "user":
+		var u scUser
+		if err := json.Unmarshal(raw, &u); err != nil {
+			return nil, err
+		}
+		return &provider.SearchResult{Artists: []provider.Artist{{ID: u.urn(), Name: provider.Clean(u.Username)}}}, nil
+	}
+	return nil, fmt.Errorf("soundcloud: unsupported link (%s)", head.Kind)
+}
+
+var _ provider.LinkResolver = (*Provider)(nil)

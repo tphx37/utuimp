@@ -26,8 +26,10 @@ type Playlist struct {
 }
 
 type data struct {
-	Favorites []provider.Track `json:"favorites"`
-	Playlists []Playlist       `json:"playlists"`
+	Favorites []provider.Track  `json:"favorites"`
+	Playlists []Playlist        `json:"playlists"`
+	Albums    []provider.Album  `json:"albums,omitempty"`
+	Artists   []provider.Artist `json:"artists,omitempty"`
 }
 
 // Store is a JSON file of favourites and playlists. It is safe for
@@ -149,4 +151,90 @@ func (s *Store) AddToPlaylist(id string, t provider.Track) error {
 		}
 	}
 	return errors.New("no such playlist")
+}
+
+// RemoveFromPlaylist takes the song with trackID out of the playlist with
+// id: the one at index when it is that song, else its first appearance.
+func (s *Store) RemoveFromPlaylist(id string, index int, trackID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.d.Playlists {
+		if s.d.Playlists[i].ID != id {
+			continue
+		}
+		ts := s.d.Playlists[i].Tracks
+		at := -1
+		if index >= 0 && index < len(ts) && ts[index].ID == trackID {
+			at = index
+		} else {
+			at = slices.IndexFunc(ts, func(t provider.Track) bool { return t.ID == trackID })
+		}
+		if at < 0 {
+			return errors.New("the song is not in this playlist")
+		}
+		s.d.Playlists[i].Tracks = slices.Delete(ts, at, at+1)
+		return s.save()
+	}
+	return errors.New("no such playlist")
+}
+
+// RenamePlaylist renames the playlist with id.
+func (s *Store) RenamePlaylist(id, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.d.Playlists {
+		if s.d.Playlists[i].ID == id {
+			s.d.Playlists[i].Name = name
+			return s.save()
+		}
+	}
+	return errors.New("no such playlist")
+}
+
+// DeletePlaylist deletes the playlist with id.
+func (s *Store) DeletePlaylist(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := len(s.d.Playlists)
+	s.d.Playlists = slices.DeleteFunc(s.d.Playlists, func(p Playlist) bool { return p.ID == id })
+	if len(s.d.Playlists) == n {
+		return errors.New("no such playlist")
+	}
+	return s.save()
+}
+
+// SavedAlbums returns the saved albums, most recent first.
+func (s *Store) SavedAlbums() []provider.Album {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.d.Albums)
+}
+
+// SavedArtists returns the followed artists, most recent first.
+func (s *Store) SavedArtists() []provider.Artist {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.d.Artists)
+}
+
+// SetAlbumSaved saves a (on top) or takes it out.
+func (s *Store) SetAlbumSaved(a provider.Album, on bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.d.Albums = slices.DeleteFunc(s.d.Albums, func(x provider.Album) bool { return x.ID == a.ID })
+	if on {
+		s.d.Albums = append([]provider.Album{a}, s.d.Albums...)
+	}
+	return s.save()
+}
+
+// SetArtistFollowed follows a (on top) or stops following.
+func (s *Store) SetArtistFollowed(a provider.Artist, on bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.d.Artists = slices.DeleteFunc(s.d.Artists, func(x provider.Artist) bool { return x.ID == a.ID })
+	if on {
+		s.d.Artists = append([]provider.Artist{a}, s.d.Artists...)
+	}
+	return s.save()
 }

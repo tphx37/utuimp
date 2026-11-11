@@ -184,3 +184,70 @@ func TestStationSeedIsTheBareTrackID(t *testing.T) {
 		t.Errorf("seeds = %v, want [track:558818]", seeds)
 	}
 }
+
+// The station hears what happens to its songs: started, then finished or
+// skipped (with how long it played), on the session it handed them out in.
+func TestRadioFeedbackEvents(t *testing.T) {
+	type ev struct {
+		Type    string  `json:"type"`
+		TrackID string  `json:"trackId"`
+		Played  float64 `json:"totalPlayedSeconds"`
+	}
+	var got []ev
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/rotor/session/new":
+			_, _ = w.Write([]byte(`{"result":{"radioSessionId":"s1","batchId":"b1","sequence":[{"track":` + trackJSON + `}]}}`))
+		case strings.HasSuffix(r.URL.Path, "/feedback"):
+			var body struct {
+				Event   ev     `json:"event"`
+				BatchID string `json:"batchId"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body.BatchID != "b1" {
+				t.Errorf("batchId = %q, want b1", body.BatchID)
+			}
+			paths = append(paths, r.URL.Path)
+			got = append(got, body.Event)
+			_, _ = w.Write([]byte(`{"result":"ok"}`))
+		default:
+			_, _ = w.Write([]byte(`{"result":"ok"}`))
+		}
+	}))
+	defer srv.Close()
+	c := NewClient("tok")
+	c.base = srv.URL
+	p := New(c, "42")
+	ctx := context.Background()
+
+	// No session yet: nothing to tell, and no error.
+	if err := p.RadioTrackStarted(ctx, waveID, "1:2"); err != nil || len(got) != 0 {
+		t.Fatalf("before a session: err=%v events=%v", err, got)
+	}
+	if _, err := p.GetStationTracks(ctx, waveID); err != nil {
+		t.Fatal(err)
+	}
+	got, paths = nil, nil // radioStarted
+	if err := p.RadioTrackStarted(ctx, waveID, "558818:59874"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.RadioTrackEnded(ctx, waveID, "558818:59874", 42*time.Second, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.RadioTrackEnded(ctx, waveID, "558818:59874", 230*time.Second, true); err != nil {
+		t.Fatal(err)
+	}
+	want := []ev{{"trackStarted", "558818:59874", 0}, {"skip", "558818:59874", 42}, {"trackFinished", "558818:59874", 230}}
+	if len(got) != len(want) {
+		t.Fatalf("events = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("event %d = %+v, want %+v", i, got[i], want[i])
+		}
+		if paths[i] != "/rotor/session/s1/feedback" {
+			t.Errorf("event %d sent to %s", i, paths[i])
+		}
+	}
+}

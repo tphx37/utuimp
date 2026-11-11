@@ -171,3 +171,17 @@ func (a *AppleProvider) findArtist(ctx context.Context, name string) (provider.A
 	}
 	return provider.Artist{}, fmt.Errorf("artist %q not found", name)
 }
+
+// Lookup implements provider.TrackLookup for a catalog song ID.
+func (a *AppleProvider) Lookup(ctx context.Context, id string) (provider.Track, error) {
+	ts, err := a.GetCatalogTracks(ctx, []string{id})
+	if err != nil {
+		return provider.Track{ID: id}, err
+	}
+	if len(ts) == 0 {
+		return provider.Track{ID: id}, errors.New("song not found")
+	}
+	return ts[0], nil
+}
+
+var _ provider.TrackLookup = (*AppleProvider)(nil)

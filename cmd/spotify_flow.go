@@ -140,6 +140,10 @@ func startSpotifyEngine(cfg *config.Config, send func(tea.Msg), env *engineEnv, 
 			break
 		}
 		plyr.SetDevice(id)
+		if out := ls.Output(); out != nil {
+			plyr.SetOutput(out)
+			plyr.FollowEvents(ls.Events())
+		}
 		backend += " · librespot"
 	}
 	env.mux.Set(idx, plyr)

@@ -2,6 +2,7 @@ package local_test
 
 import (
 	"context"
+	"github.com/tphx37/utuimp/internal/provider/localstore"
 	"os"
 	"path/filepath"
 	"strings"
@@ -170,14 +171,52 @@ func TestNew_InvalidDir(t *testing.T) {
 
 // --- CreatePlaylist ---
 
-func TestProvider_CreatePlaylist_ReturnsEmptyPlaylist(t *testing.T) {
+func TestProvider_CreatePlaylist_NeedsAStore(t *testing.T) {
 	p := newTestProvider(t)
-	pl, err := p.CreatePlaylist(context.Background(), "test", []string{})
-	if err != nil {
-		t.Fatalf("CreatePlaylist: %v", err)
+	if _, err := p.CreatePlaylist(context.Background(), "test", nil); err == nil {
+		t.Error("without a store a playlist can't be saved, and must say so")
 	}
-	if pl.Name != "" && pl.ID != "" {
-		t.Log("CreatePlaylist returned non-empty playlist (stub)")
+}
+
+// Playlists of local files are kept in the store: made, filled, edited.
+func TestProvider_PlaylistsInStore(t *testing.T) {
+	ctx := context.Background()
+	p := newTestProvider(t)
+	st, err := localstore.Open(filepath.Join(t.TempDir(), "pl.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.SetStore(st)
+	tracks, _ := p.GetLibraryTracks(ctx)
+	if len(tracks) == 0 {
+		t.Skip("no test tracks")
+	}
+	pl, err := p.CreatePlaylist(ctx, "Mine", []string{tracks[0].ID})
+	if err != nil || pl.ID == "" {
+		t.Fatalf("create: %+v %v", pl, err)
+	}
+	if err := p.AddToPlaylist(ctx, pl.ID, tracks[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := p.GetPlaylistTracks(ctx, pl.ID)
+	if len(got) != 2 {
+		t.Fatalf("tracks = %d, want 2", len(got))
+	}
+	if err := p.RemoveFromPlaylist(ctx, pl.ID, 1, got[1]); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.RenamePlaylist(ctx, pl.ID, "Ours"); err != nil {
+		t.Fatal(err)
+	}
+	pls, _ := p.GetLibraryPlaylists(ctx)
+	if len(pls) != 1 || pls[0].Name != "Ours" || pls[0].TrackCount != 1 {
+		t.Fatalf("playlists = %+v", pls)
+	}
+	if err := p.DeletePlaylist(ctx, pl.ID); err != nil {
+		t.Fatal(err)
+	}
+	if pls, _ := p.GetLibraryPlaylists(ctx); len(pls) != 0 {
+		t.Fatalf("after delete: %+v", pls)
 	}
 }
 

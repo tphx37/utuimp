@@ -1,5 +1,7 @@
 # Roadmap
 
+[← docs](README.md)
+
 This document tracks planned features and integrations for utuimp.  
 Items are roughly ordered by expected implementation complexity.
 
@@ -7,26 +9,34 @@ Items are roughly ordered by expected implementation complexity.
 
 ## Done
 
-- **Local files** — MP3, FLAC, M4A from your music folder (2.1)
-- **Yandex Music** — search, library, My Wave, synced lyrics (2.1)
-- **Spotify** — Web API library and search, playback through librespot
-- **YouTube Music** — through yt-dlp and ffmpeg (2.2)
-- **SoundCloud** — through yt-dlp, or the official API with your own app (2.2)
-- **Cover view** — frameless fullscreen layout with fading lyrics (2.2)
+- **Local files**: MP3, FLAC, M4A from your music folder (2.1)
+- **Yandex Music**: search, library, My Wave, synced lyrics (2.1)
+- **Spotify**: Web API library and search, playback through librespot
+- **YouTube Music**: through yt-dlp and ffmpeg (2.2)
+- **SoundCloud**: through yt-dlp, or the official API with your own app (2.2)
+- **Cover view**: frameless fullscreen layout with fading lyrics (2.2)
 - **One volume for all services** (2.2)
-- **Demo mode** — `--demo` for credential-free UI development
+- **Demo mode**: `--demo` for credential-free UI development
 
 ---
 
 ## In progress
 
-- **MPRIS icon** — resolve the GIO / GTK icon-theme lookup for the MPRIS notification
-- **YouTube Music search metadata** — search results come without artist and
+- **MPRIS icon**: resolve the GIO / GTK icon-theme lookup for the MPRIS notification
+- **YouTube Music search metadata**: search results come without artist and
   length until a song plays (yt-dlp lists them by title only)
 
 ---
 
 ## Planned
+
+### Discord bot
+
+Discord music bot that will play utuimp's output into the voice chat for every service.
+
+### Local files player QoL fixes
+
+Refresh, point to multiple folder, maybe something else.
 
 ### Larger lyrics in kitty
 
@@ -59,8 +69,8 @@ Full-track streaming via Tidal's API.
 
 ## Ideas / not yet scoped
 
-- **mpd protocol bridge** — let `ncmpcpp` and other mpd clients control utuimp
-- **Keyboard macro recorder** — record and replay complex key sequences
+- **mpd protocol bridge**: let `ncmpcpp` and other mpd clients control utuimp
+- **Keyboard macro recorder**: record and replay complex key sequences
 
 ---
 

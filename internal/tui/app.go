@@ -59,6 +59,8 @@ func NewApp(services []*Service, active int) *App {
 	for i, s := range services {
 		if s.Model != nil {
 			s.Model.background = i != a.active
+			s.Model.hostRows = 1 // the tab bar
+			s.Model.serviceKey = s.Key
 		}
 	}
 	return a
@@ -163,6 +165,9 @@ func (a *App) switchTo(idx int) tea.Cmd {
 	if a.OnSwitch != nil {
 		a.OnSwitch(idx)
 	}
+	if m := a.services[idx].Model; m != nil {
+		return tea.Batch(a.start(idx), wrap(idx, m.fxKick()))
+	}
 	return a.start(idx)
 }
 
@@ -171,6 +176,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionMsg:
 		if m.idx < 0 || m.idx >= len(a.services) {
 			return a, nil
+		}
+		if r, ok := m.msg.(linkRouteMsg); ok {
+			return a, a.routeLink(m.idx, r)
 		}
 		cmd := a.forward(m.idx, m.msg)
 		if v, ok := m.msg.(saveVolumeMsg); ok {
@@ -211,6 +219,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, a.forward(a.active, msg)
 }
 
+// routeLink opens a link in the tab of its service.
+func (a *App) routeLink(from int, r linkRouteMsg) tea.Cmd {
+	for i, s := range a.services {
+		if s.Key == r.link.Service && s.Model != nil {
+			return tea.Batch(a.switchTo(i), a.forward(i, openLinkMsg(r)))
+		}
+	}
+	return a.forward(from, linkUnavailableMsg{service: r.link.Service})
+}
+
 // shareVolume passes a volume change made in tab from to every other
 // running tab, so all players play at one volume.
 func (a *App) shareVolume(from int, v saveVolumeMsg) tea.Cmd {
@@ -233,8 +251,12 @@ func (a *App) tabBar() string {
 		if s.Hotkey != "" {
 			label = " " + s.Hotkey + " " + s.Name + " "
 		}
+		// The note's place is always kept: a tab doesn't change size
+		// (and push the others) when its music starts or stops.
 		if m := s.Model; m != nil && m.playerState.Playing {
 			label += "♪ "
+		} else {
+			label += "  "
 		}
 		st := lipgloss.NewStyle().Foreground(styles.ColorMuted)
 		if i == a.active {
@@ -264,7 +286,9 @@ func (a *App) View() tea.View {
 		return v
 	}
 	inner := s.Model.View()
-	if a.width == 0 {
+	if a.width == 0 || s.Model.vizOpen() {
+		// The visualizer is the whole screen: no tabs over it (and no
+		// switching them, see canSwitchByKey).
 		return inner
 	}
 	v := tea.NewView(a.tabBar() + "\n" + inner.Content)

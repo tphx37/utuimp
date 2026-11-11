@@ -2,8 +2,10 @@ package views
 
 import (
 	"fmt"
-	"github.com/tphx37/utuimp/internal/i18n"
+	"image/color"
 	"strings"
+
+	"github.com/tphx37/utuimp/internal/i18n"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -45,15 +47,19 @@ func (a *AboutModel) View() string {
 		muted.Render(i18n.T("universal terminal user interface media player")),
 		muted.Render(fmt.Sprintf(i18n.T("version %s"), version.Version)),
 		"",
-		normal.Render(i18n.T("Keyboard-first.")),
+		normal.Render(i18n.T("keyboard first")),
 		"",
 		secondary.Render(i18n.T("made by tphx37")),
-		muted.Render(i18n.T("based on vibez by Simone Pelosi")),
+		muted.Render(i18n.T("based on vibez by simonepelosi")),
 		lipgloss.NewStyle().Foreground(styles.ColorSubtle).Underline(true).Render("https://github.com/tphx37/utuimp"),
 	}
 
 	if a.status != "" {
 		contentLines = append(contentLines, "", styles.ControlActive.Render(a.status))
+	}
+	// The icon on top, when there is room for it.
+	if logo := aboutLogoLines(); a.height-3 >= len(contentLines)+len(logo)+1 {
+		contentLines = append(append(logo, ""), contentLines...)
 	}
 
 	neededHeight := len(contentLines)
@@ -68,6 +74,33 @@ func (a *AboutModel) View() string {
 	}
 
 	return sb.String()
+}
+
+// aboutLogoLines draws the small icon (aboutLogo) in half-block cells: the
+// upper pixel the character's colour, the lower one its background; where
+// a pixel is outside the icon's rounded corners the terminal's own
+// background shows.
+func aboutLogoLines() []string {
+	hex := func(c int32) color.Color { return lipgloss.Color(fmt.Sprintf("#%06x", c)) }
+	lines := make([]string, 0, len(aboutLogo)/2)
+	for y := 0; y+1 < len(aboutLogo); y += 2 {
+		var sb strings.Builder
+		for x := range aboutLogo[y] {
+			top, bot := aboutLogo[y][x], aboutLogo[y+1][x]
+			switch {
+			case top < 0 && bot < 0:
+				sb.WriteByte(' ')
+			case top < 0:
+				sb.WriteString(lipgloss.NewStyle().Foreground(hex(bot)).Render("▄"))
+			case bot < 0:
+				sb.WriteString(lipgloss.NewStyle().Foreground(hex(top)).Render("▀"))
+			default:
+				sb.WriteString(lipgloss.NewStyle().Foreground(hex(top)).Background(hex(bot)).Render("▀"))
+			}
+		}
+		lines = append(lines, sb.String())
+	}
+	return lines
 }
 
 func centerStrAbout(s string, width int) string {

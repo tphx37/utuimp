@@ -113,3 +113,30 @@ func TestCoverViewMovesOnceAndFades(t *testing.T) {
 		t.Errorf("the sung line didn't fade: %v", prevShades)
 	}
 }
+
+// A failed translation says "no translation", as the boxed view's header
+// does, and the note fades away after a few seconds.
+func TestCoverViewTranslationNoteFades(t *testing.T) {
+	l := NewLyrics()
+	l.SetLyrics(&lyrics.Result{Lines: []lyrics.Line{{Text: "hello"}}, Synced: true}, nil)
+	now := time.Unix(1000, 0)
+	l.now = func() time.Time { return now }
+	l.showTranslation = true
+	l.SetTranslation(nil, lyrics.ErrSameLanguage)
+
+	note := func() string {
+		rows := l.CoverView(30, 20)
+		return rows[len(rows)-1]
+	}
+	if got := note(); !strings.Contains(got, "no translation") || strings.Contains(got, "already") {
+		t.Fatalf("note = %q, want just \"no translation\"", got)
+	}
+	now = now.Add(3500 * time.Millisecond)
+	if !strings.Contains(note(), "no translation") {
+		t.Error("the note should still be fading out at 3.5s")
+	}
+	now = now.Add(time.Second)
+	if got := note(); strings.Contains(got, "no translation") {
+		t.Errorf("the note should be gone after 4s, got %q", got)
+	}
+}

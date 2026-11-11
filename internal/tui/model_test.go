@@ -819,41 +819,41 @@ func TestHandleSearchKey_Enter_NoResults_NoCall(t *testing.T) {
 	}
 }
 
-func TestHandleSearchKey_Tab_CallsAppendQueue(t *testing.T) {
+func TestHandleSearchKey_ShiftTab_CallsAppendQueue(t *testing.T) {
 	mp := newMockPlayer()
 	m := newModel(mp)
 	track := provider.Track{Title: "Queued", Artist: "Band", CatalogID: "12345"}
 	seedSearchResults(m, track)
 
-	cmd := m.handleSearchKey("tab", tea.KeyPressMsg{Code: tea.KeyTab})
+	cmd := m.handleSearchKey("shift+tab", tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	if cmd == nil {
-		t.Fatal("handleSearchKey(tab) returned nil cmd — expected AppendQueue call")
+		t.Fatal("handleSearchKey(shift+tab) returned nil cmd — expected AppendQueue call")
 	}
 	cmd()
 
 	if len(mp.appendQueueIDs) == 0 {
-		t.Fatal("AppendQueue was not called after Tab")
+		t.Fatal("AppendQueue was not called after Shift+Tab")
 	}
 	if mp.appendQueueIDs[0][0] != "12345" {
 		t.Errorf("AppendQueue ID = %q, want %q", mp.appendQueueIDs[0][0], "12345")
 	}
 }
 
-func TestHandleSearchKey_Tab_DoesNotCallSetQueue(t *testing.T) {
+func TestHandleSearchKey_ShiftTab_DoesNotCallSetQueue(t *testing.T) {
 	mp := newMockPlayer()
 	m := newModel(mp)
 	seedSearchResults(m, provider.Track{Title: "T", CatalogID: "x"})
 
-	cmd := m.handleSearchKey("tab", tea.KeyPressMsg{Code: tea.KeyTab})
+	cmd := m.handleSearchKey("shift+tab", tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	if cmd != nil {
 		cmd()
 	}
 	if len(mp.setQueueIDs) > 0 {
-		t.Errorf("Tab must not call SetQueue (would interrupt playback), but it did: %v", mp.setQueueIDs)
+		t.Errorf("Shift+Tab must not call SetQueue (would interrupt playback), but it did: %v", mp.setQueueIDs)
 	}
 }
 
-func TestHandleSearchKey_Tab_MultipleTabsAccumulate(t *testing.T) {
+func TestHandleSearchKey_ShiftTab_MultipleTabsAccumulate(t *testing.T) {
 	mp := newMockPlayer()
 	m := newModel(mp)
 	tracks := []provider.Track{
@@ -863,13 +863,35 @@ func TestHandleSearchKey_Tab_MultipleTabsAccumulate(t *testing.T) {
 	seedSearchResults(m, tracks...)
 
 	for range 2 {
-		cmd := m.handleSearchKey("tab", tea.KeyPressMsg{Code: tea.KeyTab})
+		cmd := m.handleSearchKey("shift+tab", tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 		if cmd != nil {
 			cmd()
 		}
 	}
 	if len(mp.appendQueueIDs) != 2 {
 		t.Errorf("expected 2 AppendQueue calls, got %d", len(mp.appendQueueIDs))
+	}
+}
+
+// Tab puts the song straight after the playing one.
+func TestHandleSearchKey_Tab_PlaysNext(t *testing.T) {
+	mp := newMockPlayer()
+	m := newModel(mp)
+	cur := provider.Track{ID: "now", Title: "Now"}
+	m.queueTracks = []provider.Track{cur, {ID: "later", Title: "Later"}}
+	m.queueIDs = []string{"now", "later"}
+	m.queue.SetTracks(m.queueTracks)
+	m.playerState.Track = &cur
+	seedSearchResults(m, provider.Track{Title: "New", CatalogID: "new"})
+
+	if cmd := m.handleSearchKey("tab", tea.KeyPressMsg{Code: tea.KeyTab}); cmd != nil {
+		cmd()
+	}
+	if got := strings.Join(m.queueIDs, ","); got != "now,new,later" {
+		t.Fatalf("queue = %s, want the song right after the playing one", got)
+	}
+	if len(mp.setQueueIDs) > 0 {
+		t.Errorf("Tab must not replace the queue: %v", mp.setQueueIDs)
 	}
 }
 
@@ -1732,6 +1754,7 @@ func TestHandleNormalKey_F_LoveSong(t *testing.T) {
 
 func TestHandleNormalKey_F_RemoveNeedsDoubleTap(t *testing.T) {
 	m := newModel(newMockPlayer())
+	m.cfg.LibraryDelete = true // taking a like back is deleting (setup → Library)
 	m.playerState.Track = &provider.Track{Title: "Song", Artist: "Artist", ID: "fav-id"}
 	f := func() { _ = m.handleNormalKey(tea.KeyPressMsg{Code: 'f', Text: "f"}, "f") }
 
@@ -2508,7 +2531,9 @@ func TestNowPlayingLines_ArtModeOffShowsBarWithoutArt(t *testing.T) {
 	}
 }
 
-func TestPlayerStateMsg_NoArtworkFetchWhenArtModeOff(t *testing.T) {
+// The cover is fetched even with the art view off: the text, the progress
+// line and the visualizer take its colours.
+func TestPlayerStateMsg_ArtworkFetchedWithArtModeOff(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -2521,15 +2546,20 @@ func TestPlayerStateMsg_NoArtworkFetchWhenArtModeOff(t *testing.T) {
 	m.stateCh = nil
 	m.supportsArtColor = func() bool { return true }
 	track := &provider.Track{Title: "Quiet Song", Artist: "Artist", Album: "Album", ArtworkURL: server.URL, Duration: time.Minute}
+	styles.ClearArtworkPalette()
+	t.Cleanup(styles.ClearArtworkPalette)
 	_, cmd := m.Update(playerStateMsg{Track: track, Playing: true})
 	if cmd != nil {
-		runArtworkCommand(t, cmd)
+		m.Update(runArtworkCommand(t, cmd))
 	}
-	if got := requests.Load(); got != 0 {
-		t.Fatalf("artwork requests with art mode off = %d, want 0", got)
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("artwork requests with art mode off = %d, want 1", got)
 	}
-	if m.artwork.url != server.URL {
-		t.Fatalf("artwork cache url = %q, want %q (tracked even while off)", m.artwork.url, server.URL)
+	if m.artwork.url != server.URL || m.artwork.img == nil {
+		t.Fatalf("the cover should be loaded: url %q, image %v", m.artwork.url, m.artwork.img != nil)
+	}
+	if !styles.ArtworkActive {
+		t.Error("with no palette from the service the text should take the cover's colours")
 	}
 }
 
@@ -4190,7 +4220,14 @@ func TestNowPlaying_RendersExtendedBadgesAndEnrichesFromQueue(t *testing.T) {
 	defer styles.ClearArtworkPalette()
 
 	joined := strings.Join(m.nowPlayingTextLines(100, 12), "\n")
-	for _, want := range []string{"🅴", "Random Access Memories (2013)", "✦ Master"} {
+	if strings.Contains(joined, "Master") {
+		t.Errorf("the Master badge belongs under :quality:\n%s", joined)
+	}
+	m.executeCommand("quality")
+	if !strings.Contains(m.errMsg, "✦ Master") {
+		t.Errorf(":quality = %q, want the Master badge", m.errMsg)
+	}
+	for _, want := range []string{"🅴", "Random Access Memories (2013)"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("nowPlayingTextLines missing %q:\n%s", want, joined)
 		}
@@ -4225,7 +4262,7 @@ func TestFormatBadge(t *testing.T) {
 	}
 }
 
-func TestNowPlaying_FormatBadgeNamesOutputAndCatalog(t *testing.T) {
+func TestQualityCommand_NamesOutputAndCatalog(t *testing.T) {
 	m := newModel(nil)
 	m.queueTracks = []provider.Track{{
 		ID:            "617154366",
@@ -4244,15 +4281,15 @@ func TestNowPlaying_FormatBadgeNamesOutputAndCatalog(t *testing.T) {
 	m = updated.(*Model)
 	defer styles.ClearArtworkPalette()
 
-	wide := ansi.Strip(m.renderAlbumMetaLine(m.playerState.Track, 100, true))
-	if !strings.Contains(wide, "AAC 256 (catalog: Hi-Res, Atmos)") {
-		t.Errorf("album line missing format badge: %q", wide)
+	wide := ansi.Strip(m.renderAlbumMetaLine(m.playerState.Track, 100, true, true))
+	if strings.Contains(wide, "AAC") || strings.Contains(wide, "catalog") || !strings.Contains(wide, "/ 4:00") {
+		t.Errorf("album line = %q, want the time and no format badge", wide)
 	}
 
-	// On a narrow panel the badge goes before the time does.
-	narrow := ansi.Strip(m.renderAlbumMetaLine(m.playerState.Track, 40, true))
-	if strings.Contains(narrow, "AAC") || !strings.Contains(narrow, "/ 4:00") {
-		t.Errorf("narrow album line = %q, want the time and no badge", narrow)
+	// The format is under :quality instead.
+	m.executeCommand("quality")
+	if !strings.Contains(m.errMsg, "AAC 256 · catalog: Hi-Res, Atmos") {
+		t.Errorf(":quality = %q, want the output and the catalog", m.errMsg)
 	}
 }
 

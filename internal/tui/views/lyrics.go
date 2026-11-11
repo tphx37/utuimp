@@ -109,6 +109,7 @@ type LyricsModel struct {
 	translations    []string // one per line; nil until fetched
 	translating     bool
 	translateErr    string
+	translateErrAt  time.Time // when translateErr was set (the cover view lets it fade)
 	translateLang   string
 	translateSrc    string // detected language of the song
 
@@ -190,6 +191,7 @@ func (l *LyricsModel) SetTranslation(tr []string, err error) {
 	l.translating = false
 	if err != nil {
 		l.translateErr = err.Error()
+		l.translateErrAt = l.now()
 		l.translations = nil
 		return
 	}

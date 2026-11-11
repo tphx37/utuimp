@@ -144,7 +144,7 @@ func (l *LyricsModel) CoverView(w, h int) []string {
 
 	// The last row reports what the lyrics are doing (translating…).
 	if st := l.coverStatus(); st != "" && h > anchor+2 {
-		out[h-1] = muted.Render(st)
+		out[h-1] = st
 		h--
 	}
 	anchorF := float64(anchor)
@@ -259,14 +259,35 @@ func (l *LyricsModel) coverStyle(r coverRow, dist int, fade float64, waiting boo
 	return st.Render(text)
 }
 
+// Timing of the cover view's "no translation" note: shown, then faded out.
+const (
+	noteShow = 3 * time.Second
+	noteFade = time.Second
+)
+
 // coverStatus is a short note on the lyrics' state for the cover view, which
-// has no header: translation in progress or failed.
+// has no header, worded as the boxed view's header: "translating…" while it
+// lasts, "no translation" for a few seconds before it fades away.
 func (l *LyricsModel) coverStatus() string {
+	muted := styles.QueueItemMuted
 	switch {
 	case l.showTranslation && l.translating:
-		return i18n.T("translating…")
+		return muted.Render(i18n.T("translating…"))
 	case l.showTranslation && l.translateErr != "":
-		return i18n.T("translation failed: ") + l.translateErr
+		age := l.now().Sub(l.translateErrAt)
+		if age >= noteShow+noteFade {
+			return ""
+		}
+		text := i18n.T("no translation")
+		if age <= noteShow {
+			return muted.Render(text)
+		}
+		dimC, bgC, ok := styles.LyricFadeColors()
+		if !ok {
+			return lipgloss.NewStyle().Faint(true).Render(text)
+		}
+		t := float64(age-noteShow) / float64(noteFade)
+		return lipgloss.NewStyle().Foreground(styles.LerpColor(dimC, bgC, easeInOut(t))).Render(text)
 	}
 	return ""
 }

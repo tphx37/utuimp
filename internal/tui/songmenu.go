@@ -26,6 +26,11 @@ const (
 	songMenuAlbum songMenuKind = iota
 	songMenuArtist
 	songMenuCopyLink
+	songMenuAddToPlaylist
+	songMenuAddToLibrary
+	songMenuRemoveFromPlaylist
+	songMenuSaveAlbum
+	songMenuFollowArtist
 )
 
 type songMenuItem struct {
@@ -41,6 +46,13 @@ type songMenuState struct {
 	details provider.SongDetails
 	items   []songMenuItem
 	idx     int
+
+	// own are the items that need no lookup (playlists, library); they
+	// follow the looked-up ones. inPlaylist is the open library playlist
+	// the song was picked in, at inPlaylistIdx (nil: none).
+	own           []songMenuItem
+	inPlaylist    *provider.Playlist
+	inPlaylistIdx int
 }
 
 type songDetailsMsg struct {
@@ -93,10 +105,13 @@ func (m *Model) openSongMenu() tea.Cmd {
 		return nil
 	}
 	m.songMenu = &songMenuState{track: *t, loading: true}
+	m.songMenuOwnItems()
 	sd, ok := m.provider.(provider.SongDetailer)
 	if !ok {
 		m.songMenu.loading = false
-		m.songMenu.err = errors.New(i18n.T("not available for this source"))
+		if len(m.songMenu.items) == 0 {
+			m.songMenu.err = errors.New(i18n.T("not available for this source"))
+		}
 		return nil
 	}
 	track, key := *t, songKey(*t)
@@ -126,7 +141,41 @@ func (m *Model) handleSongDetails(msg songDetailsMsg) {
 	if msg.details.URL != "" {
 		sm.items = append(sm.items, songMenuItem{kind: songMenuCopyLink, label: i18n.T("Copy link")})
 	}
+	// Saving the album and following the main artist, where the service
+	// keeps them in the library.
+	if _, ok := m.provider.(provider.CollectionSaver); ok {
+		if a := msg.details.Album; a != nil && !msg.details.LibraryAlbum {
+			sm.items = append(sm.items, songMenuItem{kind: songMenuSaveAlbum, label: i18n.T("Save album to library")})
+		}
+		if len(msg.details.Artists) > 0 {
+			ar := msg.details.Artists[0]
+			sm.items = append(sm.items, songMenuItem{kind: songMenuFollowArtist,
+				label: fmt.Sprintf(i18n.T("Follow %s"), ar.Name), artist: ar})
+		}
+	}
+	sm.items = append(sm.items, sm.own...)
 	sm.idx = 0
+}
+
+// songMenuOwnItems adds what the menu offers without a lookup: adding the
+// song to a playlist, to the library, and taking it out of the playlist it
+// was picked in.
+func (m *Model) songMenuOwnItems() {
+	sm := m.songMenu
+	sm.own = append(sm.own, songMenuItem{kind: songMenuAddToPlaylist, label: i18n.T("Add to playlist…")})
+	if m.canAddToLibrary(sm.track) {
+		sm.own = append(sm.own, songMenuItem{kind: songMenuAddToLibrary, label: i18n.T("Add to library")})
+	}
+	if m.activePanel >= 0 && m.panels[m.activePanel] == m.library {
+		if pl, t, idx := m.library.m.OpenPlaylist(); pl != nil && t != nil && t.ID == sm.track.ID && m.canDelete() {
+			if _, ok := m.playlistEditor(); ok {
+				sm.inPlaylist, sm.inPlaylistIdx = pl, idx
+				sm.own = append(sm.own, songMenuItem{kind: songMenuRemoveFromPlaylist,
+					label: fmt.Sprintf(i18n.T("Remove from “%s”"), pl.Name)})
+			}
+		}
+	}
+	sm.items = append(sm.items, sm.own...)
 }
 
 func (m *Model) handleSongMenuKey(k string) tea.Cmd {
@@ -182,6 +231,20 @@ func (m *Model) runSongMenuItem(it songMenuItem) tea.Cmd {
 		m.activePanel = -1
 		m.mode = modeSearch
 		return m.openArtistCmd(it.artist)
+	case songMenuSaveAlbum:
+		return m.saveAlbumCmd(*sm.details.Album, true)
+	case songMenuFollowArtist:
+		return m.followArtistCmd(it.artist, true)
+	case songMenuAddToPlaylist:
+		t := sm.track
+		return m.openPlaylistPicker(&t)
+	case songMenuAddToLibrary:
+		return m.addToLibraryCmd(sm.track)
+	case songMenuRemoveFromPlaylist:
+		if sm.inPlaylist == nil {
+			return nil
+		}
+		return m.removeFromPlaylistCmd(*sm.inPlaylist, sm.inPlaylistIdx, sm.track)
 	case songMenuCopyLink:
 		url := sm.details.URL
 		m.errMsg = i18n.T("✓ link copied")
@@ -243,13 +306,14 @@ func (m *Model) renderSongMenu() string {
 		muted.Render(truncateStr(sm.track.Artist, innerW)),
 		sep,
 	}
-	switch {
-	case sm.loading:
+	if sm.loading {
 		frames := [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 		lines = append(lines, styles.Spinner.Render(frames[m.glowStep%len(frames)])+muted.Render(i18n.T(" looking up album and artists…")))
+	}
+	switch {
 	case sm.err != nil && len(sm.items) == 0:
 		lines = append(lines, styles.ErrorStyle.Render(truncateStr(sm.err.Error(), innerW-2)))
-	case len(sm.items) == 0:
+	case len(sm.items) == 0 && !sm.loading:
 		lines = append(lines, muted.Render(i18n.T("nothing to show for this song")))
 	default:
 		for i, it := range sm.items {

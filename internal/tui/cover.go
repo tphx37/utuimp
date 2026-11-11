@@ -7,8 +7,10 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/tphx37/utuimp/internal/i18n"
+	"github.com/tphx37/utuimp/internal/provider"
 	"github.com/tphx37/utuimp/internal/tui/art"
 	"github.com/tphx37/utuimp/internal/tui/styles"
 	"github.com/tphx37/utuimp/internal/tui/views"
@@ -36,8 +38,9 @@ const LayoutCover = "cover"
 const coverSideBySideMinW = 90
 
 // coverTextRows is the song block under the cover: nowPlayingTextLines'
-// nine rows with the volume added under the controls.
-const coverTextRows = 10
+// nine rows with the artist on a row of its own under the title and the
+// volume added under the controls.
+const coverTextRows = 11
 
 // coverPads returns the empty rows kept above and below the content, so the
 // view breathes like a fullscreen player instead of touching the edges.
@@ -48,21 +51,29 @@ func coverPads(h int) (top, bottom int) {
 // coverDims returns the layout: the left column's width (0 when stacked),
 // the right column's width and the content height between the paddings.
 func (m *Model) coverDims() (leftW, rightW, h int) {
-	full := max(6, m.height-len(m.statusLines(m.width-4)))
+	full := max(6, m.height-len(m.coverStatusLines()))
 	top, bottom := coverPads(full)
 	h = max(4, full-top-bottom)
 	if m.width < coverSideBySideMinW {
 		return 0, m.width, max(4, h-coverTextRows)
 	}
 	leftW = min(70, max(36, m.width*2/5))
+	if m.coverPlain {
+		leftW = min(100, max(36, m.width/2)) // the cover alone gets more room
+	}
 	return leftW, m.width - leftW - 1, h
 }
 
 // coverPanelFramed reports whether the right column shows a framed panel
-// (anything but the lyrics).
+// (anything but the home screen: the lyrics, or the song with them hidden).
 func (m *Model) coverPanelFramed() bool {
 	if m.debugView || m.mode == modeSearch || m.mode == modeCommand {
 		return true
+	}
+	if m.activePanel < 0 && m.coverPlain {
+		leftW, _, _ := m.coverDims()
+		// Stacked, the song is already on top: show the queue under it.
+		return m.coverQueueOpen || leftW == 0
 	}
 	// The lyrics' source and language pickers (c, T) are panels too.
 	return m.activePanel < 0 || m.panels[m.activePanel] != m.lyricsP || m.lyricsP.m.PickerOpen()
@@ -124,9 +135,10 @@ func (m *Model) coverIdleText(w int) []string {
 	return []string{
 		"",
 		centerStr(muted.Render(i18n.T("Nothing playing")), w),
-		centerStr(muted.Render("— • 0:00 / 0:00"), w),
+		centerStr(muted.Render("—"), w),
 		"",
-		centerStr(muted.Render(strings.Repeat("─", barW)), w),
+		"",
+		centerStr(muted.Render("0:00  "+strings.Repeat("─", max(6, barW-12))+"  0:00"), w),
 		"",
 		centerStr(muted.Render("↺   ⇄   ▶   ♡"), w),
 		"",
@@ -146,7 +158,12 @@ func (m *Model) coverVolumeLine(w int) string {
 	barW := min(24, max(8, w/3))
 	filled := int(vol*float64(barW) + 0.5)
 	bar := styles.ProgressBar.Render(strings.Repeat("━", filled)) + muted.Render(strings.Repeat("─", barW-filled))
-	return centerStr(muted.Render("♪ ")+bar+muted.Render(fmt.Sprintf(" %3d%%", int(vol*100+0.5))), w)
+	// Both sides as wide as "100%", so the bar sits in the middle like the
+	// progress bar above it does between its two times.
+	pct := fmt.Sprintf("%d%%", int(vol*100+0.5))
+	left := fmt.Sprintf("%4s", "♪")
+	right := fmt.Sprintf("%-4s", pct)
+	return centerStr(muted.Render(left+"  ")+bar+muted.Render("  "+right), w)
 }
 
 // coverSongText is the song block: the playing song or the idle one.
@@ -154,10 +171,29 @@ func (m *Model) coverSongText(w int) []string {
 	if m.playerState.Track == nil {
 		return m.coverIdleText(w)
 	}
-	// Rows: "", title, album, "", progress, "", controls, "", status.
+	// Rows: "", title, album, "", progress, "", controls, "", status; the
+	// title row is split into the title and the artist under it.
 	lines := m.nowPlayingTextLines(w, 9)
-	out := append([]string{}, lines[:8]...)
+	title, artist := m.coverTitleLines(m.playerState.Track, w)
+	out := []string{lines[0], title, artist}
+	out = append(out, lines[2:8]...)
 	return append(out, m.coverVolumeLine(w), lines[8])
+}
+
+// coverTitleLines are the song's title (with the explicit mark) and, under
+// it, the artist, each centred in w.
+func (m *Model) coverTitleLines(t *provider.Track, w int) (title, artist string) {
+	titleStyle := styles.NowPlayingTitle
+	if m.playerState.Playing || m.playerState.Loading {
+		titleStyle = styles.NowPlayingTitlePlaying
+	}
+	title = titleStyle.Render(t.Title)
+	if strings.EqualFold(t.ContentRating, "explicit") {
+		title += " " + styles.QueueItemMuted.Render(explicitMark)
+	}
+	title = ansi.Truncate(title, w, "…")
+	artist = ansi.Truncate(styles.NowPlayingTrackArtist.Render(t.Artist), w, "…")
+	return m.revealLine(centerStr(title, w)), m.revealLine(centerStr(artist, w))
 }
 
 // coverLeftLines renders the left column: the cover (or its placeholder),
@@ -178,9 +214,13 @@ func (m *Model) coverLeftLines(w, h int) []string {
 		for i := range rows {
 			block = append(block, centerStr(safeIdx(cover, i), w-2))
 		}
-		block = append(block, "")
+		if !m.coverPlain {
+			block = append(block, "")
+		}
 	}
-	block = append(block, m.coverSongText(w-2)...)
+	if !m.coverPlain || rows == 0 {
+		block = append(block, m.coverSongText(w-2)...)
+	}
 	out := make([]string, h)
 	for i, l := range block {
 		if top+i < h {
@@ -198,17 +238,25 @@ func (m *Model) coverGeom(w, h int) (rows, cols, top int) {
 	if aspect <= 0 {
 		aspect = 2.0
 	}
-	rows = min(h-coverTextRows-1, 24)
+	text := coverTextRows + 1 // the song block and a gap under the cover
+	if m.coverPlain {
+		text = 0 // the song is in the right column
+	}
+	rows = min(h-text, 24)
+	if m.coverPlain {
+		rows = min(h-2, 40)
+	}
 	cols = int(math.Round(float64(rows) * aspect))
 	for rows > 2 && cols > w-6 {
 		rows--
 		cols = int(math.Round(float64(rows) * aspect))
 	}
-	block := coverTextRows
+	block := text
 	if rows < 4 {
 		rows, cols = 0, 0
+		block = coverTextRows
 	} else {
-		block += rows + 1
+		block += rows
 	}
 	return rows, cols, max(0, (h-block)/2)
 }
@@ -226,6 +274,22 @@ func (m *Model) coverLyricsBand(h int) (top, height int) {
 		return 0, h
 	}
 	return top, rows
+}
+
+// coverSongRight is the right column with the lyrics hidden: the song,
+// its controls and volume, centred.
+func (m *Model) coverSongRight(w, h int) []string {
+	textW := min(w-4, 64)
+	block := m.coverSongText(textW)
+	pad := strings.Repeat(" ", max(0, (w-textW)/2))
+	out := make([]string, h)
+	top := max(0, (h-len(block))/2)
+	for i, l := range block {
+		if top+i < h {
+			out[top+i] = pad + l
+		}
+	}
+	return out
 }
 
 // coverIdleRight fills the lyrics side while nothing plays: the start-up
@@ -262,6 +326,9 @@ func (m *Model) coverIdleRight(w, h int) []string {
 // coverRightLines renders the right column: the lyrics bare, or the open
 // panel (the queue when none is) in a frame.
 func (m *Model) coverRightLines(w, h int) []string {
+	if !m.coverPanelFramed() && m.coverPlain {
+		return m.coverSongRight(w, h)
+	}
 	if !m.coverPanelFramed() {
 		if m.playerState.Track == nil {
 			return m.coverIdleRight(w, h)
@@ -306,10 +373,53 @@ func (m *Model) coverRightLines(w, h int) []string {
 	return append(out, boxBottom(w, "", focused)) // the volume is on the left
 }
 
+// coverStatusLines is the cover view's status rows. Every panel has hints
+// of its own, which wrap to a different number of rows; were the rows not
+// held to one number, the cover and the song would jump (and the cover come
+// and go) on every esc, q or step into the queue. So the status always
+// takes as many rows as its tallest set of hints, the shorter ones padded
+// with blank rows on top.
+func (m *Model) coverStatusLines() []string {
+	w := m.width - 4
+	lines := m.statusLines(w)
+	for rows := m.coverStatusRows(w, len(lines)); len(lines) < rows; {
+		lines = append([]string{""}, lines...)
+	}
+	return lines
+}
+
+// coverStatusRows is the most rows the status takes at width w: every
+// panel's hints are measured once for a width, and after that the number
+// only grows (now is what it takes at the moment).
+func (m *Model) coverStatusRows(w, now int) int {
+	if m.statusW != w {
+		m.statusW, m.statusRows = w, 0
+		panel, queueOpen, cur, mode := m.activePanel, m.coverQueueOpen, m.queueMiniCursor, m.mode
+		m.mode = modeNormal
+		for p := -1; p < len(m.panels); p++ {
+			m.activePanel = p
+			for _, c := range []int{-1, 0} {
+				if p >= 0 && c >= 0 {
+					continue // the queue's cursor is only there with no panel open
+				}
+				m.queueMiniCursor = c
+				for _, q := range []bool{false, true} {
+					m.coverQueueOpen = q
+					m.statusRows = max(m.statusRows, len(m.statusLines(w)))
+				}
+			}
+		}
+		m.activePanel, m.coverQueueOpen, m.queueMiniCursor, m.mode = panel, queueOpen, cur, mode
+	}
+	m.statusRows = max(m.statusRows, now)
+	return m.statusRows
+}
+
 // renderCoverLayout renders the whole cover view.
 func (m *Model) renderCoverLayout() string {
 	leftW, rightW, h := m.coverDims()
-	full := max(6, m.height-len(m.statusLines(m.width-4)))
+	status := m.coverStatusLines()
+	full := max(6, m.height-len(status))
 	top, _ := coverPads(full)
 	rows := make([]string, top)
 	if leftW > 0 {
@@ -331,7 +441,6 @@ func (m *Model) renderCoverLayout() string {
 	for _, r := range rows[:full] {
 		sb.WriteString(padRight(r, m.width) + "\n")
 	}
-	status := m.statusLines(m.width - 4)
 	for i, line := range status {
 		sb.WriteString("  " + padRight(line, m.width-2))
 		if i < len(status)-1 {
@@ -369,26 +478,61 @@ func (m *Model) openLyricsPanel() tea.Cmd {
 	return nil
 }
 
+// coverHome goes to the cover view's home screen: the lyrics, or with them
+// hidden the song beside the cover.
+func (m *Model) coverHome() tea.Cmd {
+	m.coverQueueOpen = false
+	if m.coverPlain {
+		m.activePanel = -1
+		return nil
+	}
+	return m.openLyricsPanel()
+}
+
 // toggleCoverView switches between the boxed layout and the cover view and
-// remembers the choice.
+// remembers the choice (for every tab).
 func (m *Model) toggleCoverView() tea.Cmd {
-	m.coverView = !m.coverView
 	m.cfg.Layout = ""
-	if m.coverView {
+	if !m.coverView {
 		m.cfg.Layout = LayoutCover
 	}
+	m.saveLayout()
+	return m.followLayout()
+}
+
+// toggleCoverLyrics shows or hides the lyrics in the cover view and
+// remembers the choice.
+func (m *Model) toggleCoverLyrics() tea.Cmd {
+	m.cfg.CoverHideLyrics = !m.coverPlain
+	m.saveLayout()
+	return m.followLayout()
+}
+
+func (m *Model) saveLayout() {
 	if err := m.cfg.Save(""); err != nil {
 		m.appendLog(fmt.Sprintf("[layout] config save error: %v", err))
 	}
-	if !m.coverView {
+}
+
+// followLayout brings this tab to the layout in the config, which every
+// tab shares: v or y pressed here or in another tab.
+func (m *Model) followLayout() tea.Cmd {
+	cover, plain := m.cfg.Layout == LayoutCover, m.cfg.CoverHideLyrics
+	if cover == m.coverView && plain == m.coverPlain {
+		return nil
+	}
+	wasCover := m.coverView
+	m.coverView, m.coverPlain = cover, plain
+	if !cover {
 		m.lyricsP.m.SetBare(false)
+		m.coverQueueOpen = false
 		if m.activePanel == m.lyricsPanelIdx() {
 			m.activePanel = -1
 		}
 		return nil
 	}
-	cmds := []tea.Cmd{m.openLyricsPanel()}
-	if t := m.playerState.Track; t != nil && t.ArtworkURL != "" {
+	cmds := []tea.Cmd{m.coverHome()}
+	if t := m.playerState.Track; !wasCover && t != nil && t.ArtworkURL != "" {
 		cmds = append(cmds, m.fetchArtworkCmd(t.ArtworkURL, m.artworkGen))
 	}
 	return tea.Batch(cmds...)
@@ -418,8 +562,14 @@ func (m *Model) coverHomeHints() []string {
 		hint(i18n.T("esc"), " queue"),
 		hint(i18n.T("e"), " equalizer"),
 		hint(i18n.T("i"), " song menu"),
+		hint("P", " add to playlist"),
 	}
-	if m.playerState.Track != nil {
+	if m.coverPlain {
+		parts = append(parts, hint(i18n.T("y"), " lyrics"))
+	} else {
+		parts = append(parts, hint(i18n.T("y"), " hide lyrics"))
+	}
+	if m.playerState.Track != nil && !m.coverPlain {
 		parts = append(parts,
 			hint(i18n.T("j/k"), " scroll"),
 			hint(i18n.T("Enter"), " seek"),
@@ -430,6 +580,7 @@ func (m *Model) coverHomeHints() []string {
 	}
 	return append(parts,
 		hint("v", " boxed view"),
+		hint("V", " visualizer"),
 		hint(":", " command"),
 		hint("?", " about"),
 		hint(i18n.T(":q"), " quit"),

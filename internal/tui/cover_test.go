@@ -219,3 +219,117 @@ func TestCoverView_HintedKeysWork(t *testing.T) {
 		})
 	}
 }
+
+// y hides the lyrics: the song, its controls and the volume move to the
+// right of the cover; esc toggles the queue there; y brings the lyrics back.
+func TestCoverView_YHidesLyrics(t *testing.T) {
+	m := coverModel(t, 140, 40)
+	m.toggleCoverView()
+	m.handleNormalKey(tea.KeyPressMsg{Code: 'y', Text: "y"}, "y")
+	if !m.coverPlain || !m.cfg.CoverHideLyrics {
+		t.Fatal("y should hide the lyrics and remember it")
+	}
+	frame := ansi.Strip(m.View().Content)
+	if os.Getenv("COVER_DUMP") != "" {
+		t.Log("\n" + frame)
+	}
+	if strings.Contains(frame, "second line") {
+		t.Errorf("lyrics still shown:\n%s", frame)
+	}
+	leftW, _, _ := m.coverDims()
+	for _, want := range []string{"Night Song", "⏸", "♪ "} {
+		found := false
+		for _, row := range strings.Split(frame, "\n") {
+			if i := strings.Index(row, want); i >= 0 && ansi.StringWidth(row[:i]) > leftW {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%q should be in the right column (past %d):\n%s", want, leftW, frame)
+		}
+	}
+
+	m.handleNormalKey(tea.KeyPressMsg{Code: tea.KeyEscape}, "esc")
+	if f := ansi.Strip(m.View().Content); !strings.Contains(f, "Next One") {
+		t.Errorf("esc should show the queue:\n%s", f)
+	}
+	m.handleNormalKey(tea.KeyPressMsg{Code: tea.KeyEscape}, "esc")
+	if f := ansi.Strip(m.View().Content); strings.Contains(f, "Next One") {
+		t.Errorf("esc again should go back to the song:\n%s", f)
+	}
+
+	m.handleNormalKey(tea.KeyPressMsg{Code: 'y', Text: "y"}, "y")
+	if m.coverPlain || !m.lyricsVisible() {
+		t.Error("y again should bring the lyrics back")
+	}
+}
+
+// The layout is one for all tabs: switching it in one tab switches the
+// others (they share the config), so the one remembered is what you see.
+func TestCoverView_LayoutSharedByTabs(t *testing.T) {
+	a, b := coverModel(t, 140, 40), coverModel(t, 140, 40)
+	b.cfg = a.cfg
+	a.toggleCoverView()
+	b.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	if !b.coverView || !b.lyricsVisible() {
+		t.Fatal("the other tab should follow into the cover view")
+	}
+	a.handleNormalKey(tea.KeyPressMsg{Code: 'y', Text: "y"}, "y")
+	b.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	if !b.coverPlain {
+		t.Error("the other tab should hide the lyrics too")
+	}
+	a.toggleCoverView()
+	b.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	if b.coverView || b.activePanel != -1 {
+		t.Error("the other tab should follow back to the boxed view")
+	}
+}
+
+// The progress line reads "elapsed ━━━── total"; the album line no longer
+// repeats the time.
+func TestProgressLineHasTimesAroundTheBar(t *testing.T) {
+	m := coverModel(t, 140, 40)
+	m.playerState.Position = 39 * time.Second
+	m.playerState.Playing = false // no smoothing past the position
+	lines := m.nowPlayingTextLines(60, 9)
+	album, progress := ansi.Strip(lines[2]), ansi.Strip(lines[4])
+	if os.Getenv("COVER_DUMP") != "" {
+		t.Logf("\n%q\n%q", album, progress)
+	}
+	if strings.Contains(album, "/") {
+		t.Errorf("album line still has the time: %q", album)
+	}
+	fields := strings.Fields(progress)
+	if len(fields) < 3 || fields[0] != "0:39" || fields[len(fields)-1] != "3:00" {
+		t.Errorf("progress line = %q, want 0:39 … 3:00", progress)
+	}
+	if w := ansi.StringWidth(strings.TrimRight(lines[4], " ")); w > 60 {
+		t.Errorf("progress line is %d wide, more than 60", w)
+	}
+}
+
+// Esc between the lyrics and the queue must not move the cover: the two
+// states' hints wrap to different row counts at some widths.
+func TestCoverView_EscKeepsCoverRow(t *testing.T) {
+	songRow := func(m *Model) int {
+		for i, l := range strings.Split(ansi.Strip(m.View().Content), "\n") {
+			if strings.Contains(l, "Night Song") && !strings.Contains(l, "Band") {
+				return i
+			}
+		}
+		return -1
+	}
+	for w := 90; w <= 260; w += 5 {
+		m := coverModel(t, w, 50)
+		m.handleNormalKey(tea.KeyPressMsg{Code: 'v', Text: "v"}, "v")
+		lyricsRow := songRow(m)
+		m.handleNormalKey(tea.KeyPressMsg{Code: tea.KeyEscape}, "esc")
+		if got := songRow(m); got != lyricsRow || got < 0 {
+			t.Errorf("width %d: song row %d with the queue, %d with the lyrics", w, got, lyricsRow)
+		}
+		if n := len(strings.Split(m.View().Content, "\n")); n != m.height {
+			t.Errorf("width %d: frame has %d rows, want %d", w, n, m.height)
+		}
+	}
+}

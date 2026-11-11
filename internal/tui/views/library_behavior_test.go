@@ -88,7 +88,7 @@ func TestLibrary_AlbumsSectionTabQueuesAlbumTracksWithoutLeavingMenu(t *testing.
 	assertQueueTracksMsg(t, cmd, []string{"i.1", "i.2"}, tracks)
 }
 
-func TestLibrary_SongsSectionTabQueuesSelectedSongWithoutLeavingMenu(t *testing.T) {
+func TestLibrary_SongsSectionTabPlaysSelectedSongNextWithoutLeavingMenu(t *testing.T) {
 	tracks := []provider.Track{{ID: "i.1", Title: "One", Artist: "A"}, {ID: "i.2", Title: "Two", Artist: "B"}}
 	lib := NewLibrary(&mockProvider{libraryTracks: tracks})
 	lib.SetSize(80, 24)
@@ -100,6 +100,9 @@ func TestLibrary_SongsSectionTabQueuesSelectedSongWithoutLeavingMenu(t *testing.
 		t.Fatalf("pane = %v, want paneTracks", updated.pane)
 	}
 	assertQueueTracksMsg(t, cmd, []string{"i.1"}, tracks[:1])
+	if msg := cmd().(QueueTracksMsg); !msg.PlayNext {
+		t.Fatal("tab in the songs list should put the song next")
+	}
 }
 
 func TestLibrary_ResetTopLevelShowsSections(t *testing.T) {

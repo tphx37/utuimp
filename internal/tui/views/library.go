@@ -115,6 +115,18 @@ type LibraryModel struct {
 	drillRequestKind       playlistRequestKind
 	tracksBackPane         libraryPane
 
+	// keepPlaylistID is highlighted when the playlists come back loaded.
+	keepPlaylistID string
+
+	// The service's saved albums and followed artists (library_saved.go):
+	// openArtist is the artist whose albums are listed (nil: none), from
+	// artistIdx of the artists; drillAlbumID the album being loaded.
+	savedAlbums  []provider.Album
+	savedArtists []provider.Artist
+	openArtist   *provider.Artist
+	artistIdx    int
+	drillAlbumID string
+
 	width  int
 	height int
 }
@@ -144,6 +156,7 @@ func (m *LibraryModel) DrillErr() error { return m.drillErr }
 func (m *LibraryModel) LoadErr() error  { return m.loadErr }
 
 func (m *LibraryModel) ResetTopLevel() {
+	m.openArtist = nil
 	m.invalidateLibraryRequest()
 	m.invalidatePlaylistRequest()
 	m.pane = paneSections
@@ -162,12 +175,16 @@ func (m *LibraryModel) Back() bool {
 	case paneSections:
 		return false
 	case paneItems:
+		if m.closeSavedArtist() {
+			return true
+		}
 		m.invalidateLibraryRequest()
 		m.pane = paneSections
 		m.showSections()
 		return true
 	case paneTracks:
 		m.invalidatePlaylistRequest()
+		m.drillAlbumID = ""
 		if m.tracksBackPane == paneSections && m.drillTitle == "" {
 			m.pane = paneItems
 		} else {
@@ -242,6 +259,9 @@ func (m *LibraryModel) loadPlaylistTracks(pl provider.Playlist) tea.Cmd {
 }
 
 func (m *LibraryModel) Update(msg tea.Msg) (*LibraryModel, tea.Cmd) {
+	if cmd, ok := m.updateSaved(msg); ok {
+		return m, cmd
+	}
 	switch msg := msg.(type) {
 	case libraryTracksLoadedMsg:
 		if !m.currentLibraryRequest(msg.generation, msg.section, msg.kind) || msg.kind != libraryRequestTracks {
@@ -269,6 +289,12 @@ func (m *LibraryModel) Update(msg tea.Msg) (*LibraryModel, tea.Cmd) {
 			m.playlists = append([]provider.Playlist{}, msg.playlists...)
 			m.playlistsLoaded = true
 			m.showPlaylists()
+			if id := m.keepPlaylistID; id != "" {
+				m.keepPlaylistID = ""
+				if i := slices.IndexFunc(m.playlists, func(p provider.Playlist) bool { return p.ID == id }); i >= 0 {
+					m.list.Select(i)
+				}
+			}
 		} else {
 			m.pane = paneItems
 			m.list.SetItems(nil)
@@ -314,6 +340,9 @@ func (m *LibraryModel) handleKey(msg tea.KeyPressMsg) (*LibraryModel, tea.Cmd) {
 	case paneItems:
 		switch msg.String() {
 		case "esc", "backspace", "b":
+			if m.closeSavedArtist() {
+				return m, nil
+			}
 			m.invalidatePlaylistRequest()
 			m.loadErr = nil
 			m.pane = paneSections
@@ -321,10 +350,10 @@ func (m *LibraryModel) handleKey(msg tea.KeyPressMsg) (*LibraryModel, tea.Cmd) {
 			return m, nil
 		case "enter":
 			return m.openSelectedItem()
-		case "tab":
-			return m.queueSelectedItem(false)
-		case "shift+tab":
+		case "tab", "ctrl+q":
 			return m.queueSelectedItem(true)
+		case "shift+tab":
+			return m.queueSelectedItem(false)
 		}
 	case paneTracks:
 		switch msg.String() {
@@ -334,9 +363,11 @@ func (m *LibraryModel) handleKey(msg tea.KeyPressMsg) (*LibraryModel, tea.Cmd) {
 		case "enter":
 			return m, m.playTracksFromSelection()
 		case "tab":
-			return m, m.queueTracksFromSelection(false)
+			return m, m.queueSelectedTrack(true)
 		case "shift+tab":
-			return m, m.queueTracksFromSelection(true)
+			return m, m.queueSelectedTrack(false)
+		case "ctrl+q":
+			return m, m.queueWholeListNext()
 		}
 	}
 	return m.updateActiveList(msg)
@@ -354,6 +385,9 @@ func (m *LibraryModel) updateActiveList(msg tea.Msg) (*LibraryModel, tea.Cmd) {
 
 func (m *LibraryModel) openSelectedSection() (*LibraryModel, tea.Cmd) {
 	m.invalidateLibraryRequest()
+	if m.usesSaved(m.selectedSection) {
+		return m.openSaved()
+	}
 	switch m.selectedSection {
 	case sectionSongs, sectionAlbums, sectionArtists:
 		if !m.tracksLoaded || m.libraryTracksExpired(time.Now()) {
@@ -419,6 +453,10 @@ func (m *LibraryModel) routeLoadedLibraryTracks() {
 
 func (m *LibraryModel) openSelectedItem() (*LibraryModel, tea.Cmd) {
 	switch item := m.list.SelectedItem().(type) {
+	case savedAlbumItem:
+		return m, m.openSavedAlbum(item.a)
+	case savedArtistItem:
+		return m, m.openSavedArtist(item.a)
 	case albumItem:
 		m.showTrackPane(item.group.title, item.group.tracks, paneItems)
 	case artistItem:
@@ -439,22 +477,34 @@ func (m *LibraryModel) openSelectedItem() (*LibraryModel, tea.Cmd) {
 
 func (m *LibraryModel) queueSelectedItem(playNext bool) (*LibraryModel, tea.Cmd) {
 	switch item := m.list.SelectedItem().(type) {
+	case savedAlbumItem:
+		return m, queueAlbumCmd(m.provider, item.a, playNext)
 	case albumItem:
 		return m, queueTracksCmd(item.group.title, item.group.tracks, playNext)
 	case artistItem:
 		return m, queueTracksCmd(item.group.title, item.group.tracks, playNext)
 	case playlistItem:
-		pl := provider.Playlist(item)
-		m.drillPlaylist = pl
-		m.drillTitle = pl.Name
-		m.pane = paneTracks
-		m.tracksBackPane = paneItems
-		m.drillTracks = nil
-		m.drillErr = nil
-		m.drillList.SetItems(nil)
-		return m, tea.Batch(m.spinner.Tick, m.loadPlaylistTracks(pl))
+		return m, queuePlaylistCmd(m.provider, provider.Playlist(item), playNext)
 	default:
 		return m, nil
+	}
+}
+
+// queuePlaylistCmd loads a playlist's songs and queues them (after the
+// playing song with playNext), without leaving the list.
+func queuePlaylistCmd(prov provider.Provider, pl provider.Playlist, playNext bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), libraryLoadTimeout)
+		defer cancel()
+		tracks, err := prov.GetPlaylistTracks(ctx, pl.ID)
+		if err != nil {
+			return QueueTracksMsg{Label: pl.Name, Err: err}
+		}
+		ids := make([]string, len(tracks))
+		for i, t := range tracks {
+			ids[i] = PlaybackID(t)
+		}
+		return QueueTracksMsg{IDs: ids, Tracks: tracks, Label: pl.Name, PlayNext: playNext}
 	}
 }
 
@@ -477,7 +527,15 @@ func (m *LibraryModel) playTracksFromSelection() tea.Cmd {
 	return func() tea.Msg { return PlayTracksMsg{IDs: ids, Tracks: tracks, Track: &first, StartIdx: idx} }
 }
 
-func (m *LibraryModel) queueTracksFromSelection(playNext bool) tea.Cmd {
+// InAllSongs reports whether the track pane shows the library's list of all
+// songs rather than one album or playlist.
+func (m *LibraryModel) InAllSongs() bool {
+	return m.tracksBackPane == paneSections && m.drillTitle == "Songs"
+}
+
+// queueSelectedTrack puts the highlighted song straight after the playing
+// one (playNext) or at the end of the queue.
+func (m *LibraryModel) queueSelectedTrack(playNext bool) tea.Cmd {
 	if selected := m.drillList.SelectedItem(); selected == nil {
 		return nil
 	}
@@ -485,10 +543,24 @@ func (m *LibraryModel) queueTracksFromSelection(playNext bool) tea.Cmd {
 	if idx < 0 || idx >= len(m.drillTracks) {
 		return nil
 	}
-	if m.tracksBackPane == paneSections && m.drillTitle == "Songs" {
-		return queueTracksCmd(m.drillTracks[idx].Title, m.drillTracks[idx:idx+1], playNext)
+	return queueTracksCmd(m.drillTracks[idx].Title, m.drillTracks[idx:idx+1], playNext)
+}
+
+// queueWholeListNext puts the whole album or playlist after the playing
+// song. In the list of all the library's songs it is the highlighted song
+// alone.
+func (m *LibraryModel) queueWholeListNext() tea.Cmd {
+	if len(m.drillTracks) == 0 {
+		return nil
 	}
-	return queueTracksCmd(m.drillTitle, m.drillTracks[idx:], playNext)
+	if m.InAllSongs() {
+		idx := m.drillList.Index()
+		if idx < 0 || idx >= len(m.drillTracks) {
+			return nil
+		}
+		return queueTracksCmd(m.drillTracks[idx].Title, m.drillTracks[idx:idx+1], true)
+	}
+	return queueTracksCmd(m.drillTitle, m.drillTracks, true)
 }
 
 func queueTracksCmd(label string, tracks []provider.Track, playNext bool) tea.Cmd {
@@ -581,7 +653,7 @@ func (m *LibraryModel) renderDrillView() string {
 	if m.drillTitle == "" {
 		name = styles.SidebarActive.Render(i18n.T("Tracks"))
 	}
-	hint := styles.QueueItemMuted.Render(i18n.T("  b/esc back · enter play · tab queue · shift+tab next"))
+	hint := styles.QueueItemMuted.Render(i18n.T("  b/esc back · enter play · tab song next · shift+tab song to end · ctrl+q all next"))
 	header := name + hint + "\n" + lipgloss.NewStyle().Foreground(styles.ColorMuted).Render(strings.Repeat("─", m.width))
 	if m.drillLoading {
 		what := "Loading tracks…"
@@ -604,6 +676,9 @@ func (m *LibraryModel) renderHeader() string {
 	title := i18n.T("Library")
 	if m.pane == paneItems {
 		title = sectionTitle(m.selectedSection)
+		if m.openArtist != nil {
+			title += " · " + m.openArtist.Name
+		}
 	}
 	return styles.TabActive.Render(title) + "\n" + lipgloss.NewStyle().Foreground(styles.ColorMuted).Render(strings.Repeat("─", max(1, m.width)))
 }
@@ -615,6 +690,9 @@ func (m *LibraryModel) loadingText() string {
 	case sectionAlbums:
 		return i18n.T("Loading albums…")
 	case sectionArtists:
+		if m.openArtist != nil {
+			return i18n.T("Loading albums…")
+		}
 		return i18n.T("Loading artists…")
 	case sectionPlaylists:
 		return i18n.T("Loading playlists…")
@@ -762,4 +840,96 @@ func (m *LibraryModel) SelectedTrack() *provider.Track {
 	}
 	t := m.drillTracks[idx]
 	return &t
+}
+
+// ── Playlist editing ─────────────────────────────────────────────────────────
+
+// SelectedPlaylist is the playlist highlighted in the list of playlists, or
+// nil when that list isn't shown.
+func (m *LibraryModel) SelectedPlaylist() *provider.Playlist {
+	if m.pane != paneItems || m.selectedSection != sectionPlaylists || m.loading {
+		return nil
+	}
+	if it, ok := m.list.SelectedItem().(playlistItem); ok {
+		pl := provider.Playlist(it)
+		return &pl
+	}
+	return nil
+}
+
+// ShowingPlaylists reports whether the list of playlists is shown.
+func (m *LibraryModel) ShowingPlaylists() bool {
+	return m.pane == paneItems && m.selectedSection == sectionPlaylists
+}
+
+// OpenPlaylist is the library playlist whose songs are shown, with the
+// highlighted song and its place; nil when the track pane shows something
+// else (an album, a preview).
+func (m *LibraryModel) OpenPlaylist() (pl *provider.Playlist, t *provider.Track, idx int) {
+	if m.pane != paneTracks || m.drillPlaylist.ID == "" || m.drillLoading {
+		return nil, nil, -1
+	}
+	p := m.drillPlaylist
+	idx = m.drillList.Index()
+	if idx < 0 || idx >= len(m.drillTracks) {
+		return &p, nil, -1
+	}
+	tr := m.drillTracks[idx]
+	return &p, &tr, idx
+}
+
+// RemovedFromPlaylist drops the song at idx from the open playlist's list,
+// after it was removed from the playlist itself.
+func (m *LibraryModel) RemovedFromPlaylist(playlistID string, idx int, trackID string) {
+	if m.pane != paneTracks || m.drillPlaylist.ID != playlistID {
+		return
+	}
+	if idx < 0 || idx >= len(m.drillTracks) || m.drillTracks[idx].ID != trackID {
+		idx = slices.IndexFunc(m.drillTracks, func(t provider.Track) bool { return t.ID == trackID })
+	}
+	if idx < 0 {
+		return
+	}
+	m.drillTracks = slices.Delete(m.drillTracks, idx, idx+1)
+	m.drillList.RemoveItem(idx)
+	if n := len(m.drillTracks); n > 0 && m.drillList.Index() >= n {
+		m.drillList.Select(n - 1)
+	}
+	for i := range m.playlists {
+		if m.playlists[i].ID == playlistID && m.playlists[i].TrackCount > 0 {
+			m.playlists[i].TrackCount--
+		}
+	}
+}
+
+// PlaylistsChanged forgets the loaded playlists (one was made, renamed or
+// deleted): the list is loaded again, at once when it is shown, keeping the
+// highlight on keepID when it is there.
+func (m *LibraryModel) PlaylistsChanged(keepID string) tea.Cmd {
+	m.playlistsLoaded = false
+	if !m.ShowingPlaylists() {
+		return nil
+	}
+	m.keepPlaylistID = keepID
+	m.invalidateLibraryRequest()
+	m.loading = true
+	return tea.Batch(m.spinner.Tick, m.loadPlaylists())
+}
+
+// RenamedPlaylist shows a playlist under its new name.
+func (m *LibraryModel) RenamedPlaylist(id, name string) {
+	for i := range m.playlists {
+		if m.playlists[i].ID == id {
+			m.playlists[i].Name = name
+		}
+	}
+	if m.drillPlaylist.ID == id {
+		m.drillPlaylist.Name = name
+		m.drillTitle = name
+	}
+	if m.ShowingPlaylists() {
+		idx := m.list.Index()
+		m.showPlaylists()
+		m.list.Select(idx)
+	}
 }

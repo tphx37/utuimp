@@ -288,6 +288,78 @@ type radioMode struct {
 	skipped        map[string]bool // IDs/keys of tracks skipped due to unavailability
 	retries        int             // consecutive failed refill attempts (circuit breaker)
 	generation     int             // increments whenever radio starts/stops to ignore stale results
+	heard          radioHeard      // the song the station is told about (see radioFeedback)
+}
+
+// radioHeard is the song playing on the radio that the station was told
+// started, and how far it got.
+type radioHeard struct {
+	id       string
+	pos, dur time.Duration
+}
+
+// radioListener is a provider whose stations learn from what is played
+// (Yandex Music: My Wave and track radio).
+type radioListener interface {
+	RadioTrackStarted(ctx context.Context, seed, trackID string) error
+	RadioTrackEnded(ctx context.Context, seed, trackID string, played time.Duration, finished bool) error
+}
+
+// radioFinishedWithin is how close to its end a song must have played to
+// count as listened to rather than skipped: the player reports its position
+// only now and then, so the last one seen falls a little short of the end.
+const radioFinishedWithin = 10 * time.Second
+
+// radioFeedback tells the station what happens to its songs: when one
+// starts playing, and when it ends, whether it was listened to the end or
+// skipped. My Wave learns from this, as it does in the official apps.
+func (m *Model) radioFeedback(s player.State) tea.Cmd {
+	l, ok := m.provider.(radioListener)
+	if !ok || !m.radio.enabled || m.radio.seed == nil {
+		m.radio.heard = radioHeard{}
+		return nil
+	}
+	h := &m.radio.heard
+	if s.Track == nil || s.Loading {
+		return nil
+	}
+	if s.Track.ID == h.id {
+		h.pos = s.Position
+		if s.Track.Duration > 0 {
+			h.dur = s.Track.Duration
+		}
+		return nil
+	}
+	if !s.Playing {
+		return nil // a new song counts as started once it actually plays
+	}
+	seed := m.radio.seed.CatalogID
+	if seed == "" {
+		seed = m.radio.seed.ID
+	}
+	prev := *h
+	*h = radioHeard{id: s.Track.ID, pos: s.Position, dur: s.Track.Duration}
+	cur := s.Track.ID
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var log []string
+		if prev.id != "" {
+			finished := prev.dur > 0 && prev.pos >= prev.dur-radioFinishedWithin
+			if err := l.RadioTrackEnded(ctx, seed, prev.id, prev.pos, finished); err != nil {
+				log = append(log, fmt.Sprintf("[radio] feedback (end of %s): %v", prev.id, err))
+			} else if !finished {
+				log = append(log, fmt.Sprintf("[radio] told the station %s was skipped at %s", prev.id, prev.pos.Round(time.Second)))
+			}
+		}
+		if err := l.RadioTrackStarted(ctx, seed, cur); err != nil {
+			log = append(log, fmt.Sprintf("[radio] feedback (start of %s): %v", cur, err))
+		}
+		if len(log) == 0 {
+			return nil
+		}
+		return DebugLogMsg(strings.Join(log, "\n"))
+	}
 }
 
 const radioMaxRetries = 5 // give up re-arming after this many consecutive failures
@@ -324,6 +396,11 @@ type Model struct {
 	// only re-render on a track change or a resize.
 	artMode          bool
 	coverView        bool                                 // the frameless cover layout (v), see cover.go
+	coverPlain       bool                                 // cover view without lyrics (y): the song beside the cover
+	viz              *visualizer                          // fullscreen visualizer (V); nil until first opened
+	coverQueueOpen   bool                                 // cover view without lyrics: the queue is shown (esc)
+	lastCtrlC        time.Time                            // the first ctrl+c of a double press (see ctrlCWindow)
+	previewBack      *previewOrigin                       // a feed/search collection is previewed in the library; esc returns here
 	renderArt        func(image.Image, art.Size) []string // cover renderer, see artRenderer
 	artwork          artworkCache
 	artworkGen       int
@@ -375,6 +452,9 @@ type Model struct {
 	// background is true while another service's tab is shown; such a model
 	// leaves shared styling (the cover palette) alone.
 	background bool
+	// hostRows is how many rows the host (the tabbed App) draws above this
+	// model. The visualizer takes them too: the host hides its tabs then.
+	hostRows int
 	// engineErr is why the service failed to start; shown until it does.
 	engineErr string
 	// lastWheel / lastWheelAt throttle mouse-wheel bursts.
@@ -382,12 +462,22 @@ type Model struct {
 	lastWheelAt time.Time
 	// songMenu is the song actions window (key i); nil when closed.
 	songMenu *songMenuState
+	// serviceKey is the tab's service ("spotify", "yandex"…; "" outside
+	// the tabbed app): links of other services go to their own tab.
+	serviceKey string
+	// linkOffer is the :link window; nil when closed. pendingLink is its
+	// link, waiting for the engine to come up.
+	linkOffer   *linkOfferState
+	pendingLink *provider.Link
 	// busyLabel names a background load in progress (an album or playlist
 	// being fetched from search or the feed); shown with a spinner.
 	busyLabel string
 	// trackChangedAt starts the title reveal animation on a new track.
 	trackChangedAt time.Time
-	noAnim         bool // render final frames only (tests)
+	noAnim         bool  // render final frames only (tests)
+	fx             *uiFX // the interface's animation (see fx.go)
+	statusW        int   // the cover view's status rows were measured at this width…
+	statusRows     int   // …and take this many (see coverStatusRows)
 	// history holds recently played songs, newest first, persisted to
 	// historyPath ("" = not persisted).
 	history        []provider.Track
@@ -427,8 +517,9 @@ type Model struct {
 
 	// Animation
 	glowStep   int
-	introStep  int    // introDone (-1) when complete
-	initStatus string // status text shown on the loading screen
+	introStep  int         // introDone (-1) when complete
+	intro      *introDance // the ribbons behind the start screen (see intro.go)
+	initStatus string      // status text shown on the loading screen
 
 	// Memory profiling (enabled with --mem-profiling)
 	memProfiling bool
@@ -445,6 +536,13 @@ type Model struct {
 	playlistPickerLoading    bool
 	playlistPickerReturnMode viewMode
 	playlistPickerGen        int
+
+	// prompt asks for a playlist's name (see playlists.go); nil when closed.
+	prompt *textPrompt
+	// confirmWhat is the deletion d was pressed for once, at confirmAt: a
+	// second d soon after does it.
+	confirmWhat string
+	confirmAt   time.Time
 }
 
 func New(cfg *config.Config, prov provider.Provider, plyr player.Player, opts Options) *Model {
@@ -462,6 +560,7 @@ func New(cfg *config.Config, prov provider.Provider, plyr player.Player, opts Op
 		preMuteVol:   -1,
 		artMode:      cfg.AlbumArt,
 		coverView:    cfg.Layout == LayoutCover,
+		coverPlain:   cfg.CoverHideLyrics,
 		artwork:      artworkCache{rendered: map[art.Size][]string{}},
 		artHTTP:      &http.Client{Timeout: 5 * time.Second},
 		// Album art needs at least a 256-colour terminal to look reasonable;
@@ -494,7 +593,7 @@ func New(cfg *config.Config, prov provider.Provider, plyr player.Player, opts Op
 	m.history = loadHistory(m.historyPath)
 	m.historyP.m.SetTracks(m.history)
 	m.panels = []ContentView{m.library, m.historyP, m.lyricsP, m.feedP, m.eqP, m.aboutP}
-	if m.coverView {
+	if m.coverView && !m.coverPlain {
 		m.activePanel = m.lyricsPanelIdx() // the cover view opens on the lyrics
 	}
 	for _, line := range opts.InitialLogs {
@@ -519,6 +618,9 @@ func New(cfg *config.Config, prov provider.Provider, plyr player.Player, opts Op
 		m.queueIDs = ids
 		m.queue.SetTracks(m.queueTracks)
 	}
+	if cfg != nil && !cfg.IntroEnabled() {
+		m.introStep = introDone // "intro": false in the config
+	}
 	return m
 }
 
@@ -526,12 +628,16 @@ func (m *Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		tick(),
 		glowTick(),
-		introTick(),
+	}
+	if m.introStep != introDone {
+		cmds = append(cmds, introTick(), m.introBegin())
+	}
+	cmds = append(cmds,
 		// The terminal's real colours let ANSI themes blend smooth gradients
 		// (karaoke lyrics); terminals that don't answer just skip blending.
 		tea.RequestForegroundColor,
 		tea.RequestBackgroundColor,
-	}
+	)
 	if m.provider != nil {
 		cmds = append(cmds, m.library.Init())
 	}
@@ -613,8 +719,19 @@ func waitForState(ch <-chan player.State) tea.Cmd {
 
 // ── Update ────────────────────────────────────────────────────────────────
 
-func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *Model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
+	// After every message: whatever it changed may start an animation.
+	defer func() {
+		if c := m.fxEnsure(); c != nil {
+			cmd = tea.Batch(cmd, c)
+		}
+	}()
 	var cmds []tea.Cmd
+	// The layout is shared by every tab (the config is): follow a change
+	// made in another one.
+	if cmd := m.followLayout(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
 
 	switch msg := msg.(type) {
 
@@ -637,6 +754,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.feedP.SetSize(contentW, panelH)
 		m.eqP.SetSize(contentW, panelH)
 		m.aboutP.SetSize(contentW, panelH)
+
+	case fxTickMsg:
+		cmds = append(cmds, m.fxFrameMsg(msg))
+
+	case vizTickMsg:
+		if m.vizOpen() && msg.gen == m.viz.gen {
+			m.vizStep()
+			cmds = append(cmds, vizTick(msg.gen), m.vizRaw())
+		}
 
 	case tickMsg:
 		if m.errMsg != "" && time.Now().After(m.errExpiry) {
@@ -676,15 +802,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.introStep != introDone {
 			m.introStep++
 			if m.introStep >= len(introFrames) {
-				if m.player == nil {
-					// Hold at last frame until the engine signals ready.
-					m.introStep = len(introFrames) - 1
-				} else {
-					m.introStep = introDone
+				// Hold at the last frame until the engine signals ready,
+				// then let the ribbons fade out (see introFinish).
+				m.introStep = len(introFrames) - 1
+				if m.player != nil {
+					m.introFinish()
 				}
 			}
-			cmds = append(cmds, introTick())
+			if m.introStep != introDone {
+				cmds = append(cmds, introTick())
+			}
 		}
+
+	case introVizTickMsg:
+		cmds = append(cmds, m.introStepDance())
 
 	case playerStateMsg:
 		wasPlaying := m.playerState.Playing
@@ -753,11 +884,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else if s.Track.ArtworkURL != m.artwork.url {
 			m.artworkGen++
 			m.artwork = artworkCache{url: s.Track.ArtworkURL, rendered: map[art.Size][]string{}}
-			// Only download covers while the art view is active; toggling
-			// :art on fetches the current track's cover on demand.
-			if m.artMode || m.coverView {
-				cmds = append(cmds, m.fetchArtworkCmd(s.Track.ArtworkURL, m.artworkGen))
-			}
+			// The cover is fetched in every view: the text, the progress
+			// line and the visualizer take its colours.
+			cmds = append(cmds, m.fetchArtworkCmd(s.Track.ArtworkURL, m.artworkGen))
 		}
 		if s.Track != nil && (m.playerState.Track == nil ||
 			views.PlaybackID(*m.playerState.Track) != views.PlaybackID(*s.Track) ||
@@ -811,6 +940,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.radio.refilling = true
 			cmds = append(cmds, m.runRadioSearch())
 		}
+		if c := m.radioFeedback(s); c != nil {
+			cmds = append(cmds, c)
+		}
 		m.playerState = s
 		m.stateAt = time.Now()
 		// History: a song counts once it actually plays (the UI may show a
@@ -849,6 +981,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.artwork.img = msg.img
 		m.artwork.failed = false
 		m.artwork.rendered = map[art.Size][]string{}
+		m.applyTrackPalette(m.playerState.Track)
+		if seq := art.ConsoleCoverPalette(msg.img); seq != "" {
+			// The Linux console: give the cover its own colours.
+			cmds = append(cmds, tea.Raw(seq))
+		}
 
 	case songRatingMsg:
 		// Update favorite state to match what Apple Music reports.
@@ -904,6 +1041,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case songMenuAlbumMsg:
 		m.handleSongMenuAlbum(msg)
+
+	case collectionPreviewMsg:
+		m.handleCollectionPreview(msg)
 
 	case views.LyricsTranslateRequestMsg:
 		if m.lyricsP.m.NeedsTranslation() {
@@ -973,16 +1113,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.queueIDs = ids
 			m.queue.SetTracks(m.queueTracks)
 			m.appendLog(fmt.Sprintf("[feed] playing %q (%d tracks)", msg.item.Title, len(ids)))
-			return m, m.playerCmd(func(p player.Player) error { return p.SetQueue(ids) })
+			return m, tea.Batch(m.playerCmd(func(p player.Player) error { return p.SetQueue(ids) }), m.showPlaybackHome())
 		}
 		if msg.playNext {
 			return m, m.playNextCmd(msg.item.Title, msg.tracks, ids)
 		}
-		m.queueTracks = append(m.queueTracks, msg.tracks...)
-		m.queueIDs = append(m.queueIDs, ids...)
-		m.queue.SetTracks(m.queueTracks)
-		m.appendLog(fmt.Sprintf("[feed] queued %q (%d tracks)", msg.item.Title, len(ids)))
-		return m, m.playerCmd(func(p player.Player) error { return p.AppendQueue(ids) })
+		return m, m.appendQueueCmd(msg.item.Title, msg.tracks, ids)
 
 	case radioResultMsg:
 		if !m.radio.enabled || msg.radioGen != m.radio.generation {
@@ -1078,6 +1214,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != m.searchGen || m.provider == nil {
 			return m, nil
 		}
+		if l, ok := provider.ParseLink(msg.query); ok {
+			return m, m.openLink(l, true)
+		}
 		m.appendLog(fmt.Sprintf("[search] %q…", msg.query))
 		prov := m.provider
 		query := msg.query
@@ -1087,6 +1226,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			result, err := prov.Search(ctx, query)
 			return searchResultMsg{result: result, query: query, err: err}
 		}
+
+	case openLinkMsg:
+		return m, m.handleOpenLink(msg)
+
+	case linkResolvedMsg:
+		m.handleLinkResolved(msg)
+
+	case linkUnavailableMsg:
+		name := serviceNames[msg.service]
+		if name == "" {
+			name = msg.service
+		}
+		m.note(fmt.Sprintf(i18n.T("%s isn't set up here"), i18n.T(name)))
 
 	case searchResultMsg:
 		if msg.query != m.searchQuery {
@@ -1137,34 +1289,30 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.queueIDs = ids
 			m.queue.SetTracks(m.queueTracks)
 			m.appendLog(fmt.Sprintf("[search] playing %q (%d tracks)", msg.label, len(ids)))
-			m.mode = modeNormal
 			m.playerState.Loading = true
 			m.playerState.Playing = false
 			m.playerState.Position = 0
-			return m, m.playerCmd(func(p player.Player) error { return p.SetQueue(ids) })
+			return m, tea.Batch(m.playerCmd(func(p player.Player) error { return p.SetQueue(ids) }), m.showPlaybackHome())
 		}
 		if msg.playNext {
 			m.mode = modeNormal
 			return m, m.playNextCmd(msg.label, msg.tracks, ids)
 		}
-		m.queueTracks = append(m.queueTracks, msg.tracks...)
-		m.queueIDs = append(m.queueIDs, ids...)
-		m.queue.SetTracks(m.queueTracks)
-		m.appendLog(fmt.Sprintf("[search] queued %q (%d tracks)", msg.label, len(ids)))
-		return m, m.playerCmd(func(p player.Player) error { return p.AppendQueue(ids) })
+		return m, m.appendQueueCmd(msg.label, msg.tracks, ids)
 
 	case views.QueueTracksMsg:
+		if msg.Err != nil {
+			m.appendLog(fmt.Sprintf("[library] could not load %q: %v", msg.Label, msg.Err))
+			m.note(fmt.Sprintf(i18n.T("could not load %q: %v"), msg.Label, msg.Err))
+			break
+		}
 		if len(msg.Tracks) == 0 || len(msg.IDs) == 0 {
 			break
 		}
 		if msg.PlayNext {
 			return m, m.playNextCmd(msg.Label, msg.Tracks, msg.IDs)
 		}
-		m.queueTracks = append(m.queueTracks, msg.Tracks...)
-		m.queueIDs = append(m.queueIDs, msg.IDs...)
-		m.queue.SetTracks(m.queueTracks)
-		m.appendLog(fmt.Sprintf("[library] queued %q (%d tracks)", msg.Label, len(msg.IDs)))
-		return m, m.playerCmd(func(p player.Player) error { return p.AppendQueue(msg.IDs) })
+		return m, m.appendQueueCmd(msg.Label, msg.Tracks, msg.IDs)
 
 	case views.PlayTracksMsg:
 		if msg.Track != nil {
@@ -1211,8 +1359,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return nil
 		}))
-		m.mode = modeNormal
-		m.activePanel = -1
+		cmds = append(cmds, m.showPlaybackHome())
 
 	case InitStatusMsg:
 		m.initStatus = string(msg)
@@ -1254,6 +1401,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		cmds = append(cmds, waitForState(m.stateCh), m.library.Init())
+		if l := m.pendingLink; l != nil {
+			m.pendingLink = nil
+			cmds = append(cmds, m.resolveLinkCmd(*l, false))
+		}
 		cmds = append(cmds, m.restoreAudioSettings()...)
 		if m.memProfiling {
 			cmds = append(cmds, memTick())
@@ -1268,6 +1419,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case InitErrMsg:
 		m.appendLog("[init error] " + msg.Err.Error())
 		m.engineErr = msg.Err.Error()
+		if m.linkOffer != nil && m.linkOffer.loading {
+			m.pendingLink = nil
+			m.linkOffer.loading = false
+			m.linkOffer.err = msg.Err
+		}
 		m.errMsg = msg.Err.Error()
 		m.errExpiry = time.Now().Add(30 * time.Second)
 		m.introStep = introDone
@@ -1346,7 +1502,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.playlistPickerCursor = 0
 		}
 
+	case playlistEditedMsg:
+		cmds = append(cmds, m.handlePlaylistEdited(msg))
+
 	case trackAddedToPlaylistMsg:
+		if msg.err == nil {
+			// Song counts changed: the list of playlists loads again.
+			cmds = append(cmds, m.library.m.PlaylistsChanged(""))
+		}
 		if msg.err != nil {
 			m.errMsg = fmt.Sprintf(i18n.T("✗ add to playlist: %v"), msg.err)
 			m.appendLog(fmt.Sprintf("[playlist] add error: %v", msg.err))
@@ -1416,19 +1579,42 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+// ctrlCWindow is how soon the second ctrl+c must follow the first to quit.
+const ctrlCWindow = 2 * time.Second
+
 func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	k := msg.String()
 
-	// ctrl+c always quits
+	// ctrl+c quits when pressed twice in a row (one press is easy to hit
+	// by accident, e.g. when copying text).
 	if k == "ctrl+c" {
+		if time.Since(m.lastCtrlC) > ctrlCWindow {
+			m.lastCtrlC = time.Now()
+			m.errMsg = i18n.T("press ctrl+c again to quit")
+			m.errExpiry = m.lastCtrlC.Add(ctrlCWindow)
+			return nil
+		}
 		if m.player != nil {
 			_ = m.player.Close()
 		}
 		return tea.Quit
 	}
+	m.lastCtrlC = time.Time{}
+
+	if m.vizOpen() {
+		return m.handleVizKey(k)
+	}
+
+	if m.prompt != nil {
+		return m.handlePromptKey(k, msg)
+	}
 
 	if m.songMenu != nil {
 		return m.handleSongMenuKey(k)
+	}
+
+	if m.linkOffer != nil {
+		return m.handleLinkOfferKey(k)
 	}
 
 	switch m.mode {
@@ -1445,6 +1631,9 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 
 func (m *Model) handlePaste(content string) tea.Cmd {
 	switch {
+	case m.prompt != nil:
+		m.promptInsert(content)
+		return nil
 	case m.mode == modeSearch:
 		return m.insertSearchText(content, true)
 	case m.mode == modeCommand:
@@ -1480,29 +1669,21 @@ func (m *Model) handleSearchKey(k string, msg tea.KeyPressMsg) tea.Cmd {
 			m.playerState.Playing = false
 			m.playerState.Position = 0
 			m.queue.SetTracks(m.queueTracks)
-			m.mode = modeNormal
-			return m.playerCmd(func(p player.Player) error { return p.SetQueue(m.queueIDs) })
+			return tea.Batch(m.playerCmd(func(p player.Player) error { return p.SetQueue(m.queueIDs) }), m.showPlaybackHome())
 		}
-		// Album: fetch all tracks then play.
+		// Album or playlist: preview its songs first (see preview.go).
 		if a := m.search.SelectedAlbum(); a != nil {
-			m.playerState.Loading = true
-			return m.fetchSearchCollectionCmd(a, nil, true, false)
+			return m.previewCmd(m.fetchSearchCollectionCmd(a, nil, false, false))
 		}
-		// Playlist: fetch all tracks then play.
 		if p := m.search.SelectedPlaylist(); p != nil {
-			m.playerState.Loading = true
-			return m.fetchSearchCollectionCmd(nil, p, true, false)
+			return m.previewCmd(m.fetchSearchCollectionCmd(nil, p, false, false))
 		}
 		return nil
-	case "tab":
-		// Track: add to queue — appends without interrupting playback.
+	case "shift+tab":
+		// Track: add to the end of the queue without interrupting playback.
 		if t := m.search.SelectedTrack(); t != nil {
 			tc := *t
-			m.appendLog("[queue] append: " + views.TrackLabel(tc))
-			m.queueTracks = append(m.queueTracks, tc)
-			m.queueIDs = append(m.queueIDs, views.PlaybackID(tc))
-			m.queue.SetTracks(m.queueTracks)
-			return m.playerCmd(func(p player.Player) error { return p.AppendQueue([]string{views.PlaybackID(tc)}) })
+			return m.appendQueueCmd(views.TrackLabel(tc), []provider.Track{tc}, []string{views.PlaybackID(tc)})
 		}
 		// Album: fetch all tracks then add to queue.
 		if a := m.search.SelectedAlbum(); a != nil {
@@ -1513,7 +1694,7 @@ func (m *Model) handleSearchKey(k string, msg tea.KeyPressMsg) tea.Cmd {
 			return m.fetchSearchCollectionCmd(nil, p, false, false)
 		}
 		return nil
-	case "shift+tab":
+	case "tab", "ctrl+q":
 		// Track: play next.
 		if t := m.search.SelectedTrack(); t != nil {
 			tc := *t
@@ -1683,8 +1864,10 @@ var allCommands = []cmdEntry{
 	{"save", "save <name>", "Save the queue as a playlist"},
 	{"seek", "seek <seconds>", "Jump to a position in the current song"},
 	{"vol", "vol <0-100|+n|-n>", "Set, raise, or lower volume (e.g. vol 80, vol +10, vol -5)"},
-	{"quality", "quality <high|standard|256|64>", "Set the Apple Music bitrate"},
+	{"quality", "quality [high|standard|256|64]", "Show the audio format, or set the Apple Music bitrate"},
 	{"art", "art", "Toggle album-art view (cover + track info instead of the bar)"},
+	{"link", "link <url>", "Open a song/album/playlist link: play it or add it to the queue"},
+	{"viz", "viz", "Fullscreen music visualizer (V; esc to leave)"},
 	{"mute", "mute", "Toggle mute"},
 	{"about", "about", "Show information about utuimp"},
 	{"debug-logs", "debug-logs", "Toggle debug log panel"},
@@ -1783,6 +1966,10 @@ func (m *Model) executeCommand(cmd string) tea.Cmd {
 			_ = m.player.Close()
 		}
 		return tea.Quit
+	case cmd == "viz":
+		return m.openVisualizer()
+	case cmd == "link" || strings.HasPrefix(cmd, "link "):
+		return m.linkCommand(strings.TrimPrefix(cmd, "link"))
 	case cmd == "about":
 		for i, p := range m.panels {
 			if p == m.aboutP {
@@ -1829,11 +2016,12 @@ func (m *Model) executeCommand(cmd string) tea.Cmd {
 		return m.volumeCmd(0, saveVolumeMsg{muted: true, preMute: m.preMuteVol})
 
 	case strings.HasPrefix(cmd, "quality"):
-		name, arg, _ := strings.Cut(cmd, " ")
+		_, arg, _ := strings.Cut(cmd, " ")
 		arg = strings.TrimSpace(arg)
 		if arg == "" {
-			m.errMsg = ":" + name + " requires high, standard, 256, or 64"
-			m.errExpiry = time.Now().Add(3 * time.Second)
+			// Without an argument: what is playing and what the catalog has.
+			m.errMsg = "✓ " + m.qualityInfo()
+			m.errExpiry = time.Now().Add(6 * time.Second)
 			return nil
 		}
 		kbps, err := audioquality.Parse(arg)
@@ -2138,12 +2326,19 @@ func (m *Model) smoothPosition() time.Duration {
 	return m.lyricsClock
 }
 
+// maxExtrapolate is how far past the player's last report the position is
+// carried on. It must outlast the slowest player's reports (Spotify's state
+// is polled every 3 s, or later when rate-limited): a cap below that froze
+// the clock before each report, then snapped it back and forward again, a
+// stutter of the karaoke and the progress line every few seconds.
+const maxExtrapolate = 10 * time.Second
+
 // lyricsPosition is the playback position extrapolated from the last player
 // update, so word highlighting advances smoothly between updates.
 func (m *Model) lyricsPosition() time.Duration {
 	pos := m.playerState.Position
 	if m.playerState.Playing && !m.playerState.Loading && !m.stateAt.IsZero() {
-		pos += min(time.Since(m.stateAt), 2*time.Second)
+		pos += min(time.Since(m.stateAt), maxExtrapolate)
 	}
 	if !m.seekAt.IsZero() {
 		since := time.Since(m.seekAt)
@@ -2268,6 +2463,7 @@ func (m *Model) startRadioFrom(seed *provider.Track) tea.Cmd {
 		r.ResetStation(views.PlaybackID(*seed))
 	}
 	m.radio.generation++
+	m.radio.heard = radioHeard{} // a new station hears only its own songs
 	m.radio.enabled = true
 	m.radio.seed = seed
 	m.radio.skipped = nil
@@ -2355,6 +2551,7 @@ func (m *Model) stopRadio() {
 	m.radio.refilling = false
 	m.radio.triggeredForID = ""
 	m.radio.generation++
+	m.radio.heard = radioHeard{} // a new station hears only its own songs
 	m.appendLog("[radio] stopped")
 }
 
@@ -2428,9 +2625,10 @@ func (m *Model) forwardToActivePanel(msg tea.KeyPressMsg) tea.Cmd {
 					}
 					m.queueTracks, m.queueIDs = nil, nil
 					m.queue.SetTracks(nil)
-					m.activePanel = -1
+					home := m.showPlaybackHome()
 					seed := &provider.Track{ID: item.ID, CatalogID: item.ID, Title: item.Title}
 					m.radio.generation++
+					m.radio.heard = radioHeard{} // a new station hears only its own songs
 					m.radio.enabled = true
 					m.radio.seed = seed
 					m.radio.skipped = nil
@@ -2440,19 +2638,19 @@ func (m *Model) forwardToActivePanel(msg tea.KeyPressMsg) tea.Cmd {
 					m.appendLog("[radio] " + item.Title)
 					// Empty the player's queue too, so the first batch
 					// starts playing instead of queueing behind old songs.
-					return tea.Sequence(
+					return tea.Batch(home, tea.Sequence(
 						m.playerCmd(func(p player.Player) error { return p.ClearQueue() }),
 						m.runRadioSearch(),
-					)
+					))
 				}
-				m.playerState.Loading = true
-				return m.fetchFeedItemTracksCmd(item, true, false)
+				// An album or playlist: preview its songs first.
+				return m.previewCmd(m.fetchFeedItemTracksCmd(item, false, false))
 			}
-		case "tab":
+		case "shift+tab":
 			if item := m.feedP.m.SelectedItem(); item != nil {
 				return m.fetchFeedItemTracksCmd(item, false, false)
 			}
-		case "shift+tab":
+		case "tab", "ctrl+q":
 			if item := m.feedP.m.SelectedItem(); item != nil {
 				return m.fetchFeedItemTracksCmd(item, false, true)
 			}
@@ -2490,18 +2688,47 @@ func (m *Model) handleNormalKey(msg tea.KeyPressMsg, k string) tea.Cmd {
 		return m.openSongMenu()
 	}
 
+	// P adds the selected song (else the playing one) to a playlist, from
+	// anywhere.
+	if k == "P" && !m.lyricsP.m.PickerOpen() {
+		m.lastKey = ""
+		return m.addToPlaylistTarget()
+	}
+
+	if k == "V" && !m.lyricsP.m.PickerOpen() {
+		m.lastKey = ""
+		return m.openVisualizer()
+	}
+
 	if k == "v" && !m.lyricsP.m.PickerOpen() {
 		m.lastKey = ""
 		return m.toggleCoverView()
 	}
 
-	// Cover view: esc on the queue goes back to the lyrics.
+	// Cover view: y shows or hides the lyrics; esc switches between the
+	// home screen and the queue.
+	if m.coverView && k == "y" && !m.lyricsP.m.PickerOpen() {
+		m.lastKey = ""
+		return m.toggleCoverLyrics()
+	}
 	if m.coverView && k == "esc" && m.activePanel < 0 && m.queueMiniCursor < 0 {
 		m.lastKey = ""
+		if m.coverPlain {
+			m.coverQueueOpen = !m.coverQueueOpen
+			return nil
+		}
 		return m.openLyricsPanel()
+	}
+	// Picking a song in the hidden queue shows it.
+	if m.coverView && m.coverPlain && m.activePanel < 0 && !m.coverQueueOpen {
+		switch k {
+		case "j", "k", "up", "down":
+			m.coverQueueOpen = true
+		}
 	}
 
 	if k == "L" {
+		m.previewBack = nil
 		m.library.m.ResetTopLevel()
 		for i, p := range m.panels {
 			if p == m.library {
@@ -2515,11 +2742,12 @@ func (m *Model) handleNormalKey(msg tea.KeyPressMsg, k string) tea.Cmd {
 	// Panel nav keys toggle their panel (always checked first).
 	for i, p := range m.panels {
 		if k == p.NavKey() {
+			m.previewBack = nil
 			if m.activePanel == i {
 				m.activePanel = -1 // toggle off
 				if m.coverView && p != m.lyricsP {
 					m.lastKey = ""
-					return m.openLyricsPanel() // the cover view falls back to the lyrics
+					return m.coverHome() // the cover view falls back to its home screen
 				}
 			} else {
 				m.activePanel = i
@@ -2570,12 +2798,17 @@ func (m *Model) handleNormalKey(msg tea.KeyPressMsg, k string) tea.Cmd {
 			return nil
 		case "enter":
 			if t != nil {
-				return m.playNowCmd(*t)
+				return tea.Batch(m.playNowCmd(*t), m.showPlaybackHome())
 			}
 			return nil
-		case "tab":
+		case "tab", "ctrl+q":
 			if t != nil {
 				return m.playNextCmd(views.TrackLabel(*t), []provider.Track{*t}, []string{views.PlaybackID(*t)})
+			}
+			return nil
+		case "shift+tab":
+			if t != nil {
+				return m.appendQueueCmd(views.TrackLabel(*t), []provider.Track{*t}, []string{views.PlaybackID(*t)})
 			}
 			return nil
 		case "p":
@@ -2609,117 +2842,30 @@ func (m *Model) handleNormalKey(msg tea.KeyPressMsg, k string) tea.Cmd {
 		}
 	}
 
-	// Player control keys always work, even when other panels are active.
-	switch k {
-	case "space":
-		return m.togglePlayPause()
-
-	case "n":
-		m.lastKey = ""
-		m.appendLog("[player] next")
-		m.playerState.Loading = true
-		return m.playerCmd(func(p player.Player) error { return p.Next() })
-
-	case "p":
-		m.lastKey = ""
-		m.appendLog("[player] previous")
-		m.playerState.Loading = true
-		return m.playerCmd(func(p player.Player) error { return p.Previous() })
-
-	case "+", "=":
-		m.lastKey = ""
-		return m.adjustVolume(0.05)
-
-	case "-":
-		m.lastKey = ""
-		return m.adjustVolume(-0.05)
-
-	case "r":
-		m.lastKey = ""
-		// Cycle: off → all → one → off
-		next := player.RepeatModeOff
-		switch m.playerState.RepeatMode {
-		case player.RepeatModeOff:
-			next = player.RepeatModeAll
-		case player.RepeatModeAll:
-			next = player.RepeatModeOne
-		case player.RepeatModeOne:
-			next = player.RepeatModeOff
+	// The library's playlist keys (c, r, d) come before the player's.
+	if m.activePanel >= 0 && m.panels[m.activePanel] == m.library {
+		if cmd, ok := m.libraryPlaylistKey(k); ok {
+			m.lastKey = ""
+			return cmd
 		}
-		m.playerState.RepeatMode = next
-		m.appendLog(fmt.Sprintf("[player] repeat → %d", next))
-		return m.playerCmd(func(p player.Player) error { return p.SetRepeat(next) })
+	}
 
-	case "s":
+	// Player control keys always work, even when other panels are active
+	// (the lyrics don't use ←/→, so those seek there too).
+	if (k == "left" || k == "right") && m.activePanel >= 0 && !m.lyricsVisible() {
 		m.lastKey = ""
-		on := !m.playerState.ShuffleMode
-		m.playerState.ShuffleMode = on
-		m.appendLog(fmt.Sprintf("[player] shuffle → %v", on))
-		return m.playerCmd(func(p player.Player) error { return p.SetShuffle(on) })
-
-	case "f":
-		m.lastKey = ""
-		if m.playerState.Track != nil {
-			t := m.playerState.Track
-			if t.CatalogID == "" {
-				if idx := playingQueueIdx(m.queueTracks, t); idx >= 0 && idx < len(m.queueTracks) {
-					t.CatalogID = m.queueTracks[idx].CatalogID
-				}
-			}
-			loved := !m.isTrackFavorite(t)
-			if !loved {
-				// Removing a favourite is easy to do by accident, so it
-				// takes a second f within favRemoveWindow.
-				id := views.PlaybackID(*t)
-				if m.favRemoveID != id || time.Since(m.favRemoveAt) > favRemoveWindow {
-					m.favRemoveID, m.favRemoveAt = id, time.Now()
-					m.errMsg = i18n.T("press f again to remove from favorites")
-					m.errExpiry = time.Now().Add(favRemoveWindow)
-					return nil
-				}
-				m.errMsg, m.favRemoveID = "", ""
-			}
-			m.setTrackFavorite(t, loved)
-			m.appendLog(fmt.Sprintf("[fav] %s → %v", t.Title, loved))
-			// Sync to Apple Music asynchronously.
-			return m.loveSongCmd(t, loved)
-		}
-	case "R":
-		m.lastKey = ""
-		return m.toggleRadio(m.playerState.Track)
-
-	case "left":
-		m.lastKey = ""
-		if m.activePanel >= 0 && !m.lyricsVisible() { // the lyrics don't use ←/→: seek
-			return m.forwardToActivePanel(msg)
-		}
-		if m.playerState.Track != nil {
-			newPos := max(0, m.playerState.Position-10*time.Second)
-			m.appendLog(fmt.Sprintf("[player] seek ← %s", views.FormatDuration(newPos)))
-			pos := newPos
-			m.noteSeek(pos)
-			return m.playerCmd(func(p player.Player) error { return p.Seek(pos) })
-		}
-
-	case "right":
-		m.lastKey = ""
-		if m.activePanel >= 0 && !m.lyricsVisible() { // the lyrics don't use ←/→: seek
-			return m.forwardToActivePanel(msg)
-		}
-		if m.playerState.Track != nil {
-			newPos := m.playerState.Position + 10*time.Second
-			if dur := m.playerState.Track.Duration; dur > 0 && newPos > dur {
-				newPos = dur
-			}
-			m.appendLog(fmt.Sprintf("[player] seek → %s", views.FormatDuration(newPos)))
-			pos := newPos
-			m.noteSeek(pos)
-			return m.playerCmd(func(p player.Player) error { return p.Seek(pos) })
-		}
+		return m.forwardToActivePanel(msg)
+	}
+	if cmd, ok := m.playbackKey(k); ok {
+		return cmd
 	}
 
 	// Forward remaining keys to other active panels (e.g. library).
 	if m.activePanel >= 0 {
+		if k == "esc" && m.previewBack != nil && m.panels[m.activePanel] == m.library {
+			m.lastKey = ""
+			return m.leavePreview()
+		}
 		if k == "esc" {
 			if m.panels[m.activePanel].Back() {
 				m.lastKey = ""
@@ -2729,7 +2875,7 @@ func (m *Model) handleNormalKey(msg tea.KeyPressMsg, k string) tea.Cmd {
 			m.activePanel = -1
 			m.lastKey = ""
 			if m.coverView && closed != m.lyricsP {
-				return m.openLyricsPanel() // the cover view falls back to the lyrics
+				return m.coverHome() // the cover view falls back to its home screen
 			}
 			return nil
 		}
@@ -2798,6 +2944,119 @@ func (m *Model) handleNormalKey(msg tea.KeyPressMsg, k string) tea.Cmd {
 
 // queueOp applies a queue-editing key to the song at idx. ok is false for
 // keys it doesn't handle.
+// playbackKey handles the keys that control playback (play/pause, next and
+// previous, volume, seek, repeat, shuffle, favourite, radio) wherever they
+// are pressed. ok is false when k isn't one of them or had nothing to act on.
+func (m *Model) playbackKey(k string) (cmd tea.Cmd, ok bool) {
+	switch k {
+	case "space":
+		return m.togglePlayPause(), true
+
+	case "n":
+		m.lastKey = ""
+		m.appendLog("[player] next")
+		m.playerState.Loading = true
+		return m.playerCmd(func(p player.Player) error { return p.Next() }), true
+
+	case "p":
+		m.lastKey = ""
+		m.appendLog("[player] previous")
+		m.playerState.Loading = true
+		return m.playerCmd(func(p player.Player) error { return p.Previous() }), true
+
+	case "+", "=":
+		m.lastKey = ""
+		return m.adjustVolume(0.05), true
+
+	case "-":
+		m.lastKey = ""
+		return m.adjustVolume(-0.05), true
+
+	case "r":
+		m.lastKey = ""
+		// Cycle: off → all → one → off
+		next := player.RepeatModeOff
+		switch m.playerState.RepeatMode {
+		case player.RepeatModeOff:
+			next = player.RepeatModeAll
+		case player.RepeatModeAll:
+			next = player.RepeatModeOne
+		case player.RepeatModeOne:
+			next = player.RepeatModeOff
+		}
+		m.playerState.RepeatMode = next
+		m.appendLog(fmt.Sprintf("[player] repeat → %d", next))
+		return m.playerCmd(func(p player.Player) error { return p.SetRepeat(next) }), true
+
+	case "s":
+		m.lastKey = ""
+		on := !m.playerState.ShuffleMode
+		m.playerState.ShuffleMode = on
+		m.appendLog(fmt.Sprintf("[player] shuffle → %v", on))
+		return m.playerCmd(func(p player.Player) error { return p.SetShuffle(on) }), true
+
+	case "f":
+		m.lastKey = ""
+		if m.playerState.Track != nil {
+			t := m.playerState.Track
+			if t.CatalogID == "" {
+				if idx := playingQueueIdx(m.queueTracks, t); idx >= 0 && idx < len(m.queueTracks) {
+					t.CatalogID = m.queueTracks[idx].CatalogID
+				}
+			}
+			loved := !m.isTrackFavorite(t)
+			if !loved && !m.canDelete() {
+				// Taking a like back is deleting from the library.
+				m.refuse("Deleting")
+				return nil, true
+			}
+			if !loved {
+				// Removing a favourite is easy to do by accident, so it
+				// takes a second f within favRemoveWindow.
+				id := views.PlaybackID(*t)
+				if m.favRemoveID != id || time.Since(m.favRemoveAt) > favRemoveWindow {
+					m.favRemoveID, m.favRemoveAt = id, time.Now()
+					m.errMsg = i18n.T("press f again to remove from favorites")
+					m.errExpiry = time.Now().Add(favRemoveWindow)
+					return nil, true
+				}
+				m.errMsg, m.favRemoveID = "", ""
+			}
+			m.setTrackFavorite(t, loved)
+			m.appendLog(fmt.Sprintf("[fav] %s → %v", t.Title, loved))
+			// Sync to Apple Music asynchronously.
+			return m.loveSongCmd(t, loved), true
+		}
+	case "R":
+		m.lastKey = ""
+		return m.toggleRadio(m.playerState.Track), true
+
+	case "left":
+		m.lastKey = ""
+		if m.playerState.Track != nil {
+			newPos := max(0, m.playerState.Position-10*time.Second)
+			m.appendLog(fmt.Sprintf("[player] seek ← %s", views.FormatDuration(newPos)))
+			pos := newPos
+			m.noteSeek(pos)
+			return m.playerCmd(func(p player.Player) error { return p.Seek(pos) }), true
+		}
+
+	case "right":
+		m.lastKey = ""
+		if m.playerState.Track != nil {
+			newPos := m.playerState.Position + 10*time.Second
+			if dur := m.playerState.Track.Duration; dur > 0 && newPos > dur {
+				newPos = dur
+			}
+			m.appendLog(fmt.Sprintf("[player] seek → %s", views.FormatDuration(newPos)))
+			pos := newPos
+			m.noteSeek(pos)
+			return m.playerCmd(func(p player.Player) error { return p.Seek(pos) }), true
+		}
+	}
+	return nil, false
+}
+
 func (m *Model) queueOp(k string, idx int) (tea.Cmd, bool) {
 	if idx < 0 || idx >= len(m.queueTracks) || idx >= len(m.queueIDs) {
 		return nil, false
@@ -2841,6 +3100,8 @@ func (m *Model) queueOp(k string, idx int) (tea.Cmd, bool) {
 		m.appendLog(fmt.Sprintf("[queue] moved #%d down", idx+1))
 		from, to := idx, idx+1
 		return m.playerCmd(func(p player.Player) error { return p.MoveInQueue(from, to) }), true
+	case "shift+tab":
+		return m.queueMoveNext(idx), true
 	case "c":
 		m.appendLog("[queue] cleared")
 		m.queueTracks, m.queueIDs = nil, nil
@@ -2859,6 +3120,44 @@ func (m *Model) queueOp(k string, idx int) (tea.Cmd, bool) {
 		return m.toggleRadio(&tc), true
 	}
 	return nil, false
+}
+
+// queueMoveNext moves the song at idx to play right after the current one.
+// Players that keep their own queue move it there too; one that can only
+// insert (Spotify, MusicKit) gets it taken out and put in as "play next".
+func (m *Model) queueMoveNext(idx int) tea.Cmd {
+	cur := playingQueueIdx(m.queueTracks, m.playerState.Track)
+	if idx == cur {
+		return nil // it is playing
+	}
+	to := cur + 1
+	if idx < cur {
+		to = cur // the playing song moves up one when it leaves
+	}
+	t, id := m.queueTracks[idx], m.queueIDs[idx]
+	if idx == to {
+		m.note(fmt.Sprintf(i18n.T("“%s” is already next"), t.Title))
+		return nil
+	}
+	m.queueTracks = slices.Delete(m.queueTracks, idx, idx+1)
+	m.queueIDs = slices.Delete(m.queueIDs, idx, idx+1)
+	m.queueTracks = slices.Insert(m.queueTracks, to, t)
+	m.queueIDs = slices.Insert(m.queueIDs, to, id)
+	m.queue.SetTracks(m.queueTracks)
+	m.queueMiniCursor = to
+	m.moveQueueMiniCursor(0)
+	m.appendLog(fmt.Sprintf("[queue] play next: %s (from #%d)", views.TrackLabel(t), idx+1))
+	m.note(fmt.Sprintf(i18n.T("“%s” plays next"), t.Title))
+	from := idx
+	return m.playerCmd(func(p player.Player) error {
+		if nq, ok := p.(player.NextQueuer); ok {
+			if err := p.RemoveFromQueue(from); err != nil {
+				return err
+			}
+			return nq.PlayNext([]string{id})
+		}
+		return p.MoveInQueue(from, to)
+	})
 }
 
 // playNowCmd plays t right away: it goes in after the current song and the
@@ -3034,6 +3333,10 @@ func (m *Model) setTrackFavorite(t *provider.Track, loved bool) {
 
 // loveSongCmd calls provider.LoveSong asynchronously and returns a loveSongMsg.
 func (m *Model) loveSongCmd(t *provider.Track, loved bool) tea.Cmd {
+	if !loved && !m.canDelete() {
+		m.refuse("Deleting")
+		return nil
+	}
 	if m.provider == nil || t == nil {
 		return nil
 	}
@@ -3131,16 +3434,23 @@ func (m *Model) playerCmd(fn func(player.Player) error) tea.Cmd {
 	}
 }
 
+// appendQueueCmd adds songs to the end of the queue without interrupting
+// playback.
+func (m *Model) appendQueueCmd(label string, tracks []provider.Track, ids []string) tea.Cmd {
+	m.queueTracks = append(m.queueTracks, tracks...)
+	m.queueIDs = append(m.queueIDs, ids...)
+	m.queue.SetTracks(m.queueTracks)
+	m.appendLog(fmt.Sprintf("[queue] append: %s (%d track(s))", label, len(ids)))
+	m.note(fmt.Sprintf(i18n.T("✓ added to queue: %s"), label))
+	return m.playerCmd(func(p player.Player) error { return p.AppendQueue(ids) })
+}
+
 func (m *Model) playNextCmd(label string, tracks []provider.Track, ids []string) tea.Cmd {
-	insertIdx := 0
-	if m.playerState.Track != nil {
-		for i, t := range m.queueTracks {
-			if views.PlaybackID(t) == views.PlaybackID(*m.playerState.Track) {
-				insertIdx = i + 1
-				break
-			}
-		}
-	}
+	// After the playing song, found the way the queue shows it (by ID,
+	// else by title: a player may report another ID for it, e.g. the
+	// catalog one of a library song). An exact-ID-only match put the songs
+	// at the top, above the playing one, where they were out of sight.
+	insertIdx := playingQueueIdx(m.queueTracks, m.playerState.Track) + 1
 
 	origLen := len(m.queueTracks)
 	if origLen == 0 {
@@ -3165,6 +3475,7 @@ func (m *Model) playNextCmd(label string, tracks []provider.Track, ids []string)
 	m.queue.SetTracks(m.queueTracks)
 
 	m.appendLog(fmt.Sprintf("[queue] play next: %s (%d track(s))", label, len(tracks)))
+	m.note(fmt.Sprintf(i18n.T("✓ next up: %s"), label))
 
 	return m.playerCmd(func(p player.Player) error {
 		if nq, ok := p.(player.NextQueuer); ok {
@@ -3227,23 +3538,44 @@ func (m *Model) View() tea.View {
 		content = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.renderPlaylistPickerModal())
 	case m.introStep != introDone:
 		content = m.renderIntro()
+	case m.vizOpen():
+		content = m.renderVisualizer()
 	default:
-		if m.coverView {
-			content = m.renderCoverLayout()
-		} else {
-			content = m.renderBoxLayout()
-		}
-		if m.songMenu != nil {
-			content = m.overlay(content, m.renderSongMenu())
-		}
+		content = m.fxApply(m.renderMain())
+	}
+	if styles.Console && !m.vizOpen() { // the visualizer writes for the console itself
+		content = styles.ConsoleText(content)
 	}
 	v := tea.NewView(content)
 	v.AltScreen = true
-	v.WindowTitle = m.windowTitle()
+	v.BackgroundColor = m.vizBackground()
+	if !styles.Console { // the console has no window to name
+		v.WindowTitle = m.windowTitle()
+	}
 	// Receive wheel events ourselves: otherwise the terminal turns one
 	// notch into several arrow presses (see the MouseWheelMsg case).
 	v.MouseMode = tea.MouseModeCellMotion
 	return v
+}
+
+// renderMain is the player's screen: the layout and any menu over it.
+func (m *Model) renderMain() string {
+	content := ""
+	if m.coverView {
+		content = m.renderCoverLayout()
+	} else {
+		content = m.renderBoxLayout()
+	}
+	if m.songMenu != nil {
+		content = m.overlay(content, m.renderSongMenu())
+	}
+	if m.linkOffer != nil {
+		content = m.overlay(content, m.renderLinkOffer())
+	}
+	if m.prompt != nil {
+		content = m.overlay(content, m.renderPrompt())
+	}
+	return content
 }
 
 // errNotConnected is reported for player actions before the service is up.
@@ -3408,6 +3740,18 @@ func (m *Model) renderIntro() string {
 	}
 
 	frame := introFrames[m.introStep]
+	if m.intro != nil {
+		status := ""
+		if m.introStep >= len("♪ utuimp") {
+			status = m.initStatus
+			if status == "" {
+				status = "connecting…"
+			}
+		}
+		if s := m.renderIntroDance(m.introLogo(), status, m.renderMain); s != "" {
+			return s
+		}
+	}
 	glowIdx := m.glowStep % len(styles.GlowPalette)
 
 	var logo strings.Builder
@@ -3519,7 +3863,7 @@ func (m *Model) nowPlayingArtLines(contentW, h int) []string {
 	}
 
 	trackLine := m.revealLine(m.renderTrackTitleLine(t, contentW, true))
-	albumLine := m.revealLine(m.renderAlbumMetaLine(t, contentW, true))
+	albumLine := m.revealLine(m.renderAlbumMetaLine(t, contentW, true, true))
 	lines = append(lines, "", trackLine, albumLine, m.statusLine(contentW))
 	return lines
 }
@@ -3597,8 +3941,8 @@ func enrichQueueIdx(tracks []provider.Track, playing *provider.Track) int {
 // tabs: anywhere except where those keys are typed or pick an item (search
 // and command input, pickers, the song menu).
 func (m *Model) canSwitchByKey() bool {
-	return m.mode == modeNormal &&
-		m.songMenu == nil && !m.lyricsP.m.PickerOpen()
+	return m.mode == modeNormal && !m.vizOpen() &&
+		m.songMenu == nil && m.linkOffer == nil && m.prompt == nil && !m.lyricsP.m.PickerOpen()
 }
 
 func (m *Model) applyTrackPalette(t *provider.Track) {
@@ -3606,12 +3950,21 @@ func (m *Model) applyTrackPalette(t *provider.Track) {
 		return
 	}
 	if t == nil || !t.ArtworkPalette.HasColors() {
+		// No palette from the service: the cover's own colours, once it
+		// is here (see artworkLoadedMsg).
+		if t != nil && t.ArtworkURL != "" && t.ArtworkURL == m.artwork.url && m.artwork.img != nil {
+			styles.ApplyCoverColours(coverAccents(m.artwork.img))
+			return
+		}
 		styles.ClearArtworkPalette()
 		return
 	}
 	p := t.ArtworkPalette
 	styles.ApplyArtworkPalette(p.BgColor, p.TextColor1, p.TextColor2, p.TextColor3, p.TextColor4)
 }
+
+// explicitMark tags explicit songs.
+const explicitMark = "🅴"
 
 func (m *Model) renderTrackTitleLine(t *provider.Track, contentW int, truncate bool) string {
 	muted := styles.QueueItemMuted
@@ -3622,7 +3975,9 @@ func (m *Model) renderTrackTitleLine(t *provider.Track, contentW int, truncate b
 		titleStr = styles.NowPlayingTitle.Render(t.Title)
 	}
 	if strings.EqualFold(t.ContentRating, "explicit") {
-		titleStr += " " + muted.Render("🅴")
+		// Many terminals draw the mark two cells wide although it counts
+		// as one, so it gets a space of its own before the dash.
+		titleStr += " " + muted.Render(explicitMark) + " "
 	}
 	line := titleStr + muted.Render(" — ") + styles.NowPlayingTrackArtist.Render(t.Artist)
 	if truncate {
@@ -3631,43 +3986,54 @@ func (m *Model) renderTrackTitleLine(t *provider.Track, contentW int, truncate b
 	return centerStr(line, contentW)
 }
 
-func (m *Model) renderAlbumMetaLine(t *provider.Track, contentW int, truncate bool) string {
+// renderAlbumMetaLine is "Album (year) • 0:39 / 4:41"; withTime false
+// leaves the time out (it is shown around the progress bar). The codec,
+// what the catalog holds and Apple's "Master" badge are under :quality
+// (qualityInfo).
+func (m *Model) renderAlbumMetaLine(t *provider.Track, contentW int, truncate, withTime bool) string {
 	albumText := t.Album
 	if year := t.ReleaseYear(); year != "" && albumText != "" {
 		albumText += " (" + year + ")"
 	}
-	elapsed := views.FormatDuration(m.playerState.Position)
-	total := views.FormatDuration(t.Duration)
-
-	build := func(withFormat bool) string {
-		line := styles.NowPlayingAlbum.Render(albumText + " • ")
-		if t.IsAppleDigitalMaster {
-			line += styles.NowPlayingLabel.Render(i18n.T("✦ Master")) + styles.NowPlayingAlbum.Render(" • ")
-		}
-		if output, catalog := formatBadge(t, m.playerState.Bitrate); withFormat && (output != "" || catalog != "") {
-			if output != "" {
-				line += styles.NowPlayingLabel.Render(output)
-			}
-			if catalog != "" {
-				if output != "" {
-					line += styles.NowPlayingAlbum.Render(" ")
-				}
-				line += styles.NowPlayingAlbum.Render("(catalog: " + catalog + ")")
-			}
-			line += styles.NowPlayingAlbum.Render(" • ")
-		}
-		return line + styles.NowPlayingTime.Render(elapsed+" / "+total)
+	var parts []string
+	if albumText != "" || withTime {
+		parts = append(parts, styles.NowPlayingAlbum.Render(albumText))
 	}
-	line := build(true)
+	if withTime {
+		elapsed := views.FormatDuration(m.playerState.Position)
+		total := views.FormatDuration(t.Duration)
+		parts = append(parts, styles.NowPlayingTime.Render(elapsed+" / "+total))
+	}
+	line := strings.Join(parts, styles.NowPlayingAlbum.Render(" • "))
 	if truncate {
-		// The format badge is the first thing to go on a narrow panel, so
-		// truncation never eats the time instead.
-		if lipgloss.Width(line) > contentW {
-			line = build(false)
-		}
 		line = ansi.Truncate(line, contentW, "…")
 	}
 	return centerStr(line, contentW)
+}
+
+// qualityInfo is what :quality without an argument shows: what is playing
+// ("AAC 256", or a local file's format) and what the catalog holds beyond
+// it ("catalog: Hi-Res, Atmos").
+func (m *Model) qualityInfo() string {
+	t := m.playerState.Track
+	output, catalog := formatBadge(t, m.playerState.Bitrate)
+	if output == "" && t != nil && !strings.HasPrefix(t.ID, "local:") {
+		output = qualityLabel(m.playerState.Bitrate)
+	}
+	var parts []string
+	if output != "" {
+		parts = append(parts, output)
+	}
+	if catalog != "" {
+		parts = append(parts, i18n.T("catalog: ")+catalog)
+	}
+	if t != nil && t.IsAppleDigitalMaster {
+		parts = append(parts, i18n.T("✦ Master"))
+	}
+	if len(parts) == 0 {
+		return i18n.T("nothing playing · :quality high|standard|256|64")
+	}
+	return strings.Join(parts, " · ") + i18n.T(" · :quality high|standard|256|64 to change")
 }
 
 // formatBadge describes the playing track's audio for the Now Playing panel.
@@ -3708,6 +4074,9 @@ func formatBadge(t *provider.Track, bitrateKbps int) (output, catalog string) {
 // artRenderer picks the album-art renderer: dithered sextants where the
 // terminal can draw them, the plain half-block renderer otherwise.
 func artRenderer() func(image.Image, art.Size) []string {
+	if art.ConsoleMode() {
+		return art.RenderConsole
+	}
 	if art.SupportsSextants() {
 		return art.RenderDithered
 	}
@@ -3764,11 +4133,17 @@ func (m *Model) nowPlayingTextLines(contentW, h int) []string {
 	}
 
 	trackLine := m.revealLine(m.renderTrackTitleLine(t, contentW, false))
-	albumLine := m.revealLine(m.renderAlbumMetaLine(t, contentW, false))
+	albumLine := m.revealLine(m.renderAlbumMetaLine(t, contentW, false, false))
 
-	// Progress bar — centred, slightly narrower than full width
-	barW := max(10, contentW-8)
-	progressLine := centerStr(views.RenderProgressBar(m.smoothPosition(), t.Duration, barW), contentW)
+	// Progress: "0:39  ━━━━━━━━──────  4:41", centred; the bar takes what
+	// the times leave.
+	pos := m.smoothPosition()
+	elapsed := views.FormatDuration(pos)
+	total := views.FormatDuration(t.Duration)
+	barW := max(6, contentW-8-lipgloss.Width(elapsed)-lipgloss.Width(total)-4)
+	progressLine := centerStr(styles.NowPlayingTime.Render(elapsed)+"  "+
+		views.RenderProgressBar(pos, t.Duration, barW)+"  "+
+		styles.NowPlayingTime.Render(total), contentW)
 
 	// Controls: ↺  ⇄  ▶/⏸  ♡/♥
 	var playIcon string
@@ -3966,9 +4341,13 @@ func (m *Model) searchLines(contentW, h int) []string {
 	if m.search.InArtist() {
 		esc = " back"
 	}
-	footer := "  " + accent.Render(i18n.T("Enter")) + muted.Render(" play "+kind) +
-		"  ·  " + accent.Render(i18n.T("Tab")) + muted.Render(i18n.T(" add to queue")) +
-		"  ·  " + accent.Render(i18n.T("Shift+Tab")) + muted.Render(i18n.T(" play next")) +
+	enter := " play " + kind
+	if kind != "track" {
+		enter = " open " + kind
+	}
+	footer := "  " + accent.Render(i18n.T("Enter")) + muted.Render(i18n.T(enter)) +
+		"  ·  " + accent.Render(i18n.T("Tab")) + muted.Render(i18n.T(" play next")) +
+		"  ·  " + accent.Render(i18n.T("Shift+Tab")) + muted.Render(i18n.T(" add to queue")) +
 		"  ·  " + accent.Render(i18n.T("ctrl+p")) + muted.Render(i18n.T(" add to playlist")) +
 		"  ·  " + accent.Render(i18n.T("Esc")) + muted.Render(esc)
 	if m.search.SelectedArtist() != nil {
@@ -4021,6 +4400,7 @@ func (m *Model) statusNavLines(w int) []string {
 				styles.ModeNormal.Render(i18n.T("HISTORY")),
 				accent.Render(i18n.T("Enter")) + muted.Render(i18n.T(" play now")),
 				accent.Render(i18n.T("Tab")) + muted.Render(i18n.T(" play next")),
+				accent.Render(i18n.T("Shift+Tab")) + muted.Render(i18n.T(" add to queue")),
 				accent.Render(i18n.T("p")) + muted.Render(i18n.T(" add to playlist")),
 				accent.Render(i18n.T("R")) + muted.Render(i18n.T(" radio")),
 				accent.Render(i18n.T("i")) + muted.Render(i18n.T(" song menu")),
@@ -4032,6 +4412,7 @@ func (m *Model) statusNavLines(w int) []string {
 				accent.Render(i18n.T("Enter")) + muted.Render(i18n.T(" play")),
 				accent.Render(i18n.T("d")) + muted.Render(i18n.T(" remove")),
 				accent.Render(i18n.T("Shift+↑/↓ / K/J")) + muted.Render(i18n.T(" move")),
+				accent.Render(i18n.T("Shift+Tab")) + muted.Render(i18n.T(" play next")),
 				accent.Render(i18n.T("p")) + muted.Render(i18n.T(" add to playlist")),
 				accent.Render(i18n.T("c")) + muted.Render(i18n.T(" clear")),
 				accent.Render(i18n.T("s")) + muted.Render(i18n.T(" :save")),
@@ -4040,15 +4421,11 @@ func (m *Model) statusNavLines(w int) []string {
 				accent.Render(i18n.T("esc")) + muted.Render(i18n.T(" done")),
 			}
 		case m.activePanel >= 0 && m.panels[m.activePanel] == m.library:
-			parts = []string{
-				styles.ModeNormal.Render(i18n.T("LIBRARY")),
-				accent.Render(i18n.T("Enter")) + muted.Render(i18n.T(" browse/play")),
-				accent.Render(i18n.T("Tab")) + muted.Render(i18n.T(" queue")),
-				accent.Render(i18n.T("Shift+Tab")) + muted.Render(i18n.T(" next")),
-				accent.Render(i18n.T("esc")) + muted.Render(i18n.T(" back/close")),
-			}
+			parts = m.libraryHints()
 		case m.coverView && m.mode == modeNormal && m.activePanel >= 0 &&
-			m.panels[m.activePanel] == m.lyricsP && !m.lyricsP.m.PickerOpen():
+			m.panels[m.activePanel] == m.lyricsP && !m.lyricsP.m.PickerOpen(),
+			m.coverView && m.coverPlain && m.mode == modeNormal && m.activePanel < 0 &&
+				!m.coverQueueOpen && m.queueMiniCursor < 0:
 			// The cover view's home screen: everything that works here.
 			parts = m.coverHomeHints()
 		case m.activePanel >= 0 && m.panels[m.activePanel] == m.lyricsP:
@@ -4074,9 +4451,9 @@ func (m *Model) statusNavLines(w int) []string {
 		case m.activePanel >= 0 && m.panels[m.activePanel] == m.feedP:
 			parts = []string{
 				styles.ModeNormal.Render(i18n.T("FEED")),
-				accent.Render(i18n.T("Enter")) + muted.Render(i18n.T(" play")),
-				accent.Render(i18n.T("Tab")) + muted.Render(i18n.T(" queue")),
-				accent.Render(i18n.T("Shift+Tab")) + muted.Render(i18n.T(" next")),
+				accent.Render(i18n.T("Enter")) + muted.Render(i18n.T(" open")),
+				accent.Render(i18n.T("Tab")) + muted.Render(i18n.T(" next")),
+				accent.Render(i18n.T("Shift+Tab")) + muted.Render(i18n.T(" queue")),
 				accent.Render(i18n.T("j/k")) + muted.Render(i18n.T(" navigate")),
 				accent.Render(i18n.T("r")) + muted.Render(i18n.T(" refresh")),
 				accent.Render(i18n.T("esc")) + muted.Render(i18n.T(" close")),
@@ -4107,12 +4484,18 @@ func (m *Model) statusNavLines(w int) []string {
 				accent.Render(i18n.T("F")) + muted.Render(i18n.T(" feed")),
 				accent.Render(i18n.T("e")) + muted.Render(i18n.T(" equalizer")),
 				accent.Render(i18n.T("i")) + muted.Render(i18n.T(" song menu")),
+				accent.Render("P") + muted.Render(i18n.T(" add to playlist")),
 				accent.Render("v") + muted.Render(m.layoutHint()),
+				accent.Render("V") + muted.Render(i18n.T(" visualizer")),
 				accent.Render("?") + muted.Render(i18n.T(" about")),
 				accent.Render(i18n.T(":q")) + muted.Render(i18n.T(" quit")),
 			}
 			if m.coverView {
-				parts = append(parts, accent.Render(i18n.T("esc"))+muted.Render(i18n.T(" lyrics")))
+				back := " lyrics"
+				if m.coverPlain {
+					back = " back"
+				}
+				parts = append(parts, accent.Render(i18n.T("esc"))+muted.Render(i18n.T(back)))
 			}
 		}
 		return wrapFit(parts, dot, w)
@@ -4420,15 +4803,25 @@ func (m *Model) handlePlaylistPickerKey(k string) tea.Cmd {
 			m.playlistPickerCursor--
 		}
 	case "down", "j":
-		if m.playlistPickerCursor < len(m.playlistPickerItems)-1 {
+		// The row after the playlists makes a new one.
+		if m.playlistPickerCursor < len(m.playlistPickerItems) {
 			m.playlistPickerCursor++
 		}
+	case "n", "c":
+		if m.playlistPickerLoading {
+			return nil
+		}
+		m.mode = m.playlistPickerReturnMode
+		m.promptNewPlaylist(m.playlistPickerTrack)
+		return nil
 	case "enter":
-		if m.playlistPickerLoading || len(m.playlistPickerItems) == 0 {
+		if m.playlistPickerLoading {
 			return nil
 		}
 		if m.playlistPickerCursor >= len(m.playlistPickerItems) {
-			m.playlistPickerCursor = len(m.playlistPickerItems) - 1
+			m.mode = m.playlistPickerReturnMode
+			m.promptNewPlaylist(m.playlistPickerTrack)
+			return nil
 		}
 		pl := m.playlistPickerItems[m.playlistPickerCursor]
 		t := m.playlistPickerTrack
@@ -4452,7 +4845,7 @@ func (m *Model) handlePlaylistPickerKey(k string) tea.Cmd {
 // pickerWindow returns the start and end indices of the visible playlist items
 // window, keeping the cursor roughly centred.
 func (m *Model) pickerWindow() (start, end int) {
-	n := len(m.playlistPickerItems)
+	n := len(m.playlistPickerItems) + 1 // and "new playlist"
 	visible := min(pickerMaxVisible, n)
 	start = max(0, m.playlistPickerCursor-visible/2)
 	end = start + visible
@@ -4481,14 +4874,21 @@ func (m *Model) renderPlaylistPickerModal() string {
 	switch {
 	case m.playlistPickerLoading:
 		lines = append(lines, styles.QueueItemMuted.Render(i18n.T("  Loading playlists…")))
-	case len(m.playlistPickerItems) == 0:
-		lines = append(lines, styles.QueueItemMuted.Render(i18n.T("  No playlists found")))
 	default:
 		start, end := m.pickerWindow()
 		if start > 0 {
 			lines = append(lines, styles.QueueItemMuted.Render(fmt.Sprintf(i18n.T("  ↑ %d more"), start)))
 		}
 		for i := start; i < end; i++ {
+			if i == len(m.playlistPickerItems) {
+				name := i18n.T("+ New playlist…")
+				if i == m.playlistPickerCursor {
+					lines = append(lines, styles.Playing.Render("▶ "+name))
+				} else {
+					lines = append(lines, styles.QueueItemMuted.Render("  "+name))
+				}
+				continue
+			}
 			name := truncateStr(m.playlistPickerItems[i].Name, innerW-3)
 			if i == m.playlistPickerCursor {
 				lines = append(lines, styles.Playing.Render("▶ "+name))
@@ -4496,14 +4896,14 @@ func (m *Model) renderPlaylistPickerModal() string {
 				lines = append(lines, styles.QueueItem.Render("  "+name))
 			}
 		}
-		remaining := len(m.playlistPickerItems) - end
+		remaining := len(m.playlistPickerItems) + 1 - end
 		if remaining > 0 {
 			lines = append(lines, styles.QueueItemMuted.Render(fmt.Sprintf(i18n.T("  ↓ %d more"), remaining)))
 		}
 	}
 
 	lines = append(lines, sep)
-	lines = append(lines, styles.QueueItemMuted.Render(i18n.T("  ↑↓/jk navigate · ⏎ add · esc cancel")))
+	lines = append(lines, styles.QueueItemMuted.Render(i18n.T("  ↑↓/jk navigate · ⏎ add · n new · esc cancel")))
 
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

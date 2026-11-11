@@ -303,6 +303,40 @@ func ApplyArtworkPalette(_, text1, text2, text3, text4 string) {
 			}
 		}
 	}
+	applyAccents(accents)
+}
+
+// ApplyCoverColours tints the same styles as ApplyArtworkPalette with
+// colours picked from the cover image itself (for services that send no
+// palette), most of the cover first. A colour too close to the theme's
+// background is lightened or darkened until it reads, rather than dropped:
+// the text keeps the cover's hue.
+func ApplyCoverColours(hexes []string) {
+	var accents []color.Color
+	for _, hex := range hexes {
+		if validColor(hex) {
+			accents = append(accents, legibleOn(lipgloss.Color(hex), ColorBg))
+		}
+	}
+	applyAccents(accents)
+}
+
+// legibleOn moves c towards white (on a dark background) or black (on a
+// light one) until it has a contrast of 3 against bg.
+func legibleOn(c, bg color.Color) color.Color {
+	to := lipgloss.Color("#ffffff")
+	if relativeLuminance(bg) > 0.4 {
+		to = lipgloss.Color("#000000")
+	}
+	for k := 0.0; k <= 1; k += 0.05 {
+		if m := LerpColor(c, to, k); contrastRatio(m, bg) >= 3.0 {
+			return m
+		}
+	}
+	return to
+}
+
+func applyAccents(accents []color.Color) {
 	if len(accents) == 0 {
 		ClearArtworkPalette()
 		return
@@ -419,6 +453,13 @@ var (
 	TermBg color.Color
 )
 
+// Palette is the real colours of the terminal's 16 palette entries, once
+// PaletteKnown (see QueryPalette).
+var (
+	Palette      [16][3]uint8
+	PaletteKnown bool
+)
+
 // SetTerminalColors records colours reported by the terminal; nil leaves a
 // value unchanged.
 func SetTerminalColors(fg, bg color.Color) {
@@ -466,4 +507,29 @@ func LyricFadeColors() (dim, bg color.Color, ok bool) {
 		bg = TermBg
 	}
 	return dim, bg, true
+}
+
+// ScreenColors returns the real colours of the screen's default text and
+// background as RGB: what the terminal reported, else the theme's own (an
+// ANSI theme has none: then dark grey on black is assumed). ok is false
+// when the background is such a guess.
+func ScreenColors() (fg, bg color.RGBA, ok bool) {
+	rgb := func(c color.Color) color.RGBA {
+		r, g, b, _ := c.RGBA()
+		return color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), 255} //nolint:gosec // 16-bit to 8-bit
+	}
+	fg, bg = color.RGBA{200, 200, 200, 255}, color.RGBA{0, 0, 0, 255}
+	switch {
+	case TermFg != nil:
+		fg = rgb(TermFg)
+	case !ANSIMode && isRGB(ColorFg):
+		fg = rgb(ColorFg)
+	}
+	switch {
+	case TermBg != nil:
+		bg, ok = rgb(TermBg), true
+	case !ANSIMode && isRGB(ColorBg):
+		bg, ok = rgb(ColorBg), true
+	}
+	return fg, bg, ok
 }

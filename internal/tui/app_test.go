@@ -131,3 +131,32 @@ func TestApp_VolumeIsShared(t *testing.T) {
 		t.Errorf("unmute should reach Yandex: preMute %v, volume %v", yandex.preMuteVol, *yandex.player.(*mockPlayer).volume)
 	}
 }
+
+// The visualizer takes the whole screen, the tab bar's row included, and
+// the tab keys do nothing while it is open.
+func TestApp_VisualizerHidesTheTabs(t *testing.T) {
+	app, services := testApp(t)
+	app.Update(tea.KeyPressMsg{Code: 'V', Text: "V"})
+	if !services[0].Model.vizOpen() {
+		t.Fatal("V should open the visualizer")
+	}
+	content := app.View().Content
+	if strings.Contains(content, "Apple Music") {
+		t.Error("the tab bar shows over the visualizer")
+	}
+	if n := strings.Count(content, "\n") + 1; n != 40 {
+		t.Errorf("the visualizer is %d rows tall, want all 40", n)
+	}
+	app.Update(tea.KeyPressMsg{Code: '2', Text: "2"})
+	if app.Active() != 0 || !services[0].Model.vizOpen() {
+		t.Errorf("2 switched tabs from inside the visualizer (active=%d)", app.Active())
+	}
+	app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if !strings.Contains(app.View().Content, "Apple Music") {
+		t.Error("the tab bar should be back after esc")
+	}
+	app.Update(tea.KeyPressMsg{Code: '2', Text: "2"})
+	if app.Active() != 1 {
+		t.Error("2 should switch tabs again after esc")
+	}
+}

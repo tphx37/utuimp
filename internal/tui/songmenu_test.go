@@ -35,12 +35,12 @@ func TestSongMenu(t *testing.T) {
 		t.Fatal("i should open the song menu and look the song up")
 	}
 	m.Update(cmd())
-	if n := len(m.songMenu.items); n != 4 {
-		t.Fatalf("items = %d, want album + 2 artists + copy link", n)
+	if n := len(m.songMenu.items); n != 5 {
+		t.Fatalf("items = %d, want album + 2 artists + copy link + add to playlist", n)
 	}
 	strip := regexp.MustCompile(`\x1b\[[0-9;:]*m`)
 	screen := strip.ReplaceAllString(m.View().Content, "")
-	for _, want := range []string{"Album · In the Zone", "Artist · Britney Spears", "Artist · Madonna", "Copy link", "Now Playing"} {
+	for _, want := range []string{"Album · In the Zone", "Artist · Britney Spears", "Artist · Madonna", "Copy link", "Add to playlist", "Now Playing"} {
 		if !strings.Contains(screen, want) {
 			t.Errorf("screen missing %q (menu should sit over the UI):\n%s", want, screen)
 		}

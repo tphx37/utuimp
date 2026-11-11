@@ -34,6 +34,7 @@ type QueueTracksMsg struct {
 	Tracks   []provider.Track
 	Label    string
 	PlayNext bool
+	Err      error // the songs could not be loaded
 }
 
 // PlaybackID returns the best ID to use for MusicKit queue descriptors.

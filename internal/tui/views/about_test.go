@@ -10,13 +10,21 @@ import (
 
 func TestAboutModel(t *testing.T) {
 	m := NewAbout()
-	m.SetSize(80, 20)
+	m.SetSize(80, 30)
 
 	plain := stripANSI(m.View())
-	for _, want := range []string{"utuimp", "universal terminal user interface media player", "made by tphx37", "https://github.com/tphx37/utuimp"} {
+	for _, want := range []string{"utuimp", "universal terminal user interface media player", "keyboard first", "made by tphx37", "based on vibez by simonepelosi", "https://github.com/tphx37/utuimp"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("about view missing %q:\n%s", want, plain)
 		}
+	}
+	if strings.Count(plain, "▀")+strings.Count(plain, "▄") < 200 {
+		t.Errorf("the icon should be drawn on top when there's room:\n%s", plain)
+	}
+	short := NewAbout()
+	short.SetSize(80, 12)
+	if p := stripANSI(short.View()); strings.Contains(p, "▀") || !strings.Contains(p, "made by tphx37") {
+		t.Errorf("with no room for the icon the text should stay, without it:\n%s", p)
 	}
 	if strings.Contains(plain, "ko-fi") || strings.Contains(strings.ToLower(plain), "donat") {
 		t.Error("about view must not ask for donations")

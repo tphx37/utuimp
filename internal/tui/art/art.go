@@ -25,6 +25,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
+	"github.com/dhowden/tag"
 )
 
 const (
@@ -48,6 +49,9 @@ type Size struct {
 // below 256 colours the result is unrecognisable and we skip the artwork (and
 // its download) entirely.
 func SupportsColor() bool {
+	if ConsoleMode() {
+		return true // dithered to the console's palette, see RenderConsole
+	}
 	return colorprofile.Detect(os.Stdout, os.Environ()) >= colorprofile.ANSI256
 }
 
@@ -81,6 +85,8 @@ func FetchAndDecode(ctx context.Context, client *http.Client, url string, maxByt
 	case "http", "https":
 	case "data":
 		return decodeDataURL(url, maxBytes)
+	case EmbeddedScheme:
+		return decodeEmbedded(parsed.Path, maxBytes)
 	case "":
 		return nil, fmt.Errorf("fetch artwork: missing URL scheme")
 	default:
@@ -109,6 +115,35 @@ func FetchAndDecode(ctx context.Context, client *http.Client, url string, maxByt
 		return nil, fmt.Errorf("fetch artwork: status %d", resp.StatusCode)
 	}
 	return decodeBounded(resp.Body, maxBytes)
+}
+
+// EmbeddedScheme is the URL scheme of a cover kept inside an audio file's
+// tags: "utuimp-cover:///path/to/song.mp3" (see EmbeddedURL).
+const EmbeddedScheme = "utuimp-cover"
+
+// EmbeddedURL is the artwork URL for the cover embedded in the audio file
+// at path.
+func EmbeddedURL(path string) string {
+	return (&urlpkg.URL{Scheme: EmbeddedScheme, Path: path}).String()
+}
+
+// decodeEmbedded reads the cover out of an audio file's tags (ID3, MP4,
+// FLAC, Ogg).
+func decodeEmbedded(path string, maxBytes int64) (image.Image, error) {
+	f, err := os.Open(path) //nolint:gosec // a file from the user's own music directory
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	m, err := tag.ReadFrom(f)
+	if err != nil {
+		return nil, fmt.Errorf("decode artwork: %w", err)
+	}
+	pic := m.Picture()
+	if pic == nil || len(pic.Data) == 0 {
+		return nil, fmt.Errorf("decode artwork: no cover in %s", path)
+	}
+	return decodeBounded(bytes.NewReader(pic.Data), maxBytes)
 }
 
 func decodeDataURL(raw string, maxBytes int64) (image.Image, error) {

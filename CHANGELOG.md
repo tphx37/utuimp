@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.0.1
+
+Start screen
+- With the system theme the ribbons use the real colours of the terminal's
+  palette (as it reported them), not xterm's standard ones, so they follow
+  the terminal's colour scheme.
+Install
+- `install.sh` finds the latest release from the redirect of
+  `github.com/<repo>/releases/latest` instead of the GitHub API. The API's
+  limit for anonymous calls made the lookup fail, the script took that for
+  "no release" and built from source, and a source build has no Last.fm
+  keys, so scrobbling did not work. Now the release binary is installed.
+
 ## 3.0
 
 Setup

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/tphx37/utuimp/internal/tui/styles"
 )
@@ -50,10 +51,19 @@ type introDance struct {
 // the Linux console, whose 16 colours the visualizer would have to take.
 func introRibbons() bool { return !styles.Console }
 
-// introPalette is the theme's accents, as the ribbons' three colours.
+// introPalette is the theme's accents (primary, accent, love), as the
+// ribbons' three colours. The system theme's colours are indices into the
+// terminal's own palette, so the real ones it reported are used, as they
+// are (only lifted if too dark to see); any other theme's are softened.
 func introPalette() [3]vcol {
 	var pal [3]vcol
 	for i, c := range []any{styles.ColorPrimary, styles.ColorAccent, styles.ColorLove} {
+		if bc, ok := c.(ansi.BasicColor); ok && styles.PaletteKnown {
+			rgb := styles.Palette[int(bc)&15]
+			h, s, v := hsv(vcol{float64(rgb[0]) / 255, float64(rgb[1]) / 255, float64(rgb[2]) / 255})
+			pal[i] = hsvColor(h, s, math.Max(0.6, v))
+			continue
+		}
 		col, ok := c.(interface{ RGBA() (r, g, b, a uint32) })
 		if !ok || col == nil {
 			return defaultVizPalette

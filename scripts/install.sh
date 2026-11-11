@@ -228,12 +228,27 @@ info "https://github.com/${REPO}  ·  ${OS}/${ARCH}  ·  ${PM:-no package manage
 
 # ── is there a release for this system? ───────────────────────────────────────
 
+# latest_tag: the newest release's tag, from the redirect of
+# github.com/<repo>/releases/latest. (The API has a low rate limit for
+# anonymous callers and then answers with an error, which looked like "no
+# release" and sent everyone to a source build.)
+latest_tag() {
+    url=""
+    if have curl; then
+        url="$(curl --proto '=https' --tlsv1.2 -sSLI -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest" 2>/dev/null || true)"
+    elif have wget; then
+        url="$(wget --max-redirect=5 --spider -S "https://github.com/${REPO}/releases/latest" 2>&1 | sed -n 's/^ *[Ll]ocation: *//p' | tail -n 1 | tr -d '\r' || true)"
+    fi
+    case "${url}" in
+        */releases/tag/*) printf '%s' "${url##*/releases/tag/}" ;;
+    esac
+}
+
 VERSION=""
 if [ "${FROM_SOURCE}" = "0" ]; then
     case "${OS}/${ARCH}" in
         linux/amd64|darwin/amd64|darwin/arm64)
-            VERSION="$(fetch "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
-                | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' || true)" ;;
+            VERSION="$(latest_tag)" ;;
     esac
 fi
 

@@ -1,6 +1,5 @@
 name: release
 
-# Release = push a tag:  git tag v3.1.0 && git push origin v3.1.0
 on:
   push:
     tags: ["v*"]

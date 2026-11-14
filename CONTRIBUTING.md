@@ -132,6 +132,9 @@ switches:
 
 - `gofmt` and `goimports`. `go vet ./...` and `golangci-lint run` (config in
   `.golangci.yml`) must be clean.
+  The version is the one in `.pre-commit-config.yaml` (an older one can't
+  read the packages of a newer Go):
+  `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0`.
 - [pre-commit](https://pre-commit.com) runs build, vet, tests, `go mod tidy`
   and the linter: `pre-commit install` once, and it runs on every commit.
 - Return errors with context (`fmt.Errorf("loading the playlist: %w", err)`)

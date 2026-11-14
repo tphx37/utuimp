@@ -18,7 +18,7 @@ import (
 const (
 	oauthBase   = "https://oauth.yandex.ru"
 	oauthClient = "23cabbbdc6cd418abb4b39c32c41195d"
-	oauthSecret = "53bc75238f0c4d08a118e51fe9203300"
+	oauthSecret = "53bc75238f0c4d08a118e51fe9203300" //nolint:gosec // the Yandex Music app's public client pair, the same in every client (see above)
 	deviceName  = "utuimp"
 )
 

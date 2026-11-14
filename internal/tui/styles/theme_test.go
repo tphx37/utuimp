@@ -2,10 +2,14 @@ package styles_test
 
 import (
 	"encoding/json"
+	"image/color"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+
+	"charm.land/lipgloss/v2"
 
 	"github.com/tphx37/utuimp/internal/tui/styles"
 )
@@ -239,4 +243,41 @@ func TestApplyArtworkPalette_SkipsLowContrastAndLeavesSharedArtistUntouched(t *t
 		t.Errorf("NowPlayingTime foreground = %q, want #acc1e1", got)
 	}
 	styles.ClearArtworkPalette()
+}
+
+// The black and white theme's own colours are greys; the song's colours
+// stay what they are.
+func TestMonoTheme(t *testing.T) {
+	th, err := styles.LoadTheme("mono", t.TempDir())
+	if err != nil {
+		t.Fatalf("mono: %v", err)
+	}
+	isGrey := func(c color.Color) bool {
+		r, g, b, _ := c.RGBA()
+		return r == g && g == b
+	}
+	fields := map[string]string{"primary": th.Primary, "secondary": th.Secondary, "muted": th.Muted, "error": th.Error,
+		"fg": th.Fg, "subtle": th.Subtle, "bg": th.Bg, "love": th.Love, "active": th.Active, "progress": th.Progress,
+		"surface": th.Surface, "accent": th.Accent, "accent_warm": th.AccentWarm, "bear": th.Bear, "mode_normal_bg": th.ModeNormalBg,
+		"mode_search_bg": th.ModeSearchBg, "mode_command_bg": th.ModeCommandBg, "mode_chip_fg": th.ModeChipFg,
+		"border": th.Border, "border_focus": th.BorderFocus}
+	for i, hex := range th.GlowPalette {
+		fields["glow "+strconv.Itoa(i)] = hex
+	}
+	for name, hex := range fields {
+		if hex == "" || !isGrey(lipgloss.Color(hex)) {
+			t.Errorf("%s is %q, not a grey", name, hex)
+		}
+	}
+	// The song's colours stay colours: it is a theme like the others.
+	styles.Apply(th)
+	t.Cleanup(func() { styles.Apply(styles.SystemTheme()) })
+	styles.ApplyCoverColours([]string{"#ff3366", "#33aaff"})
+	coloured := false
+	for _, c := range styles.ProgressGradStops {
+		coloured = coloured || !isGrey(c)
+	}
+	if !coloured {
+		t.Error("the progress line keeps the cover's colours under the black and white theme")
+	}
 }

@@ -22,9 +22,9 @@ import (
 	"time"
 )
 
-// Upstream token refresh.
+// Vibez token refresh.
 //
-// utuimp builds carry no developer token of their own. The upstream project,
+// utuimp builds carry no developer token of their own. The vibez project,
 // simonepelosi/vibez, ships release binaries that fetch a short-lived token
 // from its token broker on start-up and cache it before the UI opens. When
 // utuimp's token is about to expire it downloads that official release binary
@@ -34,16 +34,16 @@ import (
 // the token.
 
 const (
-	upstreamRepo     = "simonepelosi/vibez"
-	upstreamName     = "vibez"
-	upstreamMaxBin   = 128 << 20 // largest executable accepted from the archive
-	upstreamMaxAsset = 128 << 20
-	upstreamBinTTL   = 7 * 24 * time.Hour // re-download to pick up new releases
-	upstreamRunLimit = 30 * time.Second
+	vibezRepo     = "simonepelosi/vibez"
+	vibezName     = "vibez"
+	vibezMaxBin   = 128 << 20 // largest executable accepted from the archive
+	vibezMaxAsset = 128 << 20
+	vibezBinTTL   = 7 * 24 * time.Hour // re-download to pick up new releases
+	vibezRunLimit = 30 * time.Second
 )
 
-// upstreamBaseURL serves release assets without the (rate-limited) GitHub API.
-var upstreamBaseURL = "https://github.com/" + upstreamRepo + "/releases/latest/download/" //nolint:gochecknoglobals // overridden in tests
+// vibezBaseURL serves release assets without the (rate-limited) GitHub API.
+var vibezBaseURL = "https://github.com/" + vibezRepo + "/releases/latest/download/" //nolint:gochecknoglobals // overridden in tests
 
 // jwtExpiry reads the exp claim of a JWT; zero when it can't be read.
 func jwtExpiry(tok string) time.Time {
@@ -64,39 +64,39 @@ func jwtExpiry(tok string) time.Time {
 	return time.Unix(claims.Exp, 0)
 }
 
-// refreshFromUpstream obtains a fresh developer token via the upstream
+// refreshFromVibez obtains a fresh developer token via the vibez
 // release binary, downloading it first if needed.
-func refreshFromUpstream(ctx context.Context, cacheDir string) (cachedToken, error) {
+func refreshFromVibez(ctx context.Context, cacheDir string) (cachedToken, error) {
 	if cacheDir == "" {
 		return cachedToken{}, errors.New("no cache directory")
 	}
-	bin, fresh, err := upstreamBinary(ctx, cacheDir)
+	bin, fresh, err := vibezBinary(ctx, cacheDir)
 	if err != nil {
 		return cachedToken{}, err
 	}
-	tok, err := runUpstreamForToken(ctx, bin)
+	tok, err := runVibezForToken(ctx, bin)
 	if err != nil && !fresh {
 		// A stale download may be an old release the broker no longer
 		// serves; fetch the current one and try once more.
 		_ = os.Remove(bin)
-		if bin, _, err = upstreamBinary(ctx, cacheDir); err != nil {
+		if bin, _, err = vibezBinary(ctx, cacheDir); err != nil {
 			return cachedToken{}, err
 		}
-		tok, err = runUpstreamForToken(ctx, bin)
+		tok, err = runVibezForToken(ctx, bin)
 	}
 	return tok, err
 }
 
-// upstreamBinary returns the cached upstream executable, downloading it
-// when missing or older than upstreamBinTTL. fresh reports a new download.
-func upstreamBinary(ctx context.Context, cacheDir string) (path string, fresh bool, err error) {
-	exe := upstreamName
+// vibezBinary returns the cached vibez executable, downloading it
+// when missing or older than vibezBinTTL. fresh reports a new download.
+func vibezBinary(ctx context.Context, cacheDir string) (path string, fresh bool, err error) {
+	exe := vibezName
 	if runtime.GOOS == "windows" {
 		exe += ".exe"
 	}
-	dir := filepath.Join(cacheDir, "upstream")
+	dir := filepath.Join(cacheDir, "vibez")
 	path = filepath.Join(dir, exe)
-	if st, err := os.Stat(path); err == nil && time.Since(st.ModTime()) < upstreamBinTTL {
+	if st, err := os.Stat(path); err == nil && time.Since(st.ModTime()) < vibezBinTTL {
 		return path, false, nil
 	}
 
@@ -104,13 +104,13 @@ func upstreamBinary(ctx context.Context, cacheDir string) (path string, fresh bo
 	if runtime.GOOS == "windows" {
 		ext = ".zip"
 	}
-	asset := fmt.Sprintf("%s_%s_%s%s", upstreamName, runtime.GOOS, runtime.GOARCH, ext)
-	logBroker("[upstream] downloading " + upstreamRepo + " " + asset)
-	archive, err := httpGet(ctx, upstreamBaseURL+asset, upstreamMaxAsset)
+	asset := fmt.Sprintf("%s_%s_%s%s", vibezName, runtime.GOOS, runtime.GOARCH, ext)
+	logBroker("[vibez] downloading " + vibezRepo + " " + asset)
+	archive, err := httpGet(ctx, vibezBaseURL+asset, vibezMaxAsset)
 	if err != nil {
 		return "", false, fmt.Errorf("download %s: %w", asset, err)
 	}
-	sums, err := httpGet(ctx, upstreamBaseURL+"checksums.txt", 1<<20)
+	sums, err := httpGet(ctx, vibezBaseURL+"checksums.txt", 1<<20)
 	if err != nil {
 		return "", false, fmt.Errorf("download checksums: %w", err)
 	}
@@ -146,8 +146,7 @@ func (e errHTTPStatus) Error() string { return fmt.Sprintf("HTTP %d", int(e)) }
 // transient reports whether a failed download is worth retrying: network
 // errors, rate limits and server errors.
 func transient(err error) bool {
-	var st errHTTPStatus
-	if errors.As(err, &st) {
+	if st, ok := errors.AsType[errHTTPStatus](err); ok {
 		return st == http.StatusTooManyRequests || st >= 500
 	}
 	return err != nil && !errors.Is(err, context.Canceled) && err.Error() != "response too large"
@@ -160,7 +159,7 @@ func httpGet(ctx context.Context, url string, limit int64) ([]byte, error) {
 		if !transient(err) {
 			break
 		}
-		logBroker(fmt.Sprintf("[upstream] %s: %v, retrying in %s", url, err, d))
+		logBroker(fmt.Sprintf("[vibez] %s: %v, retrying in %s", url, err, d))
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -254,20 +253,20 @@ func extractExecutable(archive []byte, exe string, isZip bool) ([]byte, error) {
 }
 
 func readLimited(r io.Reader) ([]byte, error) {
-	data, err := io.ReadAll(io.LimitReader(r, upstreamMaxBin+1))
+	data, err := io.ReadAll(io.LimitReader(r, vibezMaxBin+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(data) > upstreamMaxBin {
+	if len(data) > vibezMaxBin {
 		return nil, errors.New("executable too large")
 	}
 	return data, nil
 }
 
-// runUpstreamForToken runs bin in a sandbox home and returns the developer
+// runVibezForToken runs bin in a sandbox home and returns the developer
 // token it caches. The process is stopped as soon as the cache appears (it
 // also exits on its own once it finds no terminal).
-func runUpstreamForToken(ctx context.Context, bin string) (cachedToken, error) {
+func runVibezForToken(ctx context.Context, bin string) (cachedToken, error) {
 	home, err := os.MkdirTemp("", "utuimp-token-*")
 	if err != nil {
 		return cachedToken{}, err
@@ -287,11 +286,11 @@ func runUpstreamForToken(ctx context.Context, bin string) (cachedToken, error) {
 		"PATH=" + filepath.Join(home, "no-bin"), // nothing to launch (no browser)
 		"TERM=dumb",
 	}
-	upCfgDir := filepath.Join(cfgDir, upstreamName)
+	upCfgDir := filepath.Join(cfgDir, vibezName)
 	if runtime.GOOS == "windows" {
 		cfgDir = filepath.Join(home, "AppData", "Roaming")
 		cacheDir = filepath.Join(home, "AppData", "Local")
-		upCfgDir = filepath.Join(cfgDir, upstreamName)
+		upCfgDir = filepath.Join(cfgDir, vibezName)
 		env = append(env, "APPDATA="+cfgDir, "LOCALAPPDATA="+cacheDir, "USERPROFILE="+home,
 			"SystemRoot="+os.Getenv("SystemRoot"))
 	}
@@ -304,9 +303,9 @@ func runUpstreamForToken(ctx context.Context, bin string) (cachedToken, error) {
 	if err := os.WriteFile(filepath.Join(upCfgDir, "config.json"), []byte(cfg), 0o600); err != nil {
 		return cachedToken{}, err
 	}
-	tokenFile := filepath.Join(cacheDir, upstreamName, "devtoken.json")
+	tokenFile := filepath.Join(cacheDir, vibezName, "devtoken.json")
 
-	ctx, cancel := context.WithTimeout(ctx, upstreamRunLimit)
+	ctx, cancel := context.WithTimeout(ctx, vibezRunLimit)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "--no-update") //nolint:gosec // our verified download
 	cmd.Env = env
@@ -329,15 +328,15 @@ func runUpstreamForToken(ctx context.Context, bin string) (cachedToken, error) {
 	exited := false
 	for {
 		if c, err := readCache(tokenFile); err == nil && c.validFor(time.Now(), time.Hour) {
-			logBroker("[upstream] obtained a fresh developer token")
+			logBroker("[vibez] obtained a fresh developer token")
 			return c, nil
 		}
 		if exited {
-			return cachedToken{}, errors.New("upstream binary exited without caching a token")
+			return cachedToken{}, errors.New("vibez binary exited without caching a token")
 		}
 		select {
 		case <-ctx.Done():
-			return cachedToken{}, fmt.Errorf("upstream token: %w", ctx.Err())
+			return cachedToken{}, fmt.Errorf("vibez token: %w", ctx.Err())
 		case <-done:
 			exited = true // check the cache one last time
 		case <-tick.C:

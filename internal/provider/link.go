@@ -68,7 +68,7 @@ func ParseLink(raw string) (Link, bool) {
 	host := strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
 	host = strings.TrimPrefix(host, "m.")
 	var parts []string
-	for _, p := range strings.Split(u.Path, "/") {
+	for p := range strings.SplitSeq(u.Path, "/") {
 		if p != "" {
 			parts = append(parts, p)
 		}

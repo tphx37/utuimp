@@ -5,6 +5,7 @@
 - [Tabs](#tabs)
 - [Keys](#keys)
 - [Views](#views)
+- [The look](#the-look)
 - [Queue](#queue)
 - [Search](#search)
 - [Library and playlists](#library-and-playlists)
@@ -35,7 +36,7 @@ that is playing, and the playback keys always control it.
 |-----|--------|
 | `space` | play / pause |
 | `n` / `p` | next / previous song |
-| `←` / `→` | rewind / forward 10 seconds |
+| `←` / `→` | rewind / forward 10 seconds (Settings, Playback, Seek step) |
 | `+` / `-` | volume |
 | `f` | add to favorites (press twice to remove) |
 | `s` | shuffle |
@@ -51,6 +52,8 @@ that is playing, and the playback keys always control it.
 | `e` | equalizer |
 | `i` | song menu: go to the album or an artist, copy the link |
 | `P` | add the selected (or playing) song to a playlist |
+| `,` | settings (also `:settings`) |
+| `H` | hide the key hints at the bottom: they fade away from the top row down, then the panels (or the cover view) grow into their rows; a quiet "H show hints" stays on one row at the bottom. `H` again brings them back. Remembered |
 | `?` | about |
 | `:` | command line, see [Commands](#commands) |
 | `esc` | back |
@@ -76,6 +79,50 @@ utuimp remembers the view, and whether the lyrics are hidden, for every tab.
 instead of the progress bar. It needs a terminal with at least 256 colours.
 
 **Visualizer.** `V`, see [Visualizer](visualizer.md).
+
+## The look
+
+In kitty and Ghostty the interface is drawn in real pixels under the text,
+in the colours of the song's cover; everywhere else (and in tmux, over ssh,
+on the Linux console) it is the terminal's characters.
+
+- **Frames and lines.** The panels' frames, the rules under headings, the
+  progress and volume lines and the mark of the chosen row are fine lines.
+  They sway a little with the music, flash on the drum and answer keys:
+  `enter` presses a frame in, moving through a list sloshes it, a new song
+  sends a wave round it. A frame that changes its size or place goes over
+  to the new one instead of being drawn again.
+- **The cover** is the picture itself, with round corners and a light
+  behind it that breathes with the bass.
+- **Text.** The cover view's lyrics are drawn large in the system's font
+  (it needs fontconfig), the line being sung lit, word by word where the
+  lyrics have word times. The player's title, artist, album, times and
+  volume are drawn the same way.
+- **Buttons.** Repeat, shuffle, play and favourite are drawn in fine
+  strokes and spring when they change.
+- **Nothing changes at a stroke.** New words come in a quick sweep and old
+  ones are swept away, a colour goes over to another, the cover moves to
+  its new place, another song's words melt in, the visualizer opens out of
+  the middle of the screen and closes back into it. All of it at sixty
+  frames a second; with nothing playing and nothing moving, utuimp all but
+  stops drawing.
+
+Settings (`,`), section **Graphics**, sets each part on its own:
+
+| Item | Choices |
+|---|---|
+| Pixel interface | on, off (all of it in characters) |
+| Cover | picture, characters |
+| Frames and lines | moving, still (the same lines, standing still), characters |
+| Text | drawn, terminal (the terminal's letters) |
+| Buttons | strokes, characters |
+| Light behind the cover | on, off |
+
+Animation off (section Interface) is the interface in characters too: its
+pictures and lines move. For lines that stand still, choose Frames and
+lines: still. In the config these are `ui_style`, `ui_cover`, `ui_lines`,
+`ui_text`, `ui_buttons` and `ui_light`, see
+[Configuration](configuration.md#look).
 
 ## Queue
 
@@ -158,7 +205,8 @@ plain text as the last resort.
 | `T` | choose the translation language |
 | `c` | choose where the lyrics come from, if the text is wrong |
 
-Sources: the service itself (Yandex Music), NetEase Cloud Music (word sync),
+Sources: the service itself (Yandex Music; for local files an `.lrc` or
+`.txt` beside the song, see [Services](services.md#local-files)), NetEase Cloud Music (word sync),
 [LRCLIB](https://lrclib.net) (line sync) and [lyrics.ovh](https://lyrics.ovh)
 (plain text). The source you pick is remembered for that song.
 

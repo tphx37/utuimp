@@ -12,13 +12,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/tphx37/utuimp/internal/signin"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/tphx37/utuimp/internal/signin"
 )
 
 // RedirectURI is where SoundCloud sends the browser back after sign-in; the

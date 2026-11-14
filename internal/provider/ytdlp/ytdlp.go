@@ -64,9 +64,9 @@ func Error(stderr string, err error) error {
 		return ErrBotCheck
 	}
 	msg := ""
-	for _, l := range strings.Split(strings.TrimSpace(stderr), "\n") {
-		if strings.HasPrefix(l, "ERROR:") {
-			msg = strings.TrimSpace(strings.TrimPrefix(l, "ERROR:"))
+	for l := range strings.SplitSeq(strings.TrimSpace(stderr), "\n") {
+		if after, ok := strings.CutPrefix(l, "ERROR:"); ok {
+			msg = strings.TrimSpace(after)
 		}
 	}
 	if msg == "" {

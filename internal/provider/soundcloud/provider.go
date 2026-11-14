@@ -513,7 +513,7 @@ func (p *Provider) RemoveFromPlaylist(ctx context.Context, playlistID string, in
 	for _, x := range ts {
 		ids = append(ids, x.urn())
 	}
-	at := -1
+	var at int
 	if index >= 0 && index < len(ids) && ids[index] == t.ID {
 		at = index
 	} else {

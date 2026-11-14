@@ -20,7 +20,7 @@ happens once.
 | Service | Account | Subscription | Extra programs |
 |---|---|---|---|
 | Yandex Music | Yandex | Yandex Plus | none |
-| Apple Music | Apple ID | Apple Music | none |
+| Apple Music | Apple ID | Apple Music | none (runs on [vibez's token](apple-music-tokens.md)) |
 | Spotify | Spotify | Premium | [librespot](https://github.com/librespot-org/librespot) |
 | YouTube Music | none | none | [yt-dlp](https://github.com/yt-dlp/yt-dlp), [FFmpeg](https://ffmpeg.org) |
 | SoundCloud | none / API app | none / Artist Pro with API | [yt-dlp](https://github.com/yt-dlp/yt-dlp), [FFmpeg](https://ffmpeg.org) |
@@ -42,9 +42,13 @@ Music first when it has them.
 
 ## Apple Music
 
-The first time, sign in in the browser window that opens. Apple Music also
-needs a developer token, which utuimp gets by itself. How it does that is
-described in [Apple Music tokens](apple-music-tokens.md).
+The first time, sign in in the browser window that opens.
+
+utuimp has no Apple Music developer token of its own: it borrows the one of
+another project, [vibez](https://github.com/simonepelosi/vibez), or uses
+your own MusicKit key. `utuimp setup services` asks which. If vibez stops
+handing out tokens, Apple Music stops working here. See
+[Apple Music tokens](apple-music-tokens.md).
 
 `:quality high|standard|256|64` sets the bitrate, `:quality` alone shows
 the current format. `utuimp --apple` starts on the Apple Music tab.
@@ -106,7 +110,7 @@ SoundCloud API instead, with your own likes and playlists:
 
 1. open [your apps](https://soundcloud.com/you/apps)
 2. create an app with redirect URI `http://127.0.0.1:5590/soundcloud`
-3. run `utuimp setup`, answer yes to the API app question, and paste its
+3. open the settings (`,`) and paste its
    Client ID and Client Secret.
 
 ## Local files
@@ -119,6 +123,10 @@ saved):
 utuimp --music-dir ~/some/folder
 utuimp --local          # start on the local files tab
 ```
+
+Lyrics: an `.lrc` file with the song's name beside it (`song.mp3` →
+`song.lrc`) is shown in time with the song, a `.txt` as plain text. They come
+before the lyrics sites.
 
 Formats:
 

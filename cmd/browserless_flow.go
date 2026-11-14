@@ -2,8 +2,9 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/tphx37/utuimp/internal/i18n"
 	"os"
+
+	"github.com/tphx37/utuimp/internal/i18n"
 
 	tea "charm.land/bubbletea/v2"
 

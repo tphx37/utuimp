@@ -11,25 +11,27 @@
 
 ## utuimp setup
 
-The first start asks everything. Later, `utuimp setup` shows a menu of
-sections. You can also name one or several directly:
+Everything is set inside utuimp, in the settings panel: press `,` (or type
+`:settings`). The first start opens it by itself. `utuimp setup` starts
+utuimp with the panel open:
 
 ```bash
-utuimp setup                  # menu
-utuimp setup visualizer       # just one section
+utuimp setup                  # the settings
+utuimp setup visualizer       # on one section
 ```
 
-| Section | What it sets |
-|---|---|
-| `language` | interface language (English, Russian) |
-| `discord` | the current song in your Discord status |
-| `services` | which tabs to show, the music folder, your own Spotify / SoundCloud app, YouTube cookies |
-| `visualizer` | strength and background |
-| `interface` | fade-ins and the start screen |
-| `library` | allow deleting and renaming in the library |
+Sections: `services`, `interface`, `playback`, `visualizer`, `graphics`,
+`integrations`, `sound`, `lyrics`, `library`. `↑`/`↓` choose a line, `←`/`→` or `enter` change it,
+`enter` on a line of text types into it, `backspace` empties it.
 
-In the menu, type a section's number (`1 4` runs several), `a` for all of
-them, or Enter to save and quit.
+Most changes apply at once: turning a service on or off shows or hides its
+tab while utuimp runs, and the language, theme, animation, the view, the
+key hints, the album art, the frame rate, the look (section Graphics), the
+seek and volume steps, song notifications, the lyrics' size, the
+visualizer and Discord status follow immediately, in every tab (the
+settings stay open when the view changes under them). A few need a restart (a service's own
+keys, the Apple Music quality and token source); the panel says so and `R`
+restarts utuimp in place.
 
 ## Config file
 
@@ -41,12 +43,20 @@ the volume, the visualizer scene), so edit it while utuimp is closed.
 
 | Field | Values | Default |
 |---|---|---|
-| `theme` | `system` (your terminal's colours), `classic`, `dracula`, `gruvbox`, `nord`, or [your own](#themes) | `system` |
+| `theme` | `system` (your terminal's colours), `classic`, `dracula`, `gruvbox`, `nord`, `mono` (black and white), or [your own](#themes) | `system` |
 | `layout` | `""` boxed view, `"cover"` cover view (`v` sets it) | `""` |
 | `cover_hide_lyrics` | hide lyrics in the cover view (`y` sets it) | `false` |
 | `album_art` | album art in the boxed view (`:art` sets it) | `false` |
+| `hide_hints` | the key hints at the bottom hidden (`H` sets it) | `false` |
+| `frame_rate` | `""` as many frames a second as fit the screen (60, or 72 on a 144 Hz one), `"60"`, `"30"` (to spare the battery) | `""` |
 | `intro` | the start screen (the logo over dancing ribbons) | `true` |
-| `ui_motion` | `"off"`: nothing fades in. `"calm"`, `"lively"`, `"wild"`: panels and new songs fade in softly (the three are the same now) | `"lively"` |
+| `ui_motion` | `"off"`: nothing fades in or moves, and the interface is in cells (its pixel lines and pictures move). `"calm"`, `"lively"`, `"wild"`: panels and new songs fade in softly (the three are the same now) | `"lively"` |
+| `ui_style` | `""` (the interface's lines, frames and cover drawn in pixels under the text where the terminal can: kitty, Ghostty), `"simple"` (cells) | `""` |
+| `ui_cover` | `""` (the cover as a picture), `"cells"` | `""` |
+| `ui_lines` | `""` (frames, rules, progress and volume lines that sway with the music and answer keys), `"calm"` (the same, still), `"cells"` | `""` |
+| `ui_text` | `""` (lyrics and the player's words in the system's font), `"cells"` | `""` |
+| `ui_buttons` | `""` (the player's buttons drawn), `"cells"` | `""` |
+| `ui_light` | `""` (a light behind the cover), `"off"` | `""` |
 | `language` | `"en"`, `"ru"`. Empty means from the system locale | `""` |
 
 ### Services
@@ -62,6 +72,7 @@ the volume, the visualizer scene), so edit it while utuimp is closed.
 | `youtube_cookies` | where yt-dlp takes YouTube cookies from: a browser name (`"firefox"`, `"chrome"`…) or the path of a `cookies.txt` |
 | `spotify_client_id` | your own Spotify app, see [Services](services.md#spotify) |
 | `soundcloud_client_id`, `soundcloud_client_secret` | your SoundCloud API app, see [Services](services.md#soundcloud) |
+| `apple_token_source` | whose Apple Music developer token is used: `"vibez"` (borrowed) or `"own"`. See [Apple Music tokens](apple-music-tokens.md) |
 | `storefront` | Apple Music country (e.g. `"us"`) |
 | `audio_quality` | Apple Music bitrate (`:quality` sets it) |
 
@@ -79,6 +90,10 @@ the volume, the visualizer scene), so edit it while utuimp is closed.
 | `volume` | last volume, 0.0-1.0 |
 | `eq_bands` | the equalizer (`e` sets it) |
 | `translate_lang` | the language lyrics are translated into, e.g. `"en"`. Empty means from the locale |
+| `lyrics_size` | the cover view's lyrics drawn as a picture: `"small"`, `""` (medium), `"large"` |
+| `seek_step` | how far `←` `→` move in the song, in seconds; 0 means 10 |
+| `volume_step` | how far `+` `-` turn the volume, in percent; 0 means 5 |
+| `notify` | a desktop notification with the song and its cover when the next one starts: `""` never, `"away"` while utuimp's window is not the one in use, `"always"`. Needs `notify-send` (Linux) or `osascript` (macOS) |
 | `lyrics_sources` | lyrics source picked per song (`c` in lyrics sets it) |
 
 ### Visualizer
@@ -89,6 +104,8 @@ the volume, the visualizer scene), so edit it while utuimp is closed.
 | `visualizer_strength` | 0-200 (percent) | 100 |
 | `visualizer_brightness` | 10-150 (percent) | 100 |
 | `visualizer_background` | `""`, `"stars"`, `"sparks"` | `""` |
+| `graphics` | `""` (auto), `"on"`, `"off"`: draw the visualizer as a picture in kitty and Ghostty | `""` |
+| `visualizer_detail` | `""`, `"fine"` | `""` |
 
 ### Other
 
@@ -170,7 +187,7 @@ sign-ins.
 
 ```
 utuimp [flags]
-utuimp setup [section…]
+utuimp setup [section]
 utuimp auth login | logout | status
 utuimp auth yandex [logout]
 utuimp auth lastfm login | logout | status
@@ -196,3 +213,14 @@ utuimp version
 |---|---|
 | `UTUIMP_SPOTIFY_OUTPUT=librespot` | librespot plays Spotify's sound itself instead of utuimp (Linux) |
 | `UTUIMP_CONSOLE=0` / `=1` | turn the Linux console mode off / force it on |
+| `UTUIMP_FPS=<n>` | frames a second, 10 to 240, instead of what fits the screen (see below) |
+| `UTUIMP_LINES_LOG=<file>` | for a bug report about the pixel interface: a line a frame with the time between frames, how long one took to draw, whether the screen was laid out anew and the picture bytes sent to the terminal, and for a slow frame what took the time |
+| `UTUIMP_FRAMES=<file>` | for a bug report about stutter: a line a frame of every animation (the lines, the visualizer, the start screen, the words' effects) and every screen laid out, with when it began, the time since the last and how long it took, and any key or message that took long |
+| `UTUIMP_CPUPROFILE=<file>` | for a bug report about speed: where the processor's time went, for `go tool pprof`, written when utuimp quits |
+| `UTUIMP_VIZ_INFO=<file>` | for a bug report about the visualizer: a line a second with what it hears, its detail and how long a frame takes |
+
+utuimp draws its animations at a pace that fits the screen: a frame lasts
+a whole number of the screen's refreshes, or what moves jerks. That is 60
+frames a second on a 60, 120 or 240 Hz screen, 72 on a 144 Hz one, 75 on
+75 Hz. It asks Hyprland, sway or X11 (xrandr) how often the screen
+refreshes; elsewhere it draws 60 a second, and `UTUIMP_FPS` sets it.

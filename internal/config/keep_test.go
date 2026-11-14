@@ -21,7 +21,7 @@ func TestSaveKeepsUnknownKeys(t *testing.T) {
 	if err := cfg.Save(""); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := os.ReadFile(path)
+	b, _ := os.ReadFile(path) //nolint:gosec // the test's own config file
 	if !strings.Contains(string(b), `"future_setting"`) || !strings.Contains(string(b), `"gruvbox"`) {
 		t.Errorf("saved config lost a key:\n%s", b)
 	}

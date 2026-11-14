@@ -26,13 +26,15 @@ repos:
       - id: go-mod-tidy
         name: go mod tidy
         language: system
-        entry: bash -c 'go mod tidy && git diff --exit-code go.sum go.mod'
+        # Says what tidy would change, without changing it: go.mod and
+        # go.sum must already be tidy (not merely unchanged since the index).
+        entry: go mod tidy -diff
         types: [go]
         pass_filenames: false
 
   # ── golangci-lint (includes gosec + all security linters) ─────────────────
   - repo: https://github.com/golangci/golangci-lint
-    rev: v2.11.4
+    rev: v2.15.0
     hooks:
       - id: golangci-lint
         name: golangci-lint

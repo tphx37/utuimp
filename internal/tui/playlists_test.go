@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -50,7 +51,7 @@ func (p *editProvider) CreatePlaylist(_ context.Context, name string, ids []stri
 	return pl, nil
 }
 func (p *editProvider) RemoveFromPlaylist(_ context.Context, id string, idx int, t provider.Track) error {
-	p.removed = append(p.removed, id+"/"+string(rune('0'+idx))+"/"+t.ID)
+	p.removed = append(p.removed, id+"/"+strconv.Itoa(idx)+"/"+t.ID)
 	return nil
 }
 func (p *editProvider) RenamePlaylist(_ context.Context, id, name string) error {

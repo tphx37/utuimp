@@ -104,6 +104,7 @@ func ResolveDeveloperToken(cfg *config.Config) error {
 	if devToken != "" {
 		logBroker("[broker] using build-time embedded developer token")
 		cfg.AppleDeveloperToken = devToken
+		setTokenInfo(SourceBuild, devToken)
 		return nil
 	}
 	if tokenURL == "" {
@@ -117,6 +118,7 @@ func ResolveDeveloperToken(cfg *config.Config) error {
 		return err
 	}
 	cfg.AppleDeveloperToken = tok
+	setTokenInfo(SourceBroker, tok)
 	return nil
 }
 
@@ -355,44 +357,126 @@ func writeCache(path string, c cachedToken) error {
 	return os.Rename(tmp, path)
 }
 
+// Where a developer token came from (TokenInfo.Source).
+const (
+	SourceBuild  = "build"  // built into the binary from the builder's own key
+	SourceBroker = "broker" // utuimp's own token service
+	SourceOwn    = "own"    // apple_developer_token the user put in the config
+	SourceVibez  = "vibez"  // borrowed from the vibez project (see vibez.go)
+)
+
+// ErrVibezNotAllowed is returned when the only way to a developer token is
+// borrowing one from vibez and the user hasn't agreed to that yet
+// (config.AppleTokenSource).
+var ErrVibezNotAllowed = errors.New("utuimp has no Apple Music developer token of its own. " +
+	"It can borrow the one of another project, vibez: run `utuimp setup services` to allow that or to use your own MusicKit key")
+
+// BuiltIn reports whether this build has a developer token source of its own
+// (a token or a token service built in), so nothing has to be borrowed.
+func BuiltIn() bool { return devToken != "" || tokenURL != "" }
+
+// TokenInfo says whose developer token is in use.
+type TokenInfo struct {
+	Source  string    // one of the Source constants; "" when there is no token
+	Expires time.Time // zero when unknown
+}
+
+var (
+	tokenInfoMu sync.Mutex //nolint:gochecknoglobals
+	tokenInfo   TokenInfo  //nolint:gochecknoglobals
+)
+
+func setTokenInfo(source, tok string) {
+	tokenInfoMu.Lock()
+	defer tokenInfoMu.Unlock()
+	tokenInfo = TokenInfo{Source: source, Expires: jwtExpiry(tok)}
+}
+
+// DeveloperTokenInfo reports the source and expiry of the token the last
+// ResolveDeveloperToken settled on.
+func DeveloperTokenInfo() TokenInfo {
+	tokenInfoMu.Lock()
+	defer tokenInfoMu.Unlock()
+	return tokenInfo
+}
+
 // resolveWithoutBroker serves builds with no token broker of their own: the
 // configured token while it has more than refreshBefore left, then a token
-// cached by an earlier refresh, then a fresh one obtained through the
-// upstream release binary (see upstream.go). A failed refresh keeps whatever
-// token there is, so being offline never makes things worse.
+// cached by an earlier refresh, then, when the user allowed it
+// (config.AppleTokenSource), a fresh one borrowed through the vibez release
+// binary (see vibez.go). A failed refresh keeps whatever token there is, so
+// being offline never makes things worse.
 func resolveWithoutBroker(cfg *config.Config, now time.Time) error {
+	cache := cachePath()
+	cached, cacheErr := readCache(cache)
+	// Without a broker the cache is only ever written from vibez, and the
+	// token is saved to the config along with everything else.
+	sourceOf := func(tok string) string {
+		if cacheErr == nil && tok == cached.Token {
+			return SourceVibez
+		}
+		return SourceOwn
+	}
 	tok := cfg.AppleDeveloperToken
 	if tok != "" {
 		if exp := jwtExpiry(tok); exp.IsZero() || exp.After(now.Add(refreshBefore)) {
-			logBroker("[token] using developer token from config file")
+			logBroker("[token] using developer token from config file (" + sourceOf(tok) + ")")
+			setTokenInfo(sourceOf(tok), tok)
 			return nil
 		}
 	}
-	cache := cachePath()
-	if c, err := readCache(cache); err == nil && c.validFor(now, refreshBefore) {
-		logBroker("[token] using cached developer token")
-		cfg.AppleDeveloperToken = c.Token
+	if cacheErr == nil && cached.validFor(now, refreshBefore) {
+		logBroker("[token] using cached developer token (from vibez)")
+		cfg.AppleDeveloperToken = cached.Token
+		setTokenInfo(SourceVibez, cached.Token)
 		return nil
 	}
-	if upstreamRefresh == nil {
-		return nil
-	}
-	fmt.Fprintln(os.Stderr, "Refreshing the Apple Music developer token…")
-	c, err := upstreamRefresh(context.Background(), filepath.Dir(cache))
-	if err != nil {
-		logBroker(fmt.Sprintf("[token] upstream refresh failed: %v", err))
+	// Nothing fresh. Whatever is left is used when a new one can't be had.
+	keep := func() bool {
+		if cfg.AppleDeveloperToken == "" && cacheErr == nil && cached.validFor(now, 0) {
+			cfg.AppleDeveloperToken = cached.Token
+		}
 		if cfg.AppleDeveloperToken == "" {
+			setTokenInfo("", "")
+			return false
+		}
+		setTokenInfo(sourceOf(cfg.AppleDeveloperToken), cfg.AppleDeveloperToken)
+		return true
+	}
+	if cfg.AppleTokenSource != config.AppleTokenVibez {
+		if keep() {
+			return nil
+		}
+		if cfg.AppleTokenSource == config.AppleTokenOwn {
+			return errors.New("no Apple Music developer token: set apple_developer_token in the config " +
+				"(make refresh-token writes one from your MusicKit key), or allow the vibez token in `utuimp setup services`")
+		}
+		return ErrVibezNotAllowed
+	}
+	if vibezRefresh == nil {
+		keep()
+		return nil
+	}
+	fmt.Fprintln(os.Stderr, "Getting an Apple Music developer token from vibez…")
+	c, err := vibezRefresh(context.Background(), filepath.Dir(cache))
+	if err != nil {
+		logBroker(fmt.Sprintf("[token] vibez refresh failed: %v", err))
+		if !keep() {
 			return fmt.Errorf("couldn't get the Apple Music developer token (%w). "+
-				"It comes from the vibez release on GitHub; check the connection and restart utuimp", err)
+				"utuimp borrows it from the vibez project's release on GitHub, so this depends on GitHub and on vibez; "+
+				"check the connection and restart utuimp", err)
 		}
 		return nil
 	}
 	if cache != "" {
 		_ = writeCache(cache, c)
+		// The folder the binary was kept in before it was named after vibez.
+		_ = os.RemoveAll(filepath.Join(filepath.Dir(cache), "upstream"))
 	}
 	cfg.AppleDeveloperToken = c.Token
+	setTokenInfo(SourceVibez, c.Token)
 	return nil
 }
 
-// upstreamRefresh is refreshFromUpstream; tests replace it.
-var upstreamRefresh = refreshFromUpstream //nolint:gochecknoglobals // swapped in tests
+// vibezRefresh is refreshFromVibez; tests replace it.
+var vibezRefresh = refreshFromVibez //nolint:gochecknoglobals // swapped in tests

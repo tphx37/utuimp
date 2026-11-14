@@ -14,10 +14,11 @@ func testApp(t *testing.T) (*App, []*Service) {
 	t.Helper()
 	y, a := newModel(newMockPlayer()), newModel(newMockPlayer())
 	y.introStep, a.introStep = introDone, introDone
-	started := map[string]int{}
+	// (Each tab's Start runs on a goroutine of its own: it must not
+	// touch anything the test shares.)
 	services := []*Service{
-		{Name: "Yandex Music", Key: "yandex", Hotkey: "1", Model: y, Start: func(func(tea.Msg)) { started["yandex"]++ }},
-		{Name: "Apple Music", Key: "apple", Hotkey: "2", Model: a, Start: func(func(tea.Msg)) { started["apple"]++ }},
+		{Name: "Yandex Music", Key: "yandex", Hotkey: "1", Model: y, Start: func(func(tea.Msg)) {}},
+		{Name: "Apple Music", Key: "apple", Hotkey: "2", Model: a, Start: func(func(tea.Msg)) {}},
 		{Name: "Spotify", Key: "spotify", Hotkey: "3", Placeholder: "Coming soon."},
 	}
 	app := NewApp(services, 0)
@@ -158,5 +159,54 @@ func TestApp_VisualizerHidesTheTabs(t *testing.T) {
 	app.Update(tea.KeyPressMsg{Code: '2', Text: "2"})
 	if app.Active() != 1 {
 		t.Error("2 should switch tabs again after esc")
+	}
+}
+
+// The start screen is shown once, on the tab the app opens on: leaving that
+// tab while it is up ends it, and a tab opened later has none (its own
+// would dance over the tabs until its service was ready, for ever if it
+// never is).
+func TestApp_StartScreenOnce(t *testing.T) {
+	y, a := newModel(newMockPlayer()), newModel(newMockPlayer())
+	y.player, a.player = nil, nil // services still starting
+	services := []*Service{
+		{Name: "Yandex Music", Key: "yandex", Hotkey: "1", Model: y, Start: func(func(tea.Msg)) {}},
+		{Name: "Apple Music", Key: "apple", Hotkey: "2", Model: a, Start: func(func(tea.Msg)) {}},
+	}
+	app := NewApp(services, 0)
+	app.Keys = map[string]int{"1": 0, "2": 1}
+	app.Init()
+	app.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	if y.introStep == introDone {
+		t.Fatal("the first tab should open on the start screen")
+	}
+	app.Update(tea.KeyPressMsg{Code: '2', Text: "2"})
+	if y.introStep != introDone || y.intro != nil {
+		t.Error("leaving the tab should end its start screen")
+	}
+	if a.introStep != introDone || a.intro != nil {
+		t.Error("a tab opened later should have no start screen")
+	}
+}
+
+// While the visualizer opens (or closes) over the interface, the interface
+// under it stays where it was, tabs and all: without them it jumped up a
+// row before the picture covered it.
+func TestApp_VisualizerOpeningKeepsTheTabs(t *testing.T) {
+	app, services := testApp(t)
+	before := app.View().Content
+	app.Update(tea.KeyPressMsg{Code: 'V', Text: "V"})
+	m := services[0].Model
+	m.viz.over = true // opening as a picture over the interface
+	content := app.View().Content
+	if !strings.Contains(content, "Apple Music") {
+		t.Error("the tabs should stay while the visualizer opens over them")
+	}
+	if strings.Count(content, "\n") != strings.Count(before, "\n") {
+		t.Errorf("the screen under the opening visualizer is %d rows, was %d", strings.Count(content, "\n")+1, strings.Count(before, "\n")+1)
+	}
+	first := func(s string) string { return strings.SplitN(s, "\n", 2)[0] }
+	if first(content) != first(before) {
+		t.Error("the first row moved as the visualizer began to open")
 	}
 }

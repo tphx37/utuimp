@@ -1,10 +1,6 @@
 package cmd
 
 import (
-	"path/filepath"
-	"strings"
-
-	"github.com/tphx37/utuimp/internal/i18n"
 	"testing"
 
 	"github.com/tphx37/utuimp/internal/config"
@@ -46,29 +42,18 @@ func TestSignOutPerService(t *testing.T) {
 	}
 }
 
-func TestSetupSavesAnswers(t *testing.T) {
-	dir := t.TempDir()
-	cfgFile = filepath.Join(dir, "config.json")
-	t.Cleanup(func() { cfgFile = ""; i18n.Set("en") })
-	cfg := &config.Config{}
-	// Russian, no Discord, services: yandex y, apple n, spotify, youtube and
-	// soundcloud (default n), local y + folder.
-	in := strings.NewReader("2\nн\nд\nн\n\n\n\nд\n/music\n")
-	var out strings.Builder
-	if err := runSetup(cfg, in, &out); err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Language != "ru" || cfg.DiscordRPCEnabled() || !cfg.SetupDone || cfg.MusicDir != "/music" {
-		t.Errorf("cfg = %+v", cfg)
-	}
-	if strings.Join(cfg.Services, ",") != "yandex,local" {
-		t.Errorf("services = %v", cfg.Services)
-	}
-	if !strings.Contains(out.String(), "Сервисы") {
-		t.Errorf("questions after choosing Russian should be in Russian:\n%s", out.String())
-	}
+func TestKeysFollowEnabledTabs(t *testing.T) {
+	cfg := &config.Config{Services: []string{"yandex", "local"}}
 	defs := enabledServices(serviceDefs(256), cfg.Services)
 	if keys := serviceKeys(cfg, defs); keys["1"] != "yandex" || keys["2"] != "local" {
 		t.Errorf("keys follow the enabled tabs: %v", keys)
+	}
+}
+
+func TestSetupSections(t *testing.T) {
+	for _, name := range []string{"language", "discord", "services", "visualizer", "interface", "library"} {
+		if setupSections[name] == "" {
+			t.Errorf("the old setup section %q should still open something", name)
+		}
 	}
 }

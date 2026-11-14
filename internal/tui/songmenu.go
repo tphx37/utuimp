@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/tphx37/utuimp/internal/i18n"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/tphx37/utuimp/internal/i18n"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"

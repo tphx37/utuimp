@@ -30,8 +30,6 @@ func msgOf[T any](t *testing.T, cmd tea.Cmd) T {
 		t.Fatalf("no command, want %T", zero)
 	}
 	switch msg := cmd().(type) {
-	case T:
-		return msg
 	case tea.BatchMsg:
 		for _, c := range msg {
 			if c == nil {
@@ -41,6 +39,8 @@ func msgOf[T any](t *testing.T, cmd tea.Cmd) T {
 				return m
 			}
 		}
+	case T:
+		return msg
 	}
 	t.Fatalf("command produced no %T", zero)
 	return zero

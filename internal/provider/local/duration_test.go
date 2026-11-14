@@ -19,7 +19,7 @@ func TestWavDuration(t *testing.T) {
 	b = binary.LittleEndian.AppendUint16(b, 4)
 	b = binary.LittleEndian.AppendUint16(b, 16)
 	b = append(b, "data"...)
-	b = binary.LittleEndian.AppendUint32(b, uint32(len(data)))
+	b = binary.LittleEndian.AppendUint32(b, uint32(len(data))) //nolint:gosec // a short test file
 	b = append(b, data...)
 	p := filepath.Join(t.TempDir(), "a.wav")
 	if err := os.WriteFile(p, b, 0o600); err != nil {
@@ -33,9 +33,11 @@ func TestWavDuration(t *testing.T) {
 func TestFlacDuration(t *testing.T) {
 	si := make([]byte, 34)
 	rate, samples := int64(48000), int64(48000*3)
-	si[10] = byte(rate >> 12)
-	si[11] = byte(rate >> 4)
-	si[12] = byte(rate<<4) | 0x02
+	// The sample rate's 20 bits, across three bytes (the conversions keep
+	// the low byte of each piece on purpose).
+	si[10] = byte(rate >> 12)     //nolint:gosec // see above
+	si[11] = byte(rate >> 4)      //nolint:gosec // see above
+	si[12] = byte(rate<<4) | 0x02 //nolint:gosec // see above
 	binary.BigEndian.PutUint32(si[14:18], uint32(samples))
 	b := append([]byte("fLaC\x80\x00\x00\x22"), si...)
 	p := filepath.Join(t.TempDir(), "a.flac")

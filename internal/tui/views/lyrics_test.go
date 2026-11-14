@@ -132,7 +132,7 @@ func TestLyricsModel_TranslationRowsAndPicker(t *testing.T) {
 		}
 	}
 	// Short lines keep their translation on the same row, flush right.
-	for _, row := range strings.Split(stripANSI(view), "\n") {
+	for row := range strings.SplitSeq(stripANSI(view), "\n") {
 		if strings.Contains(row, "bonjour") {
 			if !strings.HasSuffix(row, "привет") || len([]rune(row)) != 60 {
 				t.Errorf("translation not right-aligned on the lyric's row: %q", row)
@@ -264,7 +264,7 @@ func TestLyricsModel_InactiveLinesGreyAndFade(t *testing.T) {
 	// Long after the change, both the past and the upcoming line are grey.
 	now = now.Add(time.Second)
 	view := m.View()
-	for _, l := range strings.Split(view, "\n") {
+	for l := range strings.SplitSeq(view, "\n") {
 		if strings.Contains(l, "next line") && !strings.Contains(l, greySeq) {
 			t.Errorf("upcoming line not grey: %q", l)
 		}
@@ -276,7 +276,7 @@ func TestLyricsModel_InactiveLinesGreyAndFade(t *testing.T) {
 	now = now.Add(time.Second)
 	m.SetPosition(4500 * time.Millisecond)
 	now = now.Add(100 * time.Millisecond)
-	for _, l := range strings.Split(m.View(), "\n") {
+	for l := range strings.SplitSeq(m.View(), "\n") {
 		if strings.Contains(l, "now line") && strings.Contains(l, greySeq) {
 			t.Errorf("line just left should still be fading, got grey already: %q", l)
 		}

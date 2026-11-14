@@ -439,9 +439,9 @@ func adtsFrame(payload int) []byte {
 	n := 7 + payload
 	f := make([]byte, n)
 	f[0], f[1] = 0xFF, 0xF1
-	f[2] = 4 << 2 // 44.1 kHz
-	f[3] = byte(n >> 11 & 0x03)
-	f[4] = byte(n >> 3)
+	f[2] = 4 << 2               // 44.1 kHz
+	f[3] = byte(n >> 11 & 0x03) //nolint:gosec // two bits of it
+	f[4] = byte(n >> 3)         //nolint:gosec // eight bits of it
 	f[5] = byte(n&0x07) << 5
 	return f
 }

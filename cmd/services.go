@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/tphx37/utuimp/internal/i18n"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,6 +11,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/tphx37/utuimp/internal/i18n"
+	"github.com/tphx37/utuimp/internal/tui/styles"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -51,8 +53,8 @@ func (e *engineEnv) close() {
 	fns := e.cleanups
 	e.cleanups = nil
 	e.mu.Unlock()
-	for i := len(fns) - 1; i >= 0; i-- {
-		fns[i]()
+	for _, fn := range slices.Backward(fns) {
+		fn()
 	}
 }
 
@@ -141,38 +143,49 @@ func serviceKeys(cfg *config.Config, defs []serviceDef) map[string]string {
 	return keys
 }
 
-// runServices runs the tabbed app with every service.
+// runServices runs the tabbed app. Every service has its tab from the
+// start, so each keeps its place (and its player's slot) for good; the ones
+// turned off are hidden, and the settings show and hide them while utuimp
+// runs.
 func runServices(cfg *config.Config, opts tui.Options, audioBitrateKbps int, initial string) error {
-	defs := enabledServices(serviceDefs(audioBitrateKbps), cfg.Services)
-	keys := serviceKeys(cfg, defs)
+	defs := serviceDefs(audioBitrateKbps)
+	shown := func() []serviceDef { return enabledServices(defs, cfg.Services) }
+	isShown := func(key string) bool {
+		return slices.ContainsFunc(shown(), func(d serviceDef) bool { return d.key == key })
+	}
 
 	if initial == "" {
 		initial = cfg.Service
 	}
-	active := 0
-	for i, d := range defs {
-		if d.key == initial {
-			active = i
-		}
+	if !isShown(initial) {
+		initial = shown()[0].key
 	}
+	active := slices.IndexFunc(defs, func(d serviceDef) bool { return d.key == initial })
 
 	env := &engineEnv{mux: mux.New(active)}
 	defer env.close()
 
+	opts.Restart = func() {
+		if exe, err := os.Executable(); err == nil {
+			env.restart(exe)
+		}
+	}
+	var onSetting func(string)
+	opts.OnSetting = func(key string) {
+		if onSetting != nil {
+			onSetting(key)
+		}
+	}
+
 	services := make([]*tui.Service, len(defs))
 	for i, d := range defs {
 		s := &tui.Service{Name: d.name, Key: d.key, Placeholder: d.placeholder}
-		var hot []string
-		for k, svc := range keys {
-			if svc == d.key && k != "ё" {
-				hot = append(hot, k)
-			}
-		}
-		sort.Strings(hot)
-		s.Hotkey = strings.Join(hot, "/")
 		if d.start != nil {
 			o := opts
 			o.HistoryName = d.history
+			if d.key != initial {
+				o.OpenSettings, o.Welcome = "", false
+			}
 			if d.key == "local" {
 				o.EmptyQueueHint = i18n.T("No music found. Put audio files (MP3, FLAC, M4A…) in") + "\n" +
 					localMusicDir(cfg) + "\n" +
@@ -187,14 +200,27 @@ func runServices(cfg *config.Config, opts tui.Options, audioBitrateKbps int, ini
 	}
 
 	app := tui.NewApp(services, active)
-	app.Keys = map[string]int{}
-	for k, svc := range keys {
+	// retab hides the tabs that are off and hands out the keys again.
+	retab := func() {
+		keys := serviceKeys(cfg, shown())
+		app.Keys = map[string]int{}
 		for i, d := range defs {
-			if d.key == svc {
+			services[i].Hidden = !isShown(d.key)
+			var hot []string
+			for k, svc := range keys {
+				if svc != d.key {
+					continue
+				}
 				app.Keys[k] = i
+				if k != "ё" {
+					hot = append(hot, k)
+				}
 			}
+			sort.Strings(hot)
+			services[i].Hotkey = strings.Join(hot, "/")
 		}
 	}
+	retab()
 	app.OnSwitch = func(idx int) {
 		env.mux.Focus(idx)
 		cfg.Service = defs[idx].key
@@ -208,7 +234,42 @@ func runServices(cfg *config.Config, opts tui.Options, audioBitrateKbps int, ini
 	lastfm.ApplyEmbedded(cfg)
 	env.addCleanup(setupMuxPlatform(env.mux))
 	startLastfmScrobbler(cfg, env.mux, debugLog)
-	env.addCleanup(startDiscordRPC(cfg, env.mux, debugLog))
+	// Called from the program's own goroutine, which must not wait on
+	// prog.Send: whatever is sent from here goes through a goroutine.
+	asyncLog := func(msg string) { go debugLog(msg) }
+	stopDiscord := startDiscordRPC(cfg, env.mux, debugLog)
+	env.addCleanup(func() { stopDiscord() })
+
+	onSetting = func(key string) {
+		switch {
+		case strings.HasPrefix(key, "services."):
+			was := make([]bool, len(services))
+			for i, s := range services {
+				was[i] = s.Hidden
+			}
+			retab()
+			for i, s := range services {
+				if s.Hidden && !was[i] && s.Started() {
+					go app.Sender(i)(tui.ServiceOffMsg{})
+				}
+			}
+		case key == "integrations.discord":
+			stopDiscord()
+			stopDiscord = startDiscordRPC(cfg, env.mux, asyncLog)
+		case key == "integrations.lastfm":
+			startLastfmScrobbler(cfg, env.mux, asyncLog)
+		case key == "interface.theme":
+			if styles.DetectConsole() {
+				return // the console keeps its own palette
+			}
+			dir := ""
+			if p, err := config.ConfigPath(cfgFile); err == nil {
+				dir = filepath.Dir(p)
+			}
+			theme, _ := styles.LoadTheme(cfg.Theme, dir)
+			styles.Apply(theme)
+		}
+	}
 
 	restoreStderr := captureStderr()
 	_, err := prog.Run()

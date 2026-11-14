@@ -50,18 +50,19 @@ func (a *AppleProvider) GetSongDetails(ctx context.Context, t provider.Track) (p
 	}
 
 	var endpoint string
-	if catalogID != "" {
+	switch {
+	case catalogID != "":
 		sf, err := a.storefront(ctx)
 		if err != nil {
 			return out, err
 		}
 		endpoint = fmt.Sprintf("/catalog/%s/songs/%s?include=albums,artists", sf, url.PathEscape(catalogID))
-	} else if strings.HasPrefix(t.ID, "i.") {
+	case strings.HasPrefix(t.ID, "i."):
 		// A library-only song (uploaded or matched): its album is a library
 		// album, and it has no public link.
 		endpoint = "/me/library/songs/" + url.PathEscape(t.ID) + "?include=albums"
 		out.LibraryAlbum = true
-	} else {
+	default:
 		return out, errors.New("track has no ID")
 	}
 

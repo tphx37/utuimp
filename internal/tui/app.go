@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -24,9 +26,15 @@ type Service struct {
 	// Start launches the engine in the background. send delivers messages
 	// (InitStatusMsg, EngineReadyMsg, …) to this service's Model.
 	Start func(send func(tea.Msg))
+	// Hidden leaves the tab out (the service is turned off in the
+	// settings). The tab being shown stays until another one is opened.
+	Hidden bool
 
 	started bool
 }
+
+// Started reports whether the service's engine was launched.
+func (s *Service) Started() bool { return s.started }
 
 // App shows several services as tabs and routes each message to the
 // service it belongs to. Keys (1, 2, 3, ` …) switch tabs.
@@ -45,6 +53,10 @@ type App struct {
 	// volume is the shared volume last set in any tab (nil until one is),
 	// handed to tabs that start later.
 	volume *volumeSyncMsg
+
+	// introDone: a tab has started, and with it the start screen; later
+	// tabs open without one.
+	introDone bool
 }
 
 // sessionMsg tags a message with the service it belongs to.
@@ -82,7 +94,7 @@ func (a *App) Sender(idx int) func(tea.Msg) {
 // Active returns the index of the shown service.
 func (a *App) Active() int { return a.active }
 
-var teaPkg = reflect.TypeOf(tea.QuitMsg{}).PkgPath()
+var teaPkg = reflect.TypeFor[tea.QuitMsg]().PkgPath()
 
 // wrap makes cmd's result come back tagged for service idx. Bubble Tea's own
 // messages (quit, batches, sequences, clipboard, terminal queries) pass
@@ -126,6 +138,13 @@ func (a *App) start(idx int) tea.Cmd {
 		// One volume for every player: a tab opened later starts with it.
 		s.Model.Update(*a.volume)
 	}
+	// The start screen is the app's, shown once: a tab opened later opens
+	// straight onto its interface (its own start screen would dance over
+	// the tabs until its service was ready, for ever if it never is).
+	if a.introDone {
+		s.Model.introStep = introDone
+	}
+	a.introDone = true
 	cmds := []tea.Cmd{wrap(idx, s.Model.Init())}
 	if a.width > 0 {
 		_, c := s.Model.Update(tea.WindowSizeMsg{Width: a.width, Height: a.bodyHeight()})
@@ -154,8 +173,12 @@ func (a *App) switchTo(idx int) tea.Cmd {
 	if idx == a.active || idx < 0 || idx >= len(a.services) {
 		return nil
 	}
+	var drop tea.Cmd
 	if old := a.services[a.active].Model; old != nil {
 		old.background = true
+		// Leaving it while the start screen is up ends the start screen:
+		// its picture must not stay over the tab opened.
+		drop = wrap(a.active, old.introDrop())
 	}
 	a.active = idx
 	if m := a.services[idx].Model; m != nil {
@@ -166,12 +189,24 @@ func (a *App) switchTo(idx int) tea.Cmd {
 		a.OnSwitch(idx)
 	}
 	if m := a.services[idx].Model; m != nil {
-		return tea.Batch(a.start(idx), wrap(idx, m.fxKick()))
+		return tea.Batch(drop, a.start(idx), wrap(idx, m.fxKick()))
 	}
-	return a.start(idx)
+	return tea.Batch(drop, a.start(idx))
 }
 
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if framesLog != nil {
+		began := time.Now()
+		defer func() {
+			if took := time.Since(began); took > 4*time.Millisecond {
+				inner := msg
+				if s, ok := msg.(sessionMsg); ok {
+					inner = s.msg
+				}
+				framesLog.note("slow", took, fmt.Sprintf("%T", inner))
+			}
+		}()
+	}
 	switch m := msg.(type) {
 	case sessionMsg:
 		if m.idx < 0 || m.idx >= len(a.services) {
@@ -222,7 +257,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // routeLink opens a link in the tab of its service.
 func (a *App) routeLink(from int, r linkRouteMsg) tea.Cmd {
 	for i, s := range a.services {
-		if s.Key == r.link.Service && s.Model != nil {
+		if s.Key == r.link.Service && s.Model != nil && !s.Hidden {
 			return tea.Batch(a.switchTo(i), a.forward(i, openLinkMsg(r)))
 		}
 	}
@@ -247,6 +282,9 @@ func (a *App) shareVolume(from int, v saveVolumeMsg) tea.Cmd {
 func (a *App) tabBar() string {
 	var parts []string
 	for i, s := range a.services {
+		if s.Hidden && i != a.active {
+			continue
+		}
 		label := " " + s.Name + " "
 		if s.Hotkey != "" {
 			label = " " + s.Hotkey + " " + s.Name + " "
@@ -271,6 +309,10 @@ func (a *App) tabBar() string {
 }
 
 func (a *App) View() tea.View {
+	if framesLog != nil {
+		began := time.Now()
+		defer func() { framesLog.note("view", time.Since(began), "") }()
+	}
 	s := a.services[a.active]
 	if s.Model == nil {
 		box := lipgloss.NewStyle().
@@ -286,9 +328,11 @@ func (a *App) View() tea.View {
 		return v
 	}
 	inner := s.Model.View()
-	if a.width == 0 || s.Model.vizOpen() {
+	if a.width == 0 || s.Model.vizOpen() && !s.Model.viz.over {
 		// The visualizer is the whole screen: no tabs over it (and no
-		// switching them, see canSwitchByKey).
+		// switching them, see canSwitchByKey). While it opens or closes
+		// over the interface, the interface stays as it is, tabs and all:
+		// without them it jumped up a row before the picture covered it.
 		return inner
 	}
 	v := tea.NewView(a.tabBar() + "\n" + inner.Content)

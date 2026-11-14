@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/tphx37/utuimp/internal/gfx"
 	"github.com/tphx37/utuimp/internal/tui/styles"
 )
 
@@ -23,29 +24,64 @@ import (
 // fade around it. On the Linux console the logo stands alone, as before.
 
 const (
-	introFrame  = 33 * time.Millisecond // ~30 frames a second
-	introFadeIn = 0.15                  // seconds
-	introReveal = 0.7                   // seconds the interface takes to open
-	introTempo  = 60.0 / 126            // something to bounce to
-	introDim    = 0.50                  // the ribbons stay behind the logo
-	introMaxCov = 0.45                  // the most a ribbon covers the background
-	introSoft   = 0.3                   // width of the edge of the opening circle, as a part of the screen
+	introFadeIn = 0.15       // seconds
+	introReveal = 0.7        // seconds the interface takes to open
+	introTempo  = 60.0 / 126 // something to bounce to
+	introDim    = 0.50       // the ribbons stay behind the logo
+	introMaxCov = 0.45       // the most a ribbon covers the background
+	introSoft   = 0.3        // width of the edge of the opening circle, as a part of the screen
 )
 
 type introVizTickMsg struct{}
 
-func introVizTick() tea.Cmd {
-	return tea.Tick(introFrame, func(time.Time) tea.Msg { return introVizTickMsg{} })
+// introVizTick asks for the next frame on the beat kept in *due (see
+// nextFrame).
+func introVizTick(due *time.Time) tea.Cmd {
+	return frameTick(due, screenFrame, func() tea.Msg { return introVizTickMsg{} })
 }
 
 // introDance is the start screen's own visualizer and its clock.
 type introDance struct {
+	due    time.Time // when the frame is due (see nextFrame)
 	v      *visualizer
 	start  time.Time
 	last   time.Time
 	beatN  int
 	fadeAt time.Time // when the player was ready and the interface began to open
+
+	// In a terminal that shows pictures the ribbons are one, under the
+	// text (see gfx): img, its pixels, and the sequence that shows the
+	// frame just drawn, sent with the next tick.
+	img   gfx.Image
+	pix   []byte
+	raw   string
+	shown bool
+	// The frame last drawn (on the tick, see introStepDance): the screen
+	// is asked for many times a frame, and one drawing serves them all.
+	frame   string
+	frameW  int
+	frameH  int
+	frameOf string // what it was drawn for
 }
+
+// introImageID is the start screen's picture in the terminal.
+const introImageID = 70
+
+// introPxFor is how many pixels a cell pixel is split into, each way, when
+// the start screen's ribbons are a picture on a screen of w×h cells: as
+// many as make about introPixels in all (three on a full HD screen), so
+// that a frame costs about the same on any screen; at least two, at most
+// six.
+func introPxFor(w, h int) int {
+	if w <= 0 || h <= 0 {
+		return 2
+	}
+	return min(6, max(2, int(math.Round(math.Sqrt(introPixels/float64(w*h*2))))))
+}
+
+// introPixels is the start screen's picture's size, in pixels: a frame of
+// it takes some 4 ms on a laptop's twelve threads.
+const introPixels = 576 * 300
 
 // introRibbons reports whether the start screen draws the ribbons: not on
 // the Linux console, whose 16 colours the visualizer would have to take.
@@ -71,7 +107,12 @@ func introPalette() [3]vcol {
 		r, g, b, _ := col.RGBA()
 		h, s, v := hsv(vcol{float64(r) / 65535, float64(g) / 65535, float64(b) / 65535})
 		// Softer than the theme: half its saturation, a little dimmer,
-		// but still a colour, not grey.
+		// but still a colour, not grey; a grey theme's (black and white)
+		// stay grey, a step apart, not tinted with a hue they don't have.
+		if s < 0.04 {
+			pal[i] = hsvColor(0, 0, math.Max(0.55, v*(1-0.18*float64(i))))
+			continue
+		}
 		pal[i] = hsvColor(h, math.Max(0.25, math.Min(0.5, s*0.5)), math.Max(0.7, v*0.85))
 	}
 	return pal
@@ -87,7 +128,7 @@ func (m *Model) introBegin() tea.Cmd {
 	v.stars = v.stars[:90]
 	v.pal = introPalette()
 	m.intro = &introDance{v: v, start: now, last: now}
-	return introVizTick()
+	return introVizTick(&m.intro.due)
 }
 
 // introFinish ends the start screen: at once on the console, by opening
@@ -102,23 +143,62 @@ func (m *Model) introFinish() {
 	}
 }
 
+// introDrop ends the start screen at once, its picture taken off the
+// screen: for when its tab is left while it is up.
+func (m *Model) introDrop() tea.Cmd {
+	if m.introStep == introDone {
+		return nil
+	}
+	m.introStep = introDone
+	d := m.intro
+	m.intro = nil
+	if d != nil && d.shown {
+		return tea.Raw(d.img.Delete())
+	}
+	return nil
+}
+
 // introStepDance moves the ribbons one frame on and ends the start screen
 // once the interface has opened.
 func (m *Model) introStepDance() tea.Cmd {
 	d := m.intro
-	if d == nil || m.introStep == introDone {
+	if d == nil {
+		return nil
+	}
+	if m.introStep == introDone {
+		// Ended from elsewhere (an error at the start): the picture
+		// must not stay over the interface.
+		m.intro = nil
+		if d.shown {
+			return tea.Raw(d.img.Delete())
+		}
 		return nil
 	}
 	now := time.Now()
 	if d.leaving(now) >= 1 {
 		m.introStep = introDone
 		m.intro = nil
+		if d.shown {
+			return tea.Raw(d.img.Delete())
+		}
 		return nil
 	}
 	dt := min(0.1, now.Sub(d.last).Seconds())
 	d.last = now
 	d.move(now.Sub(d.start).Seconds(), dt, d.leaving(now))
-	return introVizTick()
+	// The frame is made here, on the tick, and its picture goes out with
+	// it: made when the screen was next drawn, it went out a tick later,
+	// and with the two on clocks of their own a tick now and then had no
+	// new picture to send, and the ribbons stood still for a frame.
+	d.frame = ""
+	began := time.Now()
+	m.renderIntro()
+	framesLog.note("intro", time.Since(began), "")
+	if raw := d.raw; raw != "" {
+		d.raw = ""
+		return tea.Batch(m.sendRaw(raw), introVizTick(&d.due))
+	}
+	return introVizTick(&d.due)
 }
 
 // leaving is how far the interface has opened, 0..1.
@@ -172,6 +252,16 @@ func (m *Model) renderIntroDance(logo, status string, main func() string) string
 	}
 	v := d.v
 	w, h := m.width, m.height
+	of := logo + "\x00" + status + "\x00" + d.fadeAt.String()
+	if d.frame != "" && d.frameW == w && d.frameH == h && d.frameOf == of {
+		return d.frame
+	}
+	defer func() { d.frameW, d.frameH, d.frameOf = w, h, of }()
+	pixels := m.linesOn()
+	v.px = 1
+	if pixels {
+		v.px = introPxFor(w, h)
+	}
 	v.resize(w, h)
 	asp := m.artCellAsp
 	if asp <= 0 {
@@ -179,7 +269,7 @@ func (m *Model) renderIntroDance(logo, status string, main func() string) string
 	}
 	v.ya = asp / 2
 	v.sc = float64(v.h2) * v.ya / 2
-	v.cx, v.cy = float64(w)/2, float64(v.h2)/2
+	v.cx, v.cy = float64(v.w)/2, float64(v.h2)/2
 	v.drawRibbons()
 	v.post()
 	v.fb, v.prev = v.prev, v.fb
@@ -200,15 +290,31 @@ func (m *Model) renderIntroDance(logo, status string, main func() string) string
 	logoRow := max(0, (h-3)/2)
 	// How far the interface has opened at a cell: a circle grows from the
 	// logo, with a soft edge. Eased, so it starts gently and settles.
-	open := func(x, y int) float64 {
+	openAt := func(fx, fy float64) float64 { // fx, fy in cells
 		if ui == nil {
 			return 0
 		}
 		e := leave * leave * (3 - 2*leave) * (1 + introSoft)
-		dx := (float64(x) + 0.5 - float64(w)/2) / (float64(w) / 2)
-		dy := (float64(y) + 0.5 - float64(logoRow)) * 2 / (float64(w) / 2)
+		dx := (fx - float64(w)/2) / (float64(w) / 2)
+		dy := (fy - float64(logoRow)) * 2 / (float64(w) / 2)
 		r := math.Hypot(dx, dy) / math.Hypot(1, float64(h)/(float64(w)/2))
 		return clamp01((e - r) / introSoft)
+	}
+	open := func(x, y int) float64 { return openAt(float64(x)+0.5, float64(y)+0.5) }
+	if l := m.lines; ui != nil && l != nil && pixels {
+		// The interface's own pictures (the cover, frames, the lyrics)
+		// come as the opening reaches them, each drawing itself in as it
+		// does: not all at once after the start screen has gone, with an
+		// empty hole where they belong until then.
+		for i := range l.strips {
+			st := &l.strips[i]
+			// Reached: its nearest cell to where the opening starts.
+			x := min(max(w/2, st.col), st.col+st.cols-1)
+			y := min(max(logoRow, st.row-m.hostRows), st.row-m.hostRows+st.rows-1)
+			if st.seen && !st.shown && open(x, y) < 0.5 {
+				st.seen = false
+			}
+		}
 	}
 
 	// The logo shimmers: a wave of the ribbons' colours runs along it.
@@ -216,13 +322,149 @@ func (m *Model) renderIntroDance(logo, status string, main func() string) string
 	logoFg := make([][3]uint8, len(runes))
 	for i := range runes {
 		c := v.palAt(float64(i)*0.12 - t*0.6)
-		logoFg[i] = blend3(toByte3(c), fg, 0.5)
+		// Keep the logo readable over the moving ribbons; the old half-way
+		// blend could disappear when a bright ribbon crossed it.
+		logoFg[i] = blend3(toByte3(c), fg, 0.78)
 	}
 	texts := []vizText{{row: logoRow, text: logo, fg: logoFg}}
 	if status != "" && logoRow+2 < h {
-		texts = append(texts, vizText{row: logoRow + 2, text: status, fg: [][3]uint8{blend3(fg, bg, 0.45)}})
+		texts = append(texts, vizText{row: logoRow + 2, text: status, fg: [][3]uint8{blend3(fg, bg, 0.82)}})
 	}
-	return encodeIntro(v, alpha, fg, bg, texts, ui, open)
+	if pixels {
+		// The ribbons as a picture under the text: each pixel as solid
+		// as the ribbon is bright there, none where the interface has
+		// opened, and the cells carry only the letters.
+		W, H := v.w, v.h2
+		if len(d.pix) != W*H*4 {
+			d.pix = make([]byte, W*H*4)
+		}
+		px := float64(v.px)
+		par(H, func(y0, y1 int) {
+			for y := y0; y < y1; y++ {
+				ey := smooth(0, 6*px, float64(min(y, H-1-y)))
+				for x := range W {
+					i := (y*W + x) * 4
+					d.pix[i+3] = 0
+					c := v.out[y*W+x]
+					// Too dark to cover anything (most of the screen): left
+					// clear at once. tone(0.08 / 0.75 of the way) needs this
+					// much light before alpha.
+					if max(c.r, c.g, c.b)*alpha < introDark {
+						continue
+					}
+					// The tone map the visualizer's own (see toByte3), but
+					// smooth: no steps of four, which, divided by the
+					// brightness below, showed as bands.
+					tr, tg, tb := introTone(c.r*alpha), introTone(c.g*alpha), introTone(c.b*alpha)
+					lum := max(tr, tg, tb)
+					if lum <= 0 {
+						continue
+					}
+					ex := smooth(0, 8*px, float64(min(x, W-1-x)))
+					cov := smooth(0.08, 0.7, lum) * ex * ey * introMaxCov
+					if cov < 0.004 {
+						continue
+					}
+					cov *= 1 - openAt((float64(x)+0.5)/px, (float64(y)+0.5)/(2*px))
+					if cov < 0.004 {
+						continue
+					}
+					d.pix[i] = byte(255*tr/lum + 0.5)
+					d.pix[i+1] = byte(255*tg/lum + 0.5)
+					d.pix[i+2] = byte(255*tb/lum + 0.5)
+					d.pix[i+3] = byte(255*cov + 0.5)
+				}
+			}
+		})
+		d.img.ID, d.img.Z, d.img.Alpha = introImageID, -1, true
+		if seq, err := d.img.Frame(m.lines.mode, d.pix, W, H, 0, m.hostRows, w, h); err == nil && seq != "" {
+			d.raw, d.shown = seq, true
+			d.frame = encodeIntroText(w, h, fg, bg, texts, ui, open)
+			return d.frame
+		}
+		m.lines.mode = gfx.Off // no pictures after all: cells, from the next frame
+	}
+	d.frame = encodeIntro(v, alpha, fg, bg, texts, ui, open)
+	return d.frame
+}
+
+// encodeIntroText writes the cells of the start screen when its ribbons
+// are a picture under them: the logo and the status, and the interface
+// where it has opened, its letters coming in out of the background.
+func encodeIntroText(w, h int, fg, bg [3]uint8, texts []vizText, ui [][]uiCell, open func(x, y int) float64) string {
+	var sb strings.Builder
+	sb.Grow(w * h * 4)
+	last := ""
+	emit := func(sgr, ch string) {
+		if sgr != last {
+			sb.WriteString("\x1b[")
+			sb.WriteString(sgr)
+			sb.WriteByte('m')
+			last = sgr
+		}
+		sb.WriteString(ch)
+	}
+	for row := range h {
+		var tr []rune
+		tx := -1
+		var tfg [][3]uint8
+		for _, t := range texts {
+			if t.row == row {
+				tr = []rune(t.text)
+				if len(tr) > w {
+					tr = tr[:w]
+				}
+				tx, tfg = (w-len(tr))/2, t.fg
+			}
+		}
+		skip := false
+		for col := range w {
+			if skip {
+				skip = false
+				continue
+			}
+			inText := tx >= 0 && col >= tx && col < tx+len(tr) && tr[col-tx] != ' '
+			if k := open(col, row); k > 0 && !(inText && k < 0.5) {
+				c := ui[row][col]
+				ch := c.ch
+				if ch == "" {
+					ch = " "
+				} else {
+					skip = col+1 < w && ui[row][col+1].ch == ""
+				}
+				// Whole and in its own colours once the opening has got
+				// half way over it, nothing before: a letter mixed with
+				// the screen's background on its way in shows black on
+				// a see-through terminal.
+				if k >= 0.5 {
+					emit("0;"+c.sgr, ch)
+				} else {
+					emit("0", " ")
+					skip = false
+				}
+				continue
+			}
+			if tx >= 0 && col >= tx && col < tx+len(tr) {
+				f := fg
+				if len(tfg) > 0 {
+					f = tfg[min(col-tx, len(tfg)-1)]
+				}
+				emit("0;1;"+rgbSGR(38, f), string(tr[col-tx]))
+				continue
+			}
+			emit("0", " ")
+		}
+		sb.WriteString("\x1b[0m")
+		last = "0"
+		if row < h-1 {
+			sb.WriteByte('\n')
+		}
+	}
+	rows := strings.Split(sb.String(), "\n")
+	for y := range rows {
+		rows[y] = linesRowMark(rows[y], y) // a scroll would take the picture along
+	}
+	return strings.Join(rows, "\n")
 }
 
 // encodeIntro writes the start screen. The ribbons are laid on the
@@ -287,7 +529,7 @@ func encodeIntro(v *visualizer, alpha float64, fg, bg [3]uint8, texts []vizText,
 			skip = col+1 < w && ui[row][col+1].ch == ""
 			return c.ch
 		}
-		for col := 0; col < w; col++ {
+		for col := range w {
 			if skip {
 				skip = false
 				continue
@@ -339,6 +581,37 @@ func encodeIntro(v *visualizer, alpha float64, fg, bg [3]uint8, texts []vizText,
 }
 
 // toByte3Lin turns a colour in 0..1 into bytes as it is (no tone mapping).
+// introTone is toByte3's tone map without its steps, 0..1: 1-e^(-1.4x)
+// over 0.75, from a table.
+func introTone(x float64) float64 {
+	if x <= 0 {
+		return 0
+	}
+	f := x * introToneScale
+	if f >= introToneN-1 {
+		return 1
+	}
+	i := int(f)
+	k := f - float64(i)
+	return introToneLUT[i]*(1-k) + introToneLUT[i+1]*k
+}
+
+const (
+	introToneN     = 1024
+	introToneScale = (introToneN - 1) / 2.0 // the table goes to x = 2, where the map has long been 1
+	// introDark is the light a pixel needs before anything of it shows:
+	// below, its tone is under 0.08 (see the coverage in renderIntroDance).
+	introDark = 0.04
+)
+
+var introToneLUT = func() (t [introToneN]float64) {
+	for i := range t {
+		x := float64(i) / introToneScale
+		t[i] = math.Min(1, (1-math.Exp(-x*1.4))/0.75)
+	}
+	return t
+}()
+
 func toByte3Lin(c vcol) [3]uint8 {
 	f := func(x float64) uint8 { return uint8(math.Round(clamp01(x) * 255)) }
 	return [3]uint8{f(c.r), f(c.g), f(c.b)}

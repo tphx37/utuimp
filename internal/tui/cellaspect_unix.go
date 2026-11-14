@@ -39,3 +39,14 @@ func cellAspect() float64 {
 		return r
 	}
 }
+
+// cellPixels returns the size of a terminal cell in pixels, or zeros when
+// the terminal doesn't say.
+func cellPixels() (w, h int) {
+	//nolint:gosec // a file descriptor fits an int; os.Stdout.Fd is 1.
+	ws, err := unix.IoctlGetWinsize(int(os.Stdout.Fd()), unix.TIOCGWINSZ)
+	if err != nil || ws.Xpixel == 0 || ws.Ypixel == 0 || ws.Col == 0 || ws.Row == 0 {
+		return 0, 0
+	}
+	return int(ws.Xpixel) / int(ws.Col), int(ws.Ypixel) / int(ws.Row)
+}

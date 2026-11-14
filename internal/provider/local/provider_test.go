@@ -2,11 +2,12 @@ package local_test
 
 import (
 	"context"
-	"github.com/tphx37/utuimp/internal/provider/localstore"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tphx37/utuimp/internal/provider/localstore"
 
 	"github.com/tphx37/utuimp/internal/provider/local"
 )
@@ -239,5 +240,47 @@ func TestProvider_GetSongRating_ReturnsFalse(t *testing.T) {
 	}
 	if loved {
 		t.Error("GetSongRating() = true, want false")
+	}
+}
+
+// TestTrackLyrics reads a song's lyrics from the files beside it, and does
+// not count them as files it skipped.
+func TestTrackLyrics(t *testing.T) {
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"a.mp3": "",
+		"a.lrc": "[00:01.00]first line\n[00:03.00]second line\n",
+		"b.mp3": "",
+		"b.txt": "plain words\n",
+		"c.mp3": "",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, err := local.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := p.ScanNotice(); n != "" {
+		t.Errorf("lyrics files were counted as skipped: %q", n)
+	}
+	ctx := context.Background()
+	id := func(name string) string { return "local:" + filepath.Join(dir, name) }
+
+	if got, err := p.TrackLyrics(ctx, id("a.mp3"), true); err != nil || !strings.Contains(got, "[00:03.00]second line") {
+		t.Errorf("synced a: %q, %v", got, err)
+	}
+	if _, err := p.TrackLyrics(ctx, id("b.mp3"), true); err == nil {
+		t.Error("synced b: a .txt is not synced lyrics")
+	}
+	if got, err := p.TrackLyrics(ctx, id("b.mp3"), false); err != nil || strings.TrimSpace(got) != "plain words" {
+		t.Errorf("plain b: %q, %v", got, err)
+	}
+	if _, err := p.TrackLyrics(ctx, id("c.mp3"), false); err == nil {
+		t.Error("c has no lyrics beside it")
+	}
+	if _, err := p.TrackLyrics(ctx, "local:"+filepath.Join(dir, "..", "x.mp3"), false); err == nil {
+		t.Error("a song not in the library has no lyrics here")
 	}
 }

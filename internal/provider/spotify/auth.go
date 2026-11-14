@@ -11,13 +11,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/tphx37/utuimp/internal/signin"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/tphx37/utuimp/internal/signin"
 )
 
 // DefaultClientID is the public OAuth client librespot signs in with.

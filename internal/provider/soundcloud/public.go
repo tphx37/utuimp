@@ -135,15 +135,13 @@ func (p *Public) toTracks(ctx context.Context, es []ytdlp.Entry) []provider.Trac
 		if path == "" {
 			continue
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			if r, err := p.lookupEntry(ctx, path); err == nil {
 				full[i] = *r
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	out := make([]provider.Track, 0, len(full))

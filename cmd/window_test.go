@@ -16,7 +16,7 @@ func TestPickTerminalPrefersCurrentAndSetsAppID(t *testing.T) {
 	}
 	bin := t.TempDir()
 	for _, name := range []string{"kitty", "foot"} {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"), 0o700); err != nil { //nolint:gosec // a fake program: it must run
 			t.Fatal(err)
 		}
 	}

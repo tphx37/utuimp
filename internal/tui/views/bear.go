@@ -6,8 +6,9 @@ package views
 //   playing=true  → dancing bear (♪ ♫ notes, faster cycle)
 
 import (
-	"github.com/tphx37/utuimp/internal/i18n"
 	"strings"
+
+	"github.com/tphx37/utuimp/internal/i18n"
 
 	"charm.land/lipgloss/v2"
 	"github.com/tphx37/utuimp/internal/tui/styles"

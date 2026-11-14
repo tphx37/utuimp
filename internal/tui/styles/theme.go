@@ -52,6 +52,38 @@ type Theme struct {
 	ANSI bool `json:"ansi"`
 }
 
+// MonoTheme is black and white: greys, white for what matters most. What
+// takes the song's colours (the progress line, the title and the artist,
+// the lines, the visualizer) keeps them, as with every theme.
+func MonoTheme() Theme {
+	return Theme{
+		Primary:    "#f0f0f0",
+		Secondary:  "#c4c4c4",
+		Muted:      "#6c6c6c",
+		Error:      "#ffffff",
+		Fg:         "#cfcfcf",
+		Subtle:     "#9c9c9c",
+		Bg:         "#0f0f0f",
+		Love:       "#ffffff",
+		Active:     "#dadada",
+		Progress:   "#e4e4e4",
+		Surface:    "#262626",
+		Accent:     "#e0e0e0",
+		AccentWarm: "#a8a8a8",
+		Bear:       "#b4b4b4",
+		GlowPalette: [8]string{
+			"#141414", "#262626", "#3a3a3a", "#555555",
+			"#7a7a7a", "#a0a0a0", "#c8c8c8", "#f2f2f2",
+		},
+		ModeNormalBg:  "#e6e6e6",
+		ModeSearchBg:  "#b4b4b4",
+		ModeCommandBg: "#8c8c8c",
+		ModeChipFg:    "#0f0f0f",
+		Border:        "#5c5c5c",
+		BorderFocus:   "#f4f4f4",
+	}
+}
+
 // SystemTheme uses the terminal's own palette (ANSI colours 0–15 and the
 // default foreground), so utuimp matches the terminal's colour scheme.
 func SystemTheme() Theme {
@@ -203,12 +235,13 @@ var builtinThemes = map[string]func() Theme{
 	"dracula": DraculaTheme,
 	"gruvbox": GruvboxTheme,
 	"nord":    NordTheme,
+	"mono":    MonoTheme,
 }
 
 // BuiltinThemeNames returns the list of built-in theme names ("default" is an
 // alias of "system").
 func BuiltinThemeNames() []string {
-	return []string{"system", "classic", "dracula", "gruvbox", "nord"}
+	return []string{"system", "classic", "dracula", "gruvbox", "nord", "mono"}
 }
 
 // LoadTheme resolves name to a Theme. Resolution order:

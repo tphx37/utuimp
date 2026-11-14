@@ -37,4 +37,3 @@ Thumbs.db
 # Cloudflare Wrangler
 .wrangler/
 worker/.wrangler/
-

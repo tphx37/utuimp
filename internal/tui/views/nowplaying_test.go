@@ -1,10 +1,11 @@
 package views
 
 import (
-	"github.com/tphx37/utuimp/internal/tui/styles"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tphx37/utuimp/internal/tui/styles"
 )
 
 // --- FormatDuration ---

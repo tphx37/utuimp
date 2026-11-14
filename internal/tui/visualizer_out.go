@@ -33,7 +33,10 @@ func (v *visualizer) overlay(label string, now time.Time) vizOverlay {
 	if now.Before(v.hintUntil) {
 		o.hint = "esc  " + i18n.T("exit") + "   ·   tab  " + i18n.T("scene") +
 			"   ·   [ ]  " + i18n.T("strength") + "   ·   { }  " + i18n.T("brightness") + "   ·   b  " + i18n.T("background")
-		o.hintA = clamp01(v.hintUntil.Sub(now).Seconds() / vizFadeFor.Seconds())
+		// Up once the picture has opened (its words were under it until
+		// then), and away again at the end.
+		o.hintA = clamp01(v.hintUntil.Sub(now).Seconds()/vizFadeFor.Seconds()) *
+			smooth(vizOpenFor, vizOpenFor+0.35, now.Sub(v.openedAt).Seconds())
 	}
 	if !v.labelUntil.IsZero() {
 		o.labelA = clamp01(v.labelUntil.Sub(now).Seconds() / vizFadeFor.Seconds())
@@ -94,7 +97,7 @@ func (v *visualizer) encode(label string, now time.Time) string {
 			ch := "▀"
 			if tx >= 0 && col >= tx && col < tx+len(runes) {
 				// Text over the picture: a darkened backdrop, light letters.
-				avg := [3]uint8{uint8((int(top[0]) + int(bot[0])) / 2), uint8((int(top[1]) + int(bot[1])) / 2), uint8((int(top[2]) + int(bot[2])) / 2)}
+				avg := [3]uint8{mean8(top[0], bot[0]), mean8(top[1], bot[1]), mean8(top[2], bot[2])}
 				bg := scale3(avg, 1-0.65*alpha)
 				fg := [3]uint8{235, 235, 235}
 				if k := col - tx; len(fgs) > 0 {
@@ -128,6 +131,98 @@ func (v *visualizer) encode(label string, now time.Time) string {
 	return sb.String()
 }
 
+// pixels is the frame as bytes, three a pixel, for a terminal that shows
+// pictures.
+func (v *visualizer) pixels() []byte {
+	n := v.w * v.h2
+	bpp := 3
+	if v.over && len(v.alpha) == n {
+		bpp = 4 // and how much of each pixel it covers, while it opens
+	}
+	if len(v.rgb) != n*bpp {
+		v.rgb = make([]byte, n*bpp)
+	}
+	// All 256 levels (cells round theirs, to change colour less often), and
+	// a fine ordered dither so that slow gradients don't show as bands.
+	bayer := [16]float64{0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5}
+	w := v.w
+	par(v.h2, func(y0, y1 int) {
+		for y := y0; y < y1; y++ {
+			for x := range w {
+				i := y*w + x
+				d := bayer[(y&3)<<2|x&3] / 16
+				f := func(c float64) byte {
+					return byte(min(255, int(toneOf(c)+d))) //nolint:gosec // 0..255: the curve and the dither are never below 0
+				}
+				c := v.out[i]
+				o := i * bpp
+				v.rgb[o], v.rgb[o+1], v.rgb[o+2] = f(c.r), f(c.g), f(c.b)
+				if bpp == 4 {
+					v.rgb[o+3] = byte(min(255, int(v.alpha[i]*255+0.5))) //nolint:gosec // 0..255: alpha is 0..1
+				}
+			}
+		}
+	})
+	return v.rgb
+}
+
+// toneN is how many steps toneLUT has over 0..1.
+const toneN = 8192
+
+// toneLUT is the picture's tone curve, (1 - e^(-1.4c)) * 255/0.75, at
+// toneN+1 steps of c over 0..1 (past 1 every channel is full): read with a
+// straight line between steps it is within a hundred-thousandth of a level
+// of the curve, and a frame takes three e^x a pixel fewer.
+var toneLUT = func() (t [toneN + 2]float64) { //nolint:gochecknoglobals // a fixed table
+	for i := range t {
+		t[i] = (1 - math.Exp(-float64(i)/toneN*1.4)) * 255 / 0.75
+	}
+	return t
+}()
+
+// toneOf is the tone curve at c, in levels (see toneLUT).
+func toneOf(c float64) float64 {
+	if c <= 0 {
+		return 0
+	}
+	if c >= 1 {
+		return 256 // full
+	}
+	x := c * toneN
+	i := int(x)
+	return toneLUT[i] + (toneLUT[i+1]-toneLUT[i])*(x-float64(i))
+}
+
+// encodeText is the cells that go with a frame shown as a picture: empty
+// ones, which the picture shows through, and the texts over it.
+func (v *visualizer) encodeText(label string, now time.Time) string {
+	w, h := v.cw, v.ch
+	o := v.overlay(label, now)
+	var sb strings.Builder
+	sb.Grow((w + 1) * h)
+	for row := range h {
+		runes, tx, alpha := o.row(row, w, h)
+		if tx < 0 {
+			sb.WriteString(strings.Repeat(" ", w))
+		} else {
+			sb.WriteString(strings.Repeat(" ", tx))
+			sb.WriteString("\x1b[1;38;2;")
+			writeRGB(&sb, blend3(v.edge, [3]uint8{240, 240, 240}, alpha))
+			sb.WriteString(string(runes))
+			sb.WriteString("\x1b[0m")
+			sb.WriteString(strings.Repeat(" ", max(0, w-tx-len(runes))))
+		}
+		if row < h-1 {
+			sb.WriteByte('\n')
+		}
+	}
+	rows := strings.Split(sb.String(), "\n")
+	for y := range rows {
+		rows[y] = linesRowMark(rows[y], y) // a scroll would take the picture along
+	}
+	return strings.Join(rows, "\n")
+}
+
 func writeRGB(sb *strings.Builder, c [3]uint8) {
 	var buf [12]byte
 	b := strconv.AppendUint(buf[:0], uint64(c[0]), 10)
@@ -144,7 +239,7 @@ func writeRGB(sb *strings.Builder, c [3]uint8) {
 func toByte3(c vcol) [3]uint8 {
 	f := func(x float64) uint8 {
 		x = 1 - math.Exp(-max(0, x)*1.4)
-		return uint8(min(255, int(x*255.0/0.75+0.5)) &^ 3)
+		return uint8(min(255, int(x*255.0/0.75+0.5)) &^ 3) //nolint:gosec // 0..255: x is 0..1
 	}
 	return [3]uint8{f(c.r), f(c.g), f(c.b)}
 }
@@ -330,7 +425,7 @@ func (c *vizCon) mix(col [3]uint8) *vizMix {
 
 // cell picks how to draw a cell whose halves are top and bot.
 func (c *vizCon) cell(top, bot [3]uint8) (fg, bg int, ch string) {
-	avg := [3]uint8{uint8((int(top[0]) + int(bot[0])) / 2), uint8((int(top[1]) + int(bot[1])) / 2), uint8((int(top[2]) + int(bot[2])) / 2)}
+	avg := [3]uint8{mean8(top[0], bot[0]), mean8(top[1], bot[1]), mean8(top[2], bot[2])}
 	m := c.mix(avg)
 	if top == bot {
 		return m.fg, m.bg, m.ch
@@ -396,3 +491,6 @@ func (v *visualizer) encodeConsole(label string, now time.Time) string {
 	}
 	return sb.String()
 }
+
+// mean8 is the mean of two bytes, rounded down.
+func mean8(a, b uint8) uint8 { return a/2 + b/2 + a&b&1 }

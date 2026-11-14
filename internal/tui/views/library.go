@@ -4,10 +4,11 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"github.com/tphx37/utuimp/internal/i18n"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/tphx37/utuimp/internal/i18n"
 
 	"charm.land/bubbles/v2/list"
 	"charm.land/bubbles/v2/spinner"

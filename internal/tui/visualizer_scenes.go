@@ -8,6 +8,64 @@ import "math"
 // In every scene each element listens to a voice of its own (see voiceBass
 // and the others): the comment of the scene says which.
 
+// fmod1 is math.Mod(x, 1), the same to the bit: x less its whole part,
+// with x's sign. math.Mod takes a slow general path, and the scenes ask for
+// it several times a pixel (it was a quarter of the tunnel's frame).
+func fmod1(x float64) float64 { return x - math.Trunc(x) }
+
+// fmodN is math.Mod(x, n) the same way; to the bit for n a power of two.
+func fmodN(x, n float64) float64 { return x - n*math.Trunc(x/n) }
+
+// tunnelSparks is hash1 of each strip of the tunnel's wall, -71 to 71 (a
+// strip is a whole number, and its sign is that of the angle): which have a
+// spark is worked out once, not with a sine every pixel.
+var tunnelSparks = func() (h [143]float64) { //nolint:gochecknoglobals // a fixed table
+	for i := range h {
+		h[i] = hash1(float64(i - 71))
+	}
+	return h
+}()
+
+// fsin is math.Sin to within a ten-millionth, which no colour can show, at
+// a fraction of its cost: the angle is brought within a quarter turn of
+// nothing and a short series does the rest. The tunnel takes a sine or two
+// for every pixel, and math.Sin was a seventh of its frame.
+func fsin(x float64) float64 {
+	k := math.Floor(x/math.Pi + 0.5)
+	r := x - k*math.Pi // within ±π/2; sin x is ± sin r
+	r2 := r * r
+	s := r * (1 + r2*(-1.0/6+r2*(1.0/120+r2*(-1.0/5040+r2*(1.0/362880+r2*(-1.0/39916800))))))
+	if int64(k)&1 != 0 {
+		return -s
+	}
+	return s
+}
+
+// expNeg is e^(-q) for q ≥ 0, read off a table with a straight line between
+// its steps (a 256th apart) up to expNegMax, to two millionths of the value:
+// far below what a colour shows, at a fraction of the cost of math.Exp,
+// which several glows of a scene take for every pixel.
+func expNeg(q float64) float64 {
+	if q >= expNegMax || q < 0 {
+		return math.Exp(-q)
+	}
+	x := q * expNegStep
+	i := int(x)
+	return expNegLUT[i] + (expNegLUT[i+1]-expNegLUT[i])*(x-float64(i))
+}
+
+const (
+	expNegMax  = 24.0
+	expNegStep = 256.0
+)
+
+var expNegLUT = func() (t [int(expNegMax*expNegStep) + 2]float64) { //nolint:gochecknoglobals // a fixed table
+	for i := range t {
+		t[i] = math.Exp(-float64(i) / expNegStep)
+	}
+	return t
+}()
+
 // drawTunnel: flying down a neon tube.
 //
 //	rings          bass (they thicken and brighten)
@@ -24,43 +82,65 @@ import "math"
 func (v *visualizer) drawTunnel() {
 	w := v.w
 	sway := 0.6 + 0.8*v.drive
-	cu, cv := 0.18*sway*math.Sin(v.t*0.53), 0.12*sway*math.Cos(v.t*0.41)
+	cu, cv := 0.18*sway*fsin(v.t*0.53), 0.12*sway*math.Cos(v.t*0.41)
 	rot := v.t*0.12 + v.twirl
 	core := v.pal[2].mix(vizWhite, 0.5)
-	waveZ, waveA := 0.3+v.bigT*11, v.bigS*math.Exp(-v.bigT*2.2)
+	waveZ, waveA := 0.3+v.bigT*11, v.bigS*expNeg(v.bigT*2.2)
 	// The tube is round only at rest: the drum squeezes it into lobes.
 	const lobes = 3.0
 	squeeze := 0.03*v.drive + 0.22*v.kick
+	// The squeeze is sin(3θ + φ) round the tube, θ the angle of the pixel:
+	// the imaginary part of e^(iφ)·(x+iy)³/r³, with no sine nor angle to
+	// work out for it.
+	phi := 3*math.Pi + 6*math.Pi*rot + v.t*1.5
+	sinP, cosP := math.Sin(phi), math.Cos(phi)
 	par(v.h2, func(y0, y1 int) {
 		for y := y0; y < y1; y++ {
 			for x := range w {
 				px, py := v.unit(x, y)
 				px, py = px-cu, py-cv
-				r := math.Sqrt(px*px+py*py) + 1e-4
+				r0 := math.Sqrt(px*px + py*py)
+				r := r0 + 1e-4
 				a := math.Atan2(py, px)/(2*math.Pi) + 0.5
-				r *= 1 + squeeze*math.Sin((a+rot)*2*math.Pi*lobes+v.t*1.5)
+				if squeeze != 0 && r0 > 0 {
+					// (px + i·py)³ = re + i·im
+					re, im := px*(px*px-3*py*py), py*(3*px*px-py*py)
+					r *= 1 + squeeze*(im*cosP+re*sinP)/(r0*r0*r0)
+				} else if squeeze != 0 {
+					r *= 1 + squeeze*fsin((a+rot)*2*math.Pi*lobes+v.t*1.5)
+				}
 				z := 0.55 / r
 				sa := a + rot + z*0.05
 				d := z*3 + v.t*2.4
-				mirror := math.Abs(math.Mod(sa*2+4, 2) - 1) // 0..1 around the tube, twice
+				mirror := math.Abs(fmodN(sa*2+4, 2) - 1) // 0..1 around the tube, twice
 				band := v.bandAt(mirror)
-				ring := math.Exp(-sq(math.Mod(d, 1)-0.5) * (90 - 55*v.voice[voiceBass]))
-				strip := math.Mod(sa*24+48, 1)
-				edge := math.Exp(-sq(strip-0.5) * 70)
-				panel := math.Mod(d*0.5, 1)
+				ring := 0.0
+				if q := sq(fmod1(d)-0.5) * (90 - 55*v.voice[voiceBass]); q < 16 {
+					ring = expNeg(q)
+				}
+				strip := fmod1(sa*24 + 48)
+				edge := expNeg(sq(strip-0.5) * 70)
+				panel := fmod1(d * 0.5)
 				lit := band * band * smooth(0.25, 0.9, panel+band*0.4) * (1 - smooth(0.8, 1, panel))
 				bright := ring*(0.2+1.5*v.voice[voiceBass]+0.5*v.pulse[voiceBass]) + edge*(0.05+0.5*v.voice[voiceBody]) + lit*0.7
 				// A spark on some strips: a bright head with a tail behind it.
 				cell := sa*72 + 720
-				if hsh := hash1(math.Mod(math.Floor(cell), 72)); hsh > 0.72 {
-					f := math.Mod(d*0.3+hsh*31, 1)
-					across := sq(math.Sin((cell - math.Floor(cell)) * math.Pi))
-					bright += math.Exp(-f*9) * sq(across) * (0.1 + 1.6*v.voice[voiceAir] + 2*v.pulse[voiceAir])
+				if hsh := tunnelSparks[int(fmodN(math.Floor(cell), 72))+71]; hsh > 0.72 {
+					f := fmod1(d*0.3 + hsh*31)
+					across := sq(fsin((cell - math.Floor(cell)) * math.Pi))
+					bright += expNeg(f*9) * sq(across) * (0.1 + 1.6*v.voice[voiceAir] + 2*v.pulse[voiceAir])
 				}
 				fog := sq(clamp01(r * 1.6))
 				c := v.palAt(d*0.05 + mirror*0.9).mul(bright * fog * (0.95 + v.beat*0.15))
-				c = c.add(core.mul(math.Exp(-sq(z-waveZ)*1.1) * waveA * 0.45 * fog))
-				c = c.add(core.mul(math.Exp(-r*r*(26-14*v.voice[voiceVocal])) * (0.1 + 0.7*v.voice[voiceVocal])))
+				// The two glows only where they are more than a
+				// ten-millionth of themselves (e^-16): the rest of the
+				// screen is spared their e^x.
+				if q := sq(z-waveZ) * 1.1; q < 16 && waveA > 0 {
+					c = c.add(core.mul(expNeg(q) * waveA * 0.45 * fog))
+				}
+				if q := r * r * (26 - 14*v.voice[voiceVocal]); q < 16 {
+					c = c.add(core.mul(expNeg(q) * (0.1 + 0.7*v.voice[voiceVocal])))
+				}
 				v.fb[y*w+x] = c
 			}
 		}
@@ -111,11 +191,11 @@ func (v *visualizer) drawTerrain() {
 				}
 				dx, dy := (float64(x)+0.5-sunX)/v.ya/sunW, (fy-sunY)*sunW
 				if r := math.Sqrt(dx*dx+dy*dy) / sunR; r < 1.8 {
-					band := math.Mod((fy-sunY)/fh*14+v.t*0.4, 1)
+					band := fmod1((fy-sunY)/fh*14 + v.t*0.4)
 					if r < 1 && (dy <= 0 || band >= 0.18+dy/sunR*0.3) {
 						c = v.pal[1].mix(v.pal[2], clamp01(dy/sunR*0.5+0.5)).mul(1.15)
 					} else {
-						c = c.add(v.pal[1].mul((0.15 + 0.7*v.voice[voiceVocal]) * math.Exp(-math.Max(0, r-1)*(5-2.5*v.voice[voiceVocal]))))
+						c = c.add(v.pal[1].mul((0.15 + 0.7*v.voice[voiceVocal]) * expNeg(math.Max(0, r-1)*(5-2.5*v.voice[voiceVocal]))))
 					}
 				}
 				v.fb[y*w+x] = c
@@ -134,7 +214,7 @@ func (v *visualizer) drawTerrain() {
 				hgt := 0.0
 				if bx < 1 {
 					hgt = histAt(v.hist, bx, hz-v.histFrac) * (0.4 + 0.9*smooth(0, 0.45, bx))
-					hgt *= 0.55 + 0.7*v.drive + 1.1*v.kick*math.Exp(-z*0.25) // the ground near you jumps with the drum
+					hgt *= 0.55 + 0.7*v.drive + 1.1*v.kick*expNeg(z*0.25) // the ground near you jumps with the drum
 				}
 				// The canyon's walls, beyond the spectrum.
 				zs := z + scroll
@@ -143,11 +223,11 @@ func (v *visualizer) drawTerrain() {
 				if sy >= yb {
 					continue
 				}
-				fog := math.Exp(-z * 0.085)
-				gx := math.Abs(math.Mod(wx*1.3+100, 1) - 0.5)
-				gz := math.Abs(math.Mod(zs*0.7+100, 1) - 0.5)
-				grid := math.Max(math.Exp(-sq(0.5-gx)*400/(z*0.3+1)), math.Exp(-sq(0.5-gz)*300/(z*0.3+1)))
-				grid *= math.Exp(-z * 0.09)                              // far lines would blur into a haze
+				fog := expNeg(z * 0.085)
+				gx := math.Abs(fmod1(wx*1.3+100) - 0.5)
+				gz := math.Abs(fmod1(zs*0.7+100) - 0.5)
+				grid := math.Max(expNeg(sq(0.5-gx)*400/(z*0.3+1)), expNeg(sq(0.5-gz)*300/(z*0.3+1)))
+				grid *= expNeg(z * 0.09)                                 // far lines would blur into a haze
 				lit := math.Min(hgt, 1) * (1 - 0.6*smooth(0.8, 1.6, bx)) // the walls stay in the dark
 				base := v.palAt(hgt*0.9 + 0.2).mul(0.03 + lit*0.35)
 				line := v.palAt(hgt*0.9 + 1.2).mul(grid * (0.25 + lit*1.1 + 0.9*v.voice[voiceBright]))
@@ -255,9 +335,10 @@ func (v *visualizer) drawNebula(dt float64) {
 		}
 	}
 	v.stepParts(dt, 1.3, 0.6)
-	for _, p := range v.parts {
+	for i := range v.parts {
+		p := &v.parts[i]
 		px, py := v.pix(p.x, p.y)
-		v.splat(px, py, v.palAt(p.hue).mix(vizWhite, 0.35).mul(p.life*0.9*gain))
+		v.drawPart(p, px, py, v.palAt(p.hue).mix(vizWhite, 0.35).mul(p.life*0.9*gain))
 	}
 }
 
@@ -270,8 +351,19 @@ func (v *visualizer) dense() float64 {
 
 // stepParts moves the sparks; they live for lifetime seconds and slow down
 // by drag.
+// drawPart draws the particle p, now at (px, py): the way it went since
+// the last frame (see streak), or a point the first time.
+func (v *visualizer) drawPart(p *vizPart, px, py float64, c vcol) {
+	if p.seen && math.Hypot(px-p.sx, py-p.sy) < float64(v.w)/4 {
+		v.streak(p.sx, p.sy, px, py, c)
+	} else {
+		v.splat(px, py, c)
+	}
+	p.sx, p.sy, p.seen = px, py, true
+}
+
 func (v *visualizer) stepParts(dt, lifetime, drag float64) {
-	k := math.Exp(-dt * drag)
+	k := expNeg(dt * drag)
 	live := v.parts[:0]
 	for _, p := range v.parts {
 		p.life -= dt / lifetime
@@ -325,7 +417,7 @@ func (v *visualizer) drawSpectrum() {
 				// The backdrop: light rising from the floor.
 				fy := float64(y) + lift
 				d := math.Abs(fy-ff) / fh
-				c := v.pal[0].mul(0.015).add(glow.mul(math.Exp(-d*5) * (1 - fx*0.6)))
+				c := v.pal[0].mul(0.015).add(glow.mul(expNeg(d*5) * (1 - fx*0.6)))
 				hgt := ff - fy // above the floor
 				dim := 1.0
 				if hgt < 0 {
@@ -389,7 +481,7 @@ func (v *visualizer) drawOrb(dt float64) {
 				fu, fv := v.unit(x, y)
 				r := math.Sqrt(fu*fu + fv*fv)
 				i := y*w + x
-				v.fb[i] = v.fb[i].add(bgc).add(v.pal[1].mul(math.Exp(-r*2.2) * (0.02 + 0.1*v.voice[voiceVocal])))
+				v.fb[i] = v.fb[i].add(bgc).add(v.pal[1].mul(expNeg(r*2.2) * (0.02 + 0.1*v.voice[voiceVocal])))
 			}
 		}
 	})
@@ -444,13 +536,15 @@ func (v *visualizer) drawOrb(dt float64) {
 		}
 	}
 	v.stepParts(dt, 1.1, 1.4)
-	for _, p := range v.parts {
+	for i := range v.parts {
+		p := &v.parts[i]
 		if p.z < -cam+0.3 {
+			p.seen = false // behind the camera: no streak across the screen when it comes back
 			continue
 		}
 		fp := cam / (cam + p.z)
 		px, py := v.pix(p.x*fp, p.y*fp)
-		v.splat(px, py, v.palAt(p.hue).mix(vizWhite, 0.3).mul(p.life*0.8*gain))
+		v.drawPart(p, px, py, v.palAt(p.hue).mix(vizWhite, 0.3).mul(p.life*0.8*gain))
 	}
 	// The ring of light a beat sends out, and a thin one that stays.
 	ring := func(rr, tilt float64, c vcol) {
@@ -479,7 +573,7 @@ func (v *visualizer) softCap(lim float64) {
 			if l <= knee {
 				continue
 			}
-			nl := knee + (lim-knee)*(1-math.Exp(-(l-knee)/(lim-knee)))
+			nl := knee + (lim-knee)*(1-expNeg((l-knee)/(lim-knee)))
 			v.fb[i] = c.mul(nl / l)
 		}
 	})
@@ -496,6 +590,7 @@ func (v *visualizer) drawRibbons() {
 	const n = 5
 	type ribbon struct {
 		energy, speed, freq, phase, off float64
+		reach                           float64 // how far its halo goes
 		col                             vcol
 	}
 	var rs [n]ribbon
@@ -507,32 +602,74 @@ func (v *visualizer) drawRibbons() {
 			freq:   0.9 + fi*0.23,
 			phase:  fi * 1.7,
 			off:    (fi - 2) * 0.13,
+			reach:  0.12 + v.voice[n-1-i]*0.1,
 			col:    v.palAt(fi*0.65 + v.t*0.04),
 		}
 	}
 	top, bot := v.pal[0].mul(0.03), v.pal[1].mul(0.12)
+	// The backdrop's shade down the picture, once a frame.
+	if len(v.ribbonBg) != h2 {
+		v.ribbonBg = make([]vcol, h2)
+	}
+	for y := range h2 {
+		v.ribbonBg[y] = top.mix(bot, float64(y)/float64(h2))
+	}
+	bg := v.ribbonBg
 	par(w, func(x0, x1 int) {
 		var xs [n * 2]float64 // per column: ribbon centre and thickness
+		// Down a column the scene moves on by the same step each row, so a
+		// halo, e^(-|d|/reach), only grows or shrinks by the same factor
+		// from one row to the next: it is worked out once a column (and
+		// again where the column crosses the ribbon), not every pixel.
+		step := v.ya / v.sc
+		var halo, grow, fade, kLit, kGlow, kCore, kThread [n]float64
 		for x := x0; x < x1; x++ {
-			u, _ := v.unit(x, 0)
+			u, fv0 := v.unit(x, 0)
 			for i, r := range rs {
 				depth := 0.6 + 0.4*math.Sin(u*0.7+v.t*0.3+r.phase)
 				amp := 0.05 + r.energy*0.42
-				y := r.off + amp*(0.6*math.Sin(u*r.freq+v.t*r.speed+r.phase)+0.4*math.Sin(u*2.3-v.t*0.8+r.phase*2))
+				y := r.off + amp*ribbonWave(u, v.t, r.freq, r.speed, r.phase)
 				y += v.pulse[n-1-i] * 0.07 * math.Sin(u*9+r.phase*3+v.t*6) // a hit in its voice puts a shiver in it
-				xs[i*2], xs[i*2+1] = y, (0.008+0.06*depth*(0.15+1.2*r.energy))*depth
+				th := (0.008 + 0.06*depth*(0.15+1.2*r.energy)) * depth
+				xs[i*2], xs[i*2+1] = y, th
+				halo[i] = expNeg(math.Abs(fv0-y) / r.reach)
+				grow[i], fade[i] = math.Exp(step/r.reach), math.Exp(-step/r.reach)
+				// What stays the same down the column: how strong its
+				// light is, from its thickness and its voice.
+				kLit[i] = 0.5 + th*8
+				kGlow[i] = 0.12 * (0.3 + r.energy) * kLit[i]
+				kCore[i] = 0.25 + r.energy*1.3
+				// The fine threads along the core, as strong as the
+				// pixels can show them: on a thin ribbon at a coarse
+				// size they change faster than a pixel a row and only
+				// came out as a string of beads.
+				kThread[i] = 0.25 * clamp01((2.6-9*step/th)/1.4)
 			}
 			for y := range h2 {
-				_, fv := v.unit(x, y)
-				c := top.mix(bot, float64(y)/float64(h2))
-				for i, r := range rs {
+				fv := fv0 + float64(y)*step
+				c := bg[y]
+				for i := range rs {
+					r := &rs[i]
 					d := fv - xs[i*2]
 					th := xs[i*2+1]
-					core := math.Exp(-sq(d / th))
-					halo := math.Exp(-math.Abs(d)/(0.12+r.energy*0.1)) * 0.12
-					// Fine threads run along each ribbon.
-					thread := 0.75 + 0.25*math.Sin(d/th*9+u*3+v.t)
-					c = c.add(r.col.mul((core*thread*(0.25+r.energy*1.3) + halo*(0.3+r.energy)) * (0.5 + th*8)))
+					light := halo[i] * kGlow[i]
+					switch next := d + step; {
+					case next < 0:
+						halo[i] *= grow[i]
+					case d >= 0:
+						halo[i] *= fade[i]
+					default:
+						halo[i] = expNeg(next / r.reach)
+					}
+					// The core, with fine threads running along it, is
+					// worked out only near the ribbon: four thicknesses
+					// out it is under a ten-millionth.
+					if q := d / th; q*q < 16 {
+						light += expNeg(q*q) * (0.75 + kThread[i]*math.Sin(q*9+u*3+v.t)) * kCore[i] * kLit[i]
+					}
+					c.r += r.col.r * light
+					c.g += r.col.g * light
+					c.b += r.col.b * light
 				}
 				v.fb[y*w+x] = c
 			}
@@ -562,37 +699,88 @@ func (v *visualizer) drawRibbons() {
 // on the wall clock rather than the music's: whatever the scene does, the
 // eye has something steady to hold on to. "sparks" drift up slowly.
 func (v *visualizer) drawBackdrop() {
-	if v.backdrop != "stars" && v.backdrop != "sparks" || v.w <= 0 || v.h2 <= 0 {
+	k := v.backdropK
+	if k < 1 && v.backdropWas != v.backdrop {
+		v.drawBackdropOf(v.backdropWas, 1-k) // the last one going
+	}
+	v.drawBackdropOf(v.backdrop, k)
+}
+
+// drawBackdropOf draws the backdrop of that kind, as strong as level (0..1).
+func (v *visualizer) drawBackdropOf(kind string, level float64) {
+	if kind != "stars" && kind != "sparks" || v.w <= 0 || v.h2 <= 0 || level <= 0 {
 		return
 	}
-	if v.backdrop == "sparks" && (v.scene == sceneRibbons || v.scene == sceneOrb) {
+	if kind == "sparks" && (v.scene == sceneRibbons || v.scene == sceneOrb) {
 		return // these have moving sparks of their own (drawn only then)
 	}
-	n := min(700, max(40, v.w*v.h2/90))
+	k := max(1, v.px)
+	n := min(700, max(40, (v.w/k)*(v.h2/k)/90))
 	for len(v.dots) < n {
 		v.dots = append(v.dots, vizStar{v.rnd(), v.rnd(), v.rnd(), v.rnd() * 6.28})
 	}
-	w, h2 := v.w, v.h2
+	w, h2 := float64(v.w), float64(v.h2)
+	px := float64(k)
 	for i := range v.dots[:n] {
 		d := &v.dots[i]
+		x0, y0 := d.x*w, d.y*h2
 		var b float64
-		if v.backdrop == "sparks" {
+		if kind == "sparks" {
 			d.y -= 0.0025 * (0.4 + d.z) * (1 + 2*v.voice[voiceAir]*v.strength)
 			if d.y < 0 {
 				d.y, d.x = 1, v.rnd()
+				x0, y0 = d.x*w, d.y*h2
 			}
 			b = (0.2 + 0.3*d.z) * (0.6 + 0.4*math.Sin(v.clock*2+d.tw))
 		} else {
 			b = (0.16 + 0.3*d.z) * (0.75 + 0.25*math.Sin(v.clock*0.9+d.tw))
 		}
-		x, y := int(d.x*float64(w)), int(d.y*float64(h2))
-		if x < 0 || x >= w || y < 0 || y >= h2 {
-			continue
-		}
-		c := v.pal[i%3].mix(vizWhite, 0.55).mul(b)
-		o := &v.out[y*w+x]
-		// Behind the picture: as much as it is dark there.
-		lum := math.Max(o.r, math.Max(o.g, o.b))
-		*o = o.add(c.mul(1 - smooth(0.05, 0.45, lum)))
+		c := v.pal[i%3].mix(vizWhite, 0.55).mul(b * level)
+		// A point of light, round and soft, where it is to a fraction of
+		// a pixel, with a faint glow round it; the nearer ones larger.
+		// (A cell pixel's square, put where the picture was already
+		// finished, sat on it like a sticker, and the sparks went up
+		// a square at a time.) A spark draws the way it went this frame.
+		r := px * (0.5 + 0.35*d.z)
+		x1, y1 := d.x*w, d.y*h2
+		v.backdropDot(x0, y0, x1, y1, r, c.mul(1.7))
+		v.backdropDot(x0, y0, x1, y1, r*3, c.mul(0.18))
 	}
+}
+
+// backdropDot adds a soft round point of light of radius r (pixels) and
+// colour c (its middle's) to the finished picture, drawn from (x0, y0) to
+// (x1, y1) when it moved: behind the picture, as much as it is dark there.
+func (v *visualizer) backdropDot(x0, y0, x1, y1, r float64, c vcol) {
+	steps := max(1, int(math.Ceil(math.Hypot(x1-x0, y1-y0)/math.Max(0.5, r*0.5))))
+	c = c.mul(1 / float64(steps))
+	for s := range steps {
+		f := 0.0
+		if steps > 1 {
+			f = float64(s) / float64(steps-1)
+		}
+		cx, cy := x0+(x1-x0)*f, y0+(y1-y0)*f
+		xa, xb := max(0, int(math.Floor(cx-r))), min(v.w-1, int(math.Ceil(cx+r)))
+		ya, yb := max(0, int(math.Floor(cy-r))), min(v.h2-1, int(math.Ceil(cy+r)))
+		for y := ya; y <= yb; y++ {
+			dy := (float64(y) + 0.5 - cy) / r
+			for x := xa; x <= xb; x++ {
+				dx := (float64(x) + 0.5 - cx) / r
+				q := 1 - (dx*dx + dy*dy)
+				if q <= 0 {
+					continue
+				}
+				o := &v.out[y*v.w+x]
+				lum := math.Max(o.r, math.Max(o.g, o.b))
+				*o = o.add(c.mul(q * q * (1 - smooth(0.05, 0.45, lum))))
+			}
+		}
+	}
+}
+
+// ribbonWave is the line a ribbon follows: where it is, -1..1 of its
+// swing, at u along it and time t. The visualizer's ribbons and the ones
+// behind the lyrics (see lines.go) are the same curve.
+func ribbonWave(u, t, freq, speed, phase float64) float64 {
+	return 0.6*math.Sin(u*freq+t*speed+phase) + 0.4*math.Sin(u*2.3-t*0.8+phase*2)
 }

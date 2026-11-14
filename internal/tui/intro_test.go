@@ -1,12 +1,18 @@
 package tui
 
 import (
+	"image"
+	"image/color"
+	"image/png"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/tphx37/utuimp/internal/gfx"
 	"github.com/tphx37/utuimp/internal/tui/styles"
 )
 
@@ -137,5 +143,105 @@ func TestIntro_OffInTheConfig(t *testing.T) {
 	}
 	if !testCfg().IntroEnabled() {
 		t.Error("the intro is on unless the config turns it off")
+	}
+}
+
+// In a terminal that shows pictures the start screen's ribbons are one,
+// under the text: the cells carry only the logo, and the picture has a
+// hole where the interface has opened.
+func TestIntro_RibbonsAsAPicture(t *testing.T) {
+	m := coverModel(t, 80, 24)
+	m.lines.mode = gfx.Shm
+	m.introStep = len(introFrames) - 1
+	m.introBegin()
+	m.intro.start = time.Now().Add(-300 * time.Millisecond)
+	m.intro.move(0.3, 1.0/30, 0)
+	frame := m.renderIntro()
+	if strings.Contains(frame, "▀") {
+		t.Error("no ribbons in the cells: they are a picture")
+	}
+	if !strings.Contains(ansi.Strip(frame), "♪ utuimp") {
+		t.Error("the logo stays text")
+	}
+	d := m.intro
+	if !strings.Contains(d.raw, "a=T,f=32") || !d.shown {
+		t.Fatalf("no picture sent: %q", d.raw)
+	}
+	W, H := 80*introPxFor(80, 24), 24*2*introPxFor(80, 24)
+	lit := 0
+	for i := 3; i < len(d.pix); i += 4 {
+		if d.pix[i] > 20 {
+			lit++
+		}
+	}
+	if len(d.pix) != W*H*4 || lit < W*H/50 {
+		t.Fatalf("the ribbons should be in the picture: %d of %d pixels", lit, W*H)
+	}
+	for x := range W {
+		if d.pix[x*4+3] != 0 || d.pix[((H-1)*W+x)*4+3] != 0 {
+			t.Fatal("the picture has no edge of its own")
+		}
+	}
+	if dir := os.Getenv("LINES_PNG"); dir != "" {
+		img := image.NewRGBA(image.Rect(0, 0, W, H))
+		for i := 0; i < W*H; i++ {
+			a := float64(d.pix[i*4+3]) / 255
+			img.Set(i%W, i/W, color.RGBA{uint8(float64(d.pix[i*4])*a + 24*(1-a)), uint8(float64(d.pix[i*4+1])*a + 24*(1-a)), uint8(float64(d.pix[i*4+2])*a + 24*(1-a)), 255})
+		}
+		f, _ := os.Create(dir + "/intro.png") //nolint:gosec // a directory the tester asked for
+		_ = png.Encode(f, img)
+		_ = f.Close()
+	}
+	// Opened half way: nothing of the ribbons in the middle.
+	d.fadeAt = time.Now().Add(-time.Duration(introReveal * 0.7 * float64(time.Second)))
+	m.renderIntro()
+	mid := ((H/2)*W + W/2) * 4
+	if d.pix[mid+3] != 0 {
+		t.Errorf("the ribbons should be gone where the interface has opened: alpha %d", d.pix[mid+3])
+	}
+	// The end takes the picture away.
+	d.fadeAt = time.Now().Add(-2 * time.Second)
+	if cmd := m.introStepDance(); cmd == nil || m.intro != nil {
+		t.Error("the start screen's end should take its picture off the screen")
+	}
+}
+
+// TestIntroFrameCost reports how long a frame of the start screen takes at
+// a full HD screen's size (INTRO_COST=1).
+func TestIntroFrameCost(t *testing.T) {
+	if os.Getenv("INTRO_COST") == "" {
+		t.Skip("INTRO_COST=1 to measure")
+	}
+	m := coverModel(t, 192, 50)
+	m.artCellAsp = 2.1
+	m.lines.mode = gfx.Shm
+	defer gfx.CleanOwn()
+	m.introStep = len(introFrames) - 1
+	m.introBegin()
+	m.intro.start = time.Now().Add(-300 * time.Millisecond)
+	const n = 60
+	var ru0, ru1 syscall.Rusage
+	_ = syscall.Getrusage(syscall.RUSAGE_SELF, &ru0)
+	began := time.Now()
+	for i := range n {
+		m.intro.move(0.3+float64(i)/72, 1.0/72, 0)
+		m.intro.frame = ""
+		m.renderIntro()
+	}
+	wall := time.Since(began)
+	_ = syscall.Getrusage(syscall.RUSAGE_SELF, &ru1)
+	cpu := time.Duration(ru1.Utime.Nano()+ru1.Stime.Nano()-ru0.Utime.Nano()-ru0.Stime.Nano()) * time.Nanosecond
+	t.Logf("a frame: %.1f ms, %.1f ms of processor (%dx%d pixels)", wall.Seconds()*1000/n, cpu.Seconds()*1000/n, m.intro.v.w, m.intro.v.h2)
+	if dir := os.Getenv("LINES_PNG"); dir != "" {
+		d := m.intro
+		W, H := d.v.w, d.v.h2
+		img := image.NewRGBA(image.Rect(0, 0, W, H))
+		for i := 0; i < W*H; i++ {
+			a := float64(d.pix[i*4+3]) / 255
+			img.Set(i%W, i/W, color.RGBA{uint8(float64(d.pix[i*4])*a + 24*(1-a)), uint8(float64(d.pix[i*4+1])*a + 24*(1-a)), uint8(float64(d.pix[i*4+2])*a + 24*(1-a)), 255})
+		}
+		f, _ := os.Create(dir + "/intro-full.png") //nolint:gosec // a directory the tester asked for
+		_ = png.Encode(f, img)
+		_ = f.Close()
 	}
 }

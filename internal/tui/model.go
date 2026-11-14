@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/tphx37/utuimp/internal/i18n"
 	"image"
 	"math"
 	"net/http"
@@ -14,14 +13,20 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/tphx37/utuimp/internal/i18n"
+	"github.com/tphx37/utuimp/internal/lastfm"
+	"github.com/tphx37/utuimp/internal/openurl"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/tphx37/utuimp/internal/audioquality"
 	"github.com/tphx37/utuimp/internal/config"
+	"github.com/tphx37/utuimp/internal/gfx"
 	"github.com/tphx37/utuimp/internal/lyrics"
 	"github.com/tphx37/utuimp/internal/player"
 	"github.com/tphx37/utuimp/internal/provider"
@@ -145,6 +150,129 @@ func (p *aboutPanel) Update(msg tea.KeyPressMsg) tea.Cmd {
 }
 func (p *aboutPanel) View() string { return p.m.View() }
 func (p *aboutPanel) Back() bool   { return false }
+
+// settingsPanel wraps views.SettingsModel to satisfy ContentView.
+type settingsPanel struct{ m *views.SettingsModel }
+
+func (p *settingsPanel) NavKey() string   { return "," }
+func (p *settingsPanel) NavLabel() string { return "settings" }
+func (p *settingsPanel) SetSize(w, h int) { p.m.SetSize(w, h) }
+func (p *settingsPanel) Update(msg tea.KeyPressMsg) tea.Cmd {
+	return p.m.Update(msg)
+}
+func (p *settingsPanel) View() string { return p.m.View() }
+func (p *settingsPanel) Back() bool   { return false }
+
+// settingsChanged saves a changed setting and applies what can be applied
+// without a restart. Most settings are read from the config where they are
+// used, so saving is all they need; the host does the rest (Options.OnSetting).
+func (m *Model) settingsChanged(msg views.SettingsChangedMsg) tea.Cmd {
+	if m.cfg == nil {
+		return nil
+	}
+	if err := m.cfg.Save(""); err != nil {
+		m.flash(fmt.Sprintf(i18n.T("couldn't save the settings: %v"), err))
+	}
+	switch msg.Key {
+	case "interface.language":
+		i18n.Set(m.cfg.Language)
+	case "lyrics.translate":
+		m.lyricsP.m.SetTranslateLang(m.translateLang())
+	case "interface.frame_rate":
+		applyFrameRate(m.cfg.FrameRate)
+	}
+	if m.onSetting != nil {
+		m.onSetting(msg.Key)
+	}
+	if msg.Key == "interface.theme" {
+		// The theme was replaced: the song's colours go over it again, and
+		// the lines take theirs anew (with no cover they are the theme's).
+		m.applyTrackPalette(m.playerState.Track)
+		if m.lines != nil {
+			m.lines.palURL = "\x00" // taken anew on the next frame
+		}
+	}
+	return nil
+}
+
+// flash shows a line in the status bar for a few seconds.
+func (m *Model) flash(s string) {
+	m.errMsg = s
+	m.errExpiry = time.Now().Add(6 * time.Second)
+}
+
+// openPanel shows panel p.
+func (m *Model) openPanel(p ContentView) {
+	for i, q := range m.panels {
+		if q == p {
+			m.activePanel = i
+		}
+	}
+}
+
+// settingsAction does what an Action item of the settings stands for.
+func (m *Model) settingsAction(key string) tea.Cmd {
+	switch key {
+	case "about.open":
+		m.openPanel(m.aboutP)
+	case "sound.equalizer":
+		m.openPanel(m.eqP)
+	case "integrations.lastfm":
+		return m.lastfmAction()
+	}
+	return nil
+}
+
+type (
+	lastfmTokenMsg struct {
+		token, url string
+		err        error
+	}
+	lastfmSessionMsg struct {
+		key string
+		err error
+	}
+)
+
+const lastfmValue = "integrations.lastfm"
+
+// lastfmAction connects Last.fm in two presses of Enter (ask for a token and
+// open the page that grants it; then trade the token for a session), or
+// disconnects a connected account.
+func (m *Model) lastfmAction() tea.Cmd {
+	if m.cfg == nil {
+		return nil
+	}
+	if m.cfg.LastfmSessionKey != "" {
+		m.cfg.LastfmSessionKey = ""
+		_ = m.cfg.Save("")
+		// The scrobbler that is running stops with utuimp.
+		m.settingsP.m.SetPending()
+		return nil
+	}
+	lastfm.ApplyEmbedded(m.cfg)
+	if m.cfg.LastfmAPIKey == "" || m.cfg.LastfmAPISecret == "" {
+		m.flash(i18n.T("Last.fm needs lastfm_api_key and lastfm_api_secret in the config (this build has none built in)"))
+		return nil
+	}
+	client := lastfm.NewClient(m.cfg.LastfmAPIKey, m.cfg.LastfmAPISecret, "")
+	if tok := m.lastfmToken; tok != "" {
+		return func() tea.Msg {
+			key, err := client.GetSession(tok)
+			return lastfmSessionMsg{key: key, err: err}
+		}
+	}
+	m.settingsP.m.Values[lastfmValue] = "connecting…"
+	return func() tea.Msg {
+		tok, err := client.GetToken()
+		if err != nil {
+			return lastfmTokenMsg{err: err}
+		}
+		url := client.AuthorizeURL(tok)
+		_ = openurl.Open(url)
+		return lastfmTokenMsg{token: tok, url: url}
+	}
+}
 
 // ── Messages ──────────────────────────────────────────────────────────────
 
@@ -394,11 +522,19 @@ type Model struct {
 	// Album art view (:art). artMode mirrors cfg.AlbumArt; the cover is
 	// fetched per track and the rendered lines are cached per size so they
 	// only re-render on a track change or a resize.
-	artMode          bool
-	coverView        bool                                 // the frameless cover layout (v), see cover.go
-	coverPlain       bool                                 // cover view without lyrics (y): the song beside the cover
-	viz              *visualizer                          // fullscreen visualizer (V); nil until first opened
-	coverQueueOpen   bool                                 // cover view without lyrics: the queue is shown (esc)
+	artMode        bool
+	coverView      bool        // the frameless cover layout (v), see cover.go
+	coverPlain     bool        // cover view without lyrics (y): the song beside the cover
+	viz            *visualizer // fullscreen visualizer (V); nil until first opened
+	coverQueueOpen bool        // cover view without lyrics: the queue is shown (esc)
+	// The key hints at the bottom: hidden (H), and how far they showed
+	// when they last began to go or come back (hintsFrom, 0..1, at hintsAt).
+	hintsHidden  bool
+	hintsFrom    float64
+	hintsAt      time.Time
+	hintsRowsNow int
+	// songBig: the song's words are being laid out large (see labelScale).
+	songBig          bool
 	lastCtrlC        time.Time                            // the first ctrl+c of a double press (see ctrlCWindow)
 	previewBack      *previewOrigin                       // a feed/search collection is previewed in the library; esc returns here
 	renderArt        func(image.Image, art.Size) []string // cover renderer, see artRenderer
@@ -417,14 +553,21 @@ type Model struct {
 	radio radioMode
 
 	// Panels
-	panels      []ContentView // registered content panels; add new ones in New()
-	activePanel int           // index into panels; -1 = none active
-	library     *libraryPanel
-	queue       *queuePanel
-	lyricsP     *lyricsPanel
-	feedP       *feedPanel
-	eqP         *eqPanel
-	aboutP      *aboutPanel
+	panels       []ContentView // registered content panels; add new ones in New()
+	activePanel  int           // index into panels; -1 = none active
+	library      *libraryPanel
+	queue        *queuePanel
+	lyricsP      *lyricsPanel
+	feedP        *feedPanel
+	eqP          *eqPanel
+	aboutP       *aboutPanel
+	settingsP    *settingsPanel
+	restart      func()       // Options.Restart
+	soft         *softText    // the soft changes of the text (see fx_soft.go)
+	lines        *uiLines     // the interface's lines drawn as pictures (lines.go)
+	onSetting    func(string) // Options.OnSetting
+	openSettings string       // Options.OpenSettings, until the panels exist
+	lastfmToken  string       // a Last.fm sign-in waiting for the browser
 
 	// Lyrics
 	lyricsClient      *lyrics.Client
@@ -444,6 +587,25 @@ type Model struct {
 	lyricsClock   time.Duration
 	lyricsClockAt time.Time
 	lyricsTicking bool // a lyricsTick (fast animation) loop is running
+	// The screen as last laid out, kept for a frame of the lines that
+	// changes nothing in it (see viewCanReuse).
+	viewReuse, viewHas bool
+	viewLast           tea.View
+	// The cells last shown, and whether a frame's pictures are on their
+	// way (see View).
+	viewShown              tea.View
+	viewShownOK            bool
+	viewShownW, viewShownH int
+	rawHold                bool
+	notifyPending          string // the song a notification waits for its cover for (see notifyTrack)
+	// The last key and when it came, and when a key was last seen held
+	// down (see noteKeyRepeat).
+	repeatKey        string
+	repeatAt, heldAt time.Time
+	rawHoldAt        time.Time
+	viewW, viewH     int
+	viewSec          int
+	lyricsTickAt     time.Time // when its frame is due (see nextFrame)
 	// seekTarget/seekAt guard against stale positions right after a seek.
 	seekTarget time.Duration
 	seekAt     time.Time
@@ -561,6 +723,7 @@ func New(cfg *config.Config, prov provider.Provider, plyr player.Player, opts Op
 		artMode:      cfg.AlbumArt,
 		coverView:    cfg.Layout == LayoutCover,
 		coverPlain:   cfg.CoverHideLyrics,
+		hintsHidden:  cfg.HideHints,
 		artwork:      artworkCache{rendered: map[art.Size][]string{}},
 		artHTTP:      &http.Client{Timeout: 5 * time.Second},
 		// Album art needs at least a 256-colour terminal to look reasonable;
@@ -592,7 +755,28 @@ func New(cfg *config.Config, prov provider.Provider, plyr player.Player, opts Op
 	m.historyPath = defaultHistoryPath(opts.HistoryName)
 	m.history = loadHistory(m.historyPath)
 	m.historyP.m.SetTracks(m.history)
-	m.panels = []ContentView{m.library, m.historyP, m.lyricsP, m.feedP, m.eqP, m.aboutP}
+	m.settingsP = &settingsPanel{m: views.NewSettings(cfg)}
+	m.restart = opts.Restart
+	m.lines = newUILines()
+	if cfg != nil {
+		applyFrameRate(cfg.FrameRate) // (InitScreenPace applies it again once it knows the display)
+	}
+	if cfg != nil && !styles.Console {
+		m.lines.mode = gfxDetect(cfg.Graphics)
+		if m.lines.mode != gfx.Off && cfg.UIText != "cells" {
+			// The words drawn in the system's font: their fonts found
+			// and read now, not on the frame that first shows them.
+			fontsWarm.Do(func() { gfx.Warm("sans-serif:bold", "sans-serif") })
+		}
+	}
+	m.onSetting = opts.OnSetting
+	m.settingsP.m.Welcome = opts.Welcome
+	m.openSettings = opts.OpenSettings
+	m.panels = []ContentView{m.library, m.historyP, m.lyricsP, m.feedP, m.eqP, m.aboutP, m.settingsP}
+	if m.openSettings != "" {
+		m.openPanel(m.settingsP)
+		m.settingsP.m.Open(m.openSettings)
+	}
 	if m.coverView && !m.coverPlain {
 		m.activePanel = m.lyricsPanelIdx() // the cover view opens on the lyrics
 	}
@@ -620,6 +804,9 @@ func New(cfg *config.Config, prov provider.Provider, plyr player.Player, opts Op
 	}
 	if cfg != nil && !cfg.IntroEnabled() {
 		m.introStep = introDone // "intro": false in the config
+	}
+	if m.openSettings != "" {
+		m.introStep = introDone // asked to open on the settings: nothing over them
 	}
 	return m
 }
@@ -720,16 +907,52 @@ func waitForState(ch <-chan player.State) tea.Cmd {
 // ── Update ────────────────────────────────────────────────────────────────
 
 func (m *Model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
+	// A sequence for the terminal (the lines' and the visualizer's
+	// pictures, every frame) is written by the program and then handed
+	// here too: it changes nothing, and the screen after it is the one
+	// before (laid out anew only if that one was).
+	if _, ok := msg.(tea.RawMsg); ok {
+		m.rawHold = false // the frame's pictures are out: its cells may go too (see View)
+		return m, nil
+	}
+	// The screen is laid out anew after this message, unless it is a frame
+	// of the lines that changed nothing in the cells (see viewCanReuse).
+	m.viewReuse = false
+	was := m.playerState
 	// After every message: whatever it changed may start an animation.
 	defer func() {
 		if c := m.fxEnsure(); c != nil {
 			cmd = tea.Batch(cmd, c)
+		}
+		// Anything but a clock's tick may set something moving: the lines
+		// leave their slow watch (the player's reports only when they say
+		// more than where the song is).
+		wake := true
+		switch msg.(type) {
+		case linesTickMsg, glowTickMsg, tickMsg, memTickMsg, fxTickMsg, lyricsTickMsg, vizTickMsg, introTickMsg, introVizTickMsg:
+			wake = false
+		case playerStateMsg:
+			s := m.playerState
+			wake = s.Playing != was.Playing || s.Loading != was.Loading || s.Volume != was.Volume ||
+				s.ShuffleMode != was.ShuffleMode || s.RepeatMode != was.RepeatMode ||
+				(s.Track == nil) != (was.Track == nil) || s.Track != nil && was.Track != nil && s.Track.ID != was.Track.ID
+		}
+		if wake {
+			if c := m.linesWake(); c != nil {
+				cmd = tea.Batch(cmd, c)
+			}
+		}
+		if _, ok := msg.(linesTickMsg); ok {
+			m.viewReuse = m.viewCanReuse()
 		}
 	}()
 	var cmds []tea.Cmd
 	// The layout is shared by every tab (the config is): follow a change
 	// made in another one.
 	if cmd := m.followLayout(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	if cmd := m.followSettings(); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
 
@@ -745,6 +968,11 @@ func (m *Model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 		if m.measureCellAsp != nil {
 			m.artCellAsp = m.measureCellAsp()
 		}
+		if m.lines != nil {
+			// The cells may be another size now (a new font size): the
+			// lines' pictures are measured anew.
+			m.lines.cellW, m.lines.cellH, m.lines.coverKey = 0, 0, ""
+		}
 		inner := max(0, m.width-2)
 		contentW := max(0, inner-2)
 		panelH := m.panelHeight()
@@ -754,14 +982,24 @@ func (m *Model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 		m.feedP.SetSize(contentW, panelH)
 		m.eqP.SetSize(contentW, panelH)
 		m.aboutP.SetSize(contentW, panelH)
+		m.settingsP.SetSize(contentW, panelH)
 
 	case fxTickMsg:
 		cmds = append(cmds, m.fxFrameMsg(msg))
 
+	case linesTickMsg:
+		cmds = append(cmds, m.linesFrameMsg(msg))
+
 	case vizTickMsg:
-		if m.vizOpen() && msg.gen == m.viz.gen {
+		if v := m.viz; v != nil && msg.gen == v.gen && (v.open || v.closing) {
+			if v.closing && time.Since(v.closedAt).Seconds() >= vizCloseFor {
+				cmds = append(cmds, m.vizRelease())
+				break
+			}
+			began := time.Now()
 			m.vizStep()
-			cmds = append(cmds, vizTick(msg.gen), m.vizRaw())
+			framesLog.note("viz", time.Since(began), fmt.Sprintf("px%d", v.px))
+			cmds = append(cmds, vizTick(msg.gen, &v.due), m.vizRaw())
 		}
 
 	case tickMsg:
@@ -776,18 +1014,22 @@ func (m *Model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 			// The same smoothed clock drives the progress line.
 			m.advanceLyricsClock()
 		}
-		if !m.lyricsTicking && m.fastAnimating() {
+		if !m.lyricsTicking && m.fastAnimating() && !m.linesTicking() {
 			m.lyricsTicking = true
-			cmds = append(cmds, lyricsTick())
+			m.lyricsTickAt = time.Time{}
+			cmds = append(cmds, lyricsTick(&m.lyricsTickAt))
 		}
-		cmds = append(cmds, glowTick())
+		cmds = append(cmds, glowTick(), m.linesEnsure())
 
 	case lyricsTickMsg:
-		if m.fastAnimating() {
+		// While the lines tick the clock goes on with them (see
+		// linesFrameMsg): two clocks would draw the screen twice a frame.
+		if m.fastAnimating() && !m.linesTicking() {
 			if m.playerState.Track != nil {
 				m.advanceLyricsClock()
 			}
-			cmds = append(cmds, lyricsTick())
+			framesLog.note("lyrics", 0, "")
+			cmds = append(cmds, lyricsTick(&m.lyricsTickAt))
 		} else {
 			m.lyricsTicking = false
 		}
@@ -893,6 +1135,9 @@ func (m *Model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 			m.playerState.Track.Title != s.Track.Title) {
 			m.applyTrackPalette(s.Track)
 			m.trackChangedAt = time.Now()
+			if s.Playing || s.Loading {
+				cmds = append(cmds, m.notifyTrack(s.Track))
+			}
 			m.appendLog("[playing] " + views.TrackLabel(*s.Track))
 			// Log playParams so we can confirm which ID path is used.
 			trackType := "catalog"
@@ -967,6 +1212,17 @@ func (m *Model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 			cmds = append(cmds, waitForState(m.stateCh))
 		}
 
+	case notifyTimeoutMsg:
+		if msg.id == m.notifyPending {
+			cmds = append(cmds, m.notifyCover(nil))
+		}
+
+	case tea.FocusMsg:
+		windowAway.Store(false)
+
+	case tea.BlurMsg:
+		windowAway.Store(true)
+
 	case artworkLoadedMsg:
 		if msg.url != m.artwork.url || msg.gen != m.artworkGen {
 			break
@@ -976,8 +1232,10 @@ func (m *Model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 			m.artwork.img = nil
 			m.artwork.rendered = map[art.Size][]string{}
 			m.appendLog(fmt.Sprintf("[art] artwork unavailable: %v", msg.err))
+			cmds = append(cmds, m.notifyCover(nil))
 			break
 		}
+		cmds = append(cmds, m.notifyCover(msg.img))
 		m.artwork.img = msg.img
 		m.artwork.failed = false
 		m.artwork.rendered = map[art.Size][]string{}
@@ -1530,11 +1788,60 @@ func (m *Model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 	case RestartMsg:
 		return m, tea.Quit
 
+	case views.SettingsChangedMsg:
+		cmds = append(cmds, m.settingsChanged(msg))
+
+	case views.SettingsActionMsg:
+		cmds = append(cmds, m.settingsAction(msg.Key))
+
+	case lastfmTokenMsg:
+		if msg.err != nil {
+			delete(m.settingsP.m.Values, lastfmValue)
+			m.flash(fmt.Sprintf(i18n.T("Last.fm: %v"), msg.err))
+			break
+		}
+		m.lastfmToken = msg.token
+		m.settingsP.m.Values[lastfmValue] = "allow access in the browser, then press Enter"
+		m.appendLog("[lastfm] " + msg.url)
+
+	case lastfmSessionMsg:
+		if msg.err != nil {
+			// Usually: not allowed in the browser yet. The token stays good.
+			m.flash(fmt.Sprintf(i18n.T("Last.fm: %v"), msg.err))
+			break
+		}
+		m.lastfmToken = ""
+		delete(m.settingsP.m.Values, lastfmValue)
+		m.cfg.LastfmSessionKey = msg.key
+		_ = m.cfg.Save("")
+		if m.onSetting != nil {
+			m.onSetting(lastfmValue)
+		}
+
+	case ServiceOffMsg:
+		if m.playerState.Playing {
+			cmds = append(cmds, m.playerCmd(func(p player.Player) error { return p.Pause() }))
+		}
+
+	case views.SettingsEditMsg:
+		key := msg.Key
+		m.openPrompt(msg.Title, msg.Value, func(text string) tea.Cmd { return m.settingsP.m.SetText(key, text) })
+
+	case views.SettingsRestartMsg:
+		if m.restart != nil {
+			m.restart()
+			if m.player != nil {
+				_ = m.player.Close()
+			}
+			return m, tea.Quit
+		}
+
 	case tea.PasteMsg:
 		cmd := m.handlePaste(msg.Content)
 		cmds = append(cmds, cmd)
 
 	case tea.KeyPressMsg:
+		m.noteKeyRepeat(msg.String())
 		cmd := m.handleKey(msg)
 		cmds = append(cmds, cmd)
 
@@ -1600,6 +1907,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		return tea.Quit
 	}
 	m.lastCtrlC = time.Time{}
+	m.linesTouchKey(k)
 
 	if m.vizOpen() {
 		return m.handleVizKey(k)
@@ -1970,6 +2278,14 @@ func (m *Model) executeCommand(cmd string) tea.Cmd {
 		return m.openVisualizer()
 	case cmd == "link" || strings.HasPrefix(cmd, "link "):
 		return m.linkCommand(strings.TrimPrefix(cmd, "link"))
+	case cmd == "settings":
+		for i, p := range m.panels {
+			if p == m.settingsP {
+				m.activePanel = i
+				break
+			}
+		}
+		return nil
 	case cmd == "about":
 		for i, p := range m.panels {
 			if p == m.aboutP {
@@ -2160,6 +2476,11 @@ func (m *Model) fetchArtworkCmd(url string, gen int) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		img, err := art.FetchAndDecode(ctx, client, url, 5<<20)
+		if err == nil && img != nil {
+			// Its pixels read out now, here, not on the frame that first
+			// draws the cover as a picture (a song change missed a frame).
+			coverPixels(img)
+		}
 		return artworkLoadedMsg{url: url, gen: gen, img: img, err: err}
 	}
 }
@@ -2226,14 +2547,13 @@ func (m *Model) translateLyricsCmd() tea.Cmd {
 	}
 }
 
-// lyricsTickInterval drives karaoke redraws (25 fps) while the lyrics panel
-// is open and playing; the 100 ms glow tick alone looks steppy.
-const lyricsTickInterval = 40 * time.Millisecond
-
+// lyricsTickMsg drives karaoke redraws, at the screen's pace (screenFrame),
+// while the lyrics panel is open and playing; the 100 ms glow tick alone
+// looks steppy. Where the lines are pictures their clock does it instead.
 type lyricsTickMsg struct{}
 
-func lyricsTick() tea.Cmd {
-	return tea.Tick(lyricsTickInterval, func(time.Time) tea.Msg { return lyricsTickMsg{} })
+func lyricsTick(due *time.Time) tea.Cmd {
+	return frameTick(due, screenFrame, func() tea.Msg { return lyricsTickMsg{} })
 }
 
 // titleReveal is how long a new track's title takes to write itself in.
@@ -2242,7 +2562,13 @@ const titleReveal = 450 * time.Millisecond
 // fastAnimating reports whether something needs the 25 fps tick: karaoke
 // lyrics while playing, or a title reveal in progress.
 func (m *Model) fastAnimating() bool {
+	if m.vizOpen() || m.background {
+		return false // nothing of it shows: the visualizer covers it, or another tab is up
+	}
 	if m.lyricsVisible() && m.playerState.Playing {
+		return true
+	}
+	if m.playerState.Track != nil && len([]rune(m.playerState.Track.Title)) > 24 {
 		return true
 	}
 	return !m.trackChangedAt.IsZero() && time.Since(m.trackChangedAt) < titleReveal
@@ -2250,10 +2576,15 @@ func (m *Model) fastAnimating() bool {
 
 // revealLine shows a centred line written in from the left, for the first
 // titleReveal after a track change.
+//
+// Where the lines are pictures the words come another way (they melt in, see
+// fxSoft and the player's labels), and a line cut short as it is written
+// would only type itself out under that.
 func (m *Model) revealLine(line string) string {
-	if m.noAnim || m.trackChangedAt.IsZero() {
+	if m.noAnim || m.trackChangedAt.IsZero() || m.linesOn() {
 		return line
 	}
+
 	t := float64(time.Since(m.trackChangedAt)) / float64(titleReveal)
 	if t >= 1 {
 		return line
@@ -2263,6 +2594,36 @@ func (m *Model) revealLine(line string) string {
 	lead := len(plain) - len(strings.TrimLeft(plain, " "))
 	w := lipgloss.Width(line)
 	return ansi.Truncate(line, lead+int(t*float64(w-lead)), "")
+}
+
+// scrollTitle keeps a long title readable in a fixed-width terminal row.
+// It pauses at both ends, then moves the title through the row repeatedly.
+func (m *Model) scrollTitle(line string, width int) string {
+	if width <= 0 || ansi.StringWidth(ansi.Strip(line)) <= width ||
+		len([]rune(ansi.Strip(line))) <= 24 {
+		return centerStr(line, width)
+	}
+	const (
+		pause = 1200 * time.Millisecond
+		speed = 8.0 // cells per second
+	)
+	plain := ansi.Strip(line)
+	overflow := ansi.StringWidth(plain) - width
+	move := time.Duration(float64(overflow) / speed * float64(time.Second))
+	cycle := pause + move + pause
+	elapsed := time.Since(m.trackChangedAt)
+	elapsed = max(elapsed, 0)
+	phase := elapsed % cycle
+	offset := 0
+	switch {
+	case phase <= pause:
+	case phase < pause+move:
+		offset = int(float64(overflow) * float64(phase-pause) / float64(move))
+	default:
+		offset = overflow
+	}
+	repeated := line + "   " + line
+	return centerStr(ansi.Cut(repeated, offset, offset+width), width)
 }
 
 // lyricsVisible reports whether the lyrics panel is open with a track.
@@ -2288,11 +2649,7 @@ func (m *Model) advanceLyricsClock() {
 		case drift > snapAfter || drift < -snapAfter:
 			m.lyricsClock = target
 		default:
-			next := predicted + drift/6
-			if next < m.lyricsClock {
-				next = m.lyricsClock // never run backwards
-			}
-			m.lyricsClock = next
+			m.lyricsClock = max(predicted+drift/6, m.lyricsClock) // never run backwards
 		}
 	}
 	m.lyricsClockAt = now
@@ -2683,6 +3040,15 @@ func (m *Model) handleNormalKey(msg tea.KeyPressMsg, k string) tea.Cmd {
 		}
 	}
 
+	// The settings take every key they use, before the shortcuts below.
+	if m.activePanel >= 0 && m.panels[m.activePanel] == m.settingsP {
+		switch k {
+		case "up", "down", "j", "k", "g", "G", "home", "end", "enter", "left", "right", "backspace", "delete", "R":
+			m.lastKey = ""
+			return m.settingsP.Update(msg)
+		}
+	}
+
 	if k == "i" {
 		m.lastKey = ""
 		return m.openSongMenu()
@@ -2698,6 +3064,13 @@ func (m *Model) handleNormalKey(msg tea.KeyPressMsg, k string) tea.Cmd {
 	if k == "V" && !m.lyricsP.m.PickerOpen() {
 		m.lastKey = ""
 		return m.openVisualizer()
+	}
+
+	// H takes the key hints at the bottom out of the way, and back.
+	if k == "H" && !m.lyricsP.m.PickerOpen() {
+		m.lastKey = ""
+		m.toggleHints()
+		return nil
 	}
 
 	if k == "v" && !m.lyricsP.m.PickerOpen() {
@@ -2966,11 +3339,11 @@ func (m *Model) playbackKey(k string) (cmd tea.Cmd, ok bool) {
 
 	case "+", "=":
 		m.lastKey = ""
-		return m.adjustVolume(0.05), true
+		return m.adjustVolume(m.volumeStep()), true
 
 	case "-":
 		m.lastKey = ""
-		return m.adjustVolume(-0.05), true
+		return m.adjustVolume(-m.volumeStep()), true
 
 	case "r":
 		m.lastKey = ""
@@ -3034,7 +3407,7 @@ func (m *Model) playbackKey(k string) (cmd tea.Cmd, ok bool) {
 	case "left":
 		m.lastKey = ""
 		if m.playerState.Track != nil {
-			newPos := max(0, m.playerState.Position-10*time.Second)
+			newPos := max(0, m.playerState.Position-m.seekStep())
 			m.appendLog(fmt.Sprintf("[player] seek ← %s", views.FormatDuration(newPos)))
 			pos := newPos
 			m.noteSeek(pos)
@@ -3044,7 +3417,7 @@ func (m *Model) playbackKey(k string) (cmd tea.Cmd, ok bool) {
 	case "right":
 		m.lastKey = ""
 		if m.playerState.Track != nil {
-			newPos := m.playerState.Position + 10*time.Second
+			newPos := m.playerState.Position + m.seekStep()
 			if dur := m.playerState.Track.Duration; dur > 0 && newPos > dur {
 				newPos = dur
 			}
@@ -3384,8 +3757,8 @@ func (m *Model) purgeSkippedFromQueue() {
 		return
 	}
 	changed := false
-	for i := len(m.queueIDs) - 1; i >= 0; i-- {
-		if !m.radio.skipped[m.queueIDs[i]] {
+	for i, v := range slices.Backward(m.queueIDs) {
+		if !m.radio.skipped[v] {
 			continue
 		}
 		m.appendLog(fmt.Sprintf("[skip] removing from queue: %s — %s",
@@ -3527,10 +3900,39 @@ func (m *Model) adjustVolume(delta float64) tea.Cmd {
 // ── View ──────────────────────────────────────────────────────────────────
 
 func (m *Model) View() tea.View {
+	v := m.viewNow()
+	// A frame's pictures go to the terminal as a sequence of their own,
+	// which Bubble Tea hands back here a moment after the frame's cells
+	// were laid out, and its cells often went out at once, a flush before
+	// the pictures: the terminal drew the frame in two goes, the second a
+	// refresh or two later. While the pictures are on their way the cells
+	// shown are the last frame's; the frame's own go with its pictures, in
+	// one flush.
+	if m.rawHold && m.viewShownOK && time.Since(m.rawHoldAt) < rawHoldFor &&
+		m.viewShownW == m.width && m.viewShownH == m.height {
+		return m.viewShown
+	}
+	m.viewShown, m.viewShownOK, m.viewShownW, m.viewShownH = v, true, m.width, m.height
+	return v
+}
+
+// rawHoldFor is the longest the cells wait for their frame's pictures.
+const rawHoldFor = 40 * time.Millisecond
+
+// holdForRaw keeps the frame's cells back until its pictures go (see View).
+func (m *Model) holdForRaw() {
+	m.rawHold, m.rawHoldAt = true, time.Now()
+}
+
+// viewNow lays the screen out as it is now (see View).
+func (m *Model) viewNow() tea.View {
 	if m.width == 0 {
 		v := tea.NewView("")
 		v.AltScreen = true
 		return v
+	}
+	if m.viewReuse && m.viewHas && m.viewW == m.width && m.viewH == m.height {
+		return m.viewLast
 	}
 	var content string
 	switch {
@@ -3538,10 +3940,25 @@ func (m *Model) View() tea.View {
 		content = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.renderPlaylistPickerModal())
 	case m.introStep != introDone:
 		content = m.renderIntro()
-	case m.vizOpen():
+	case m.vizOpen() && !m.viz.over:
 		content = m.renderVisualizer()
+	case m.vizOpen() && m.viz.under != "":
+		// While the visualizer opens as a picture over it, the interface
+		// is still under it, held as it was: not drawn anew every frame.
+		content = m.viz.under
 	default:
-		content = m.fxApply(m.renderMain())
+		began := time.Now()
+		content = m.renderScreen()
+		if m.lines != nil {
+			m.lines.viewTook = time.Since(began)
+			m.lines.views++
+		}
+		if m.vizOpen() {
+			m.viz.under = content
+		}
+	}
+	if m.lines != nil && (m.vizOpen() && !m.viz.over || m.introStep != introDone && !m.introOpening() || m.mode == modePlaylistPicker) {
+		m.lines.unsee()
 	}
 	if styles.Console && !m.vizOpen() { // the visualizer writes for the console itself
 		content = styles.ConsoleText(content)
@@ -3555,11 +3972,73 @@ func (m *Model) View() tea.View {
 	// Receive wheel events ourselves: otherwise the terminal turns one
 	// notch into several arrow presses (see the MouseWheelMsg case).
 	v.MouseMode = tea.MouseModeCellMotion
+	v.ReportFocus = true // for the song notifications (see notifyWanted)
+	m.viewLast, m.viewHas, m.viewW, m.viewH = v, true, m.width, m.height
+	m.viewSec = int(m.smoothPosition().Seconds())
 	return v
+}
+
+// viewCanReuse reports whether a frame of the lines' clock left the cells
+// of the screen as they were laid out last: then that layout is shown
+// again instead of being made anew sixty times a second. The lines' own
+// pictures move on regardless (they are drawn on the frame). Not while
+// words come or go, nor when the song's time shows another second, nor
+// with the lyrics written in the cells, whose lit word goes on with the
+// song; anything else that changes the cells comes with a message of its
+// own, after which the screen is laid out anew.
+func (m *Model) viewCanReuse() bool {
+	now := time.Now()
+	why := ""
+	switch {
+	case !m.viewHas || !m.linesTicking() || m.introStep != introDone || m.vizOpen():
+		why = "state"
+	case m.soft != nil && m.soft.busy:
+		why = "soft"
+	case m.fxBusy(now):
+		why = "fx"
+	case m.lyricsVisible() && (!m.coverView || !m.lyricsPicOn()):
+		why = "lyrics"
+	case int(m.smoothPosition().Seconds()) != m.viewSec:
+		why = "second"
+	}
+	if m.lines != nil {
+		m.lines.why = why
+	}
+	return why == ""
+}
+
+// renderScreen is the player's screen as it is shown: renderMain with its
+// effects, and its lines, frames and pictures laid out (see linesPlace).
+func (m *Model) renderScreen() string {
+	if m.lines == nil || m.lines.sentPx == nil {
+		return m.linesPlace(m.fxSoft(m.fxApply(m.renderMain())))
+	}
+	// With UTUIMP_LINES_LOG: how long each step took.
+	t0 := time.Now()
+	s := m.renderMain()
+	t1 := time.Now()
+	s = m.fxApply(s)
+	t2 := time.Now()
+	s = m.fxSoft(s)
+	t3 := time.Now()
+	s = m.linesPlace(s)
+	t4 := time.Now()
+	ms := func(a, b time.Time) float64 { return b.Sub(a).Seconds() * 1000 }
+	m.lines.viewParts = fmt.Sprintf("main %.1f fx %.1f soft %.1f place %.1f", ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4))
+	return s
+}
+
+// introOpening reports whether the start screen is giving way to the
+// interface: from then on the interface's pictures are drawn under it.
+func (m *Model) introOpening() bool {
+	return m.introStep != introDone && m.intro != nil && !m.intro.fadeAt.IsZero()
 }
 
 // renderMain is the player's screen: the layout and any menu over it.
 func (m *Model) renderMain() string {
+	if m.lines != nil {
+		m.lines.labels = m.lines.labels[:0]
+	}
 	content := ""
 	if m.coverView {
 		content = m.renderCoverLayout()
@@ -3577,6 +4056,45 @@ func (m *Model) renderMain() string {
 	}
 	return content
 }
+
+// keyHeldGap: the same key again within this is a key held down (its
+// repeats come some 30 times a second).
+const keyHeldGap = 150 * time.Millisecond
+
+// noteKeyRepeat notes a key pressed, and whether it is a key held down
+// (see keyHeld).
+func (m *Model) noteKeyRepeat(k string) {
+	now := time.Now()
+	if k == m.repeatKey && now.Sub(m.repeatAt) < keyHeldGap {
+		m.heldAt = now
+	}
+	m.repeatKey, m.repeatAt = k, now
+}
+
+// keyHeld reports whether a key is being held down right now.
+func (m *Model) keyHeld(now time.Time) bool {
+	return !m.heldAt.IsZero() && now.Sub(m.heldAt) < keyHeldGap
+}
+
+// seekStep is how far ← and → move in the song (Settings, Playback).
+func (m *Model) seekStep() time.Duration {
+	if m.cfg == nil {
+		return 10 * time.Second
+	}
+	return m.cfg.SeekStepDur()
+}
+
+// volumeStep is how far + and - turn the volume, 0..1 (Settings, Playback).
+func (m *Model) volumeStep() float64 {
+	if m.cfg == nil {
+		return 0.05
+	}
+	return m.cfg.VolumeStepFrac()
+}
+
+// fontsWarm reads the fonts of the words drawn as pictures once, for all
+// the tabs.
+var fontsWarm sync.Once
 
 // errNotConnected is reported for player actions before the service is up.
 var errNotConnected = errors.New("not connected yet")
@@ -3679,6 +4197,9 @@ func (m *Model) volumeLabel() string {
 	} else {
 		vol = styles.QueueItemMuted.Render(fmt.Sprintf(i18n.T("♪ %d%%"), int(m.playerState.Volume*100)))
 	}
+	if !m.coverView && m.nowPlayingBarOn(m.width-4, m.nowPlayingHeight()) {
+		vol = "" // the bar has the volume in it
+	}
 	if m.memStats != "" {
 		vol = styles.QueueItemMuted.Render(m.memStats) + "  " + vol
 	}
@@ -3748,7 +4269,7 @@ func (m *Model) renderIntro() string {
 				status = "connecting…"
 			}
 		}
-		if s := m.renderIntroDance(m.introLogo(), status, m.renderMain); s != "" {
+		if s := m.renderIntroDance(m.introLogo(), status, m.renderScreen); s != "" {
 			return s
 		}
 	}
@@ -3807,6 +4328,9 @@ func (m *Model) nowPlayingLines(contentW, h int) []string {
 	if m.artModeActive() && h >= 8 {
 		return m.nowPlayingArtLines(contentW, h)
 	}
+	if m.nowPlayingBarOn(contentW, h) {
+		return m.nowPlayingBar(contentW, h)
+	}
 	return m.nowPlayingTextLines(contentW, h)
 }
 
@@ -3843,7 +4367,15 @@ func (m *Model) nowPlayingArtLines(contentW, h int) []string {
 		m.artwork.rendered = map[art.Size][]string{}
 	}
 	artLines := m.artwork.rendered[size]
-	if artLines == nil && m.artwork.img != nil {
+	if m.pixCover() && m.artwork.img != nil && m.lines.coverSize(artCols, artRows) {
+		// The cover is a picture: its cells stay empty, bar the mark
+		// that tells where they are.
+		artLines = make([]string, artRows)
+		for i := range artLines {
+			artLines[i] = strings.Repeat(" ", artCols)
+		}
+		artLines[0] = string(linesCoverMark) + strings.Repeat(" ", artCols-1)
+	} else if artLines == nil && m.artwork.img != nil {
 		const maxRenderedArtworkSizes = 16
 		if len(m.artwork.rendered) >= maxRenderedArtworkSizes {
 			m.artwork.rendered = map[art.Size][]string{}
@@ -4134,6 +4666,14 @@ func (m *Model) nowPlayingTextLines(contentW, h int) []string {
 
 	trackLine := m.revealLine(m.renderTrackTitleLine(t, contentW, false))
 	albumLine := m.revealLine(m.renderAlbumMetaLine(t, contentW, false, false))
+	// Where the lines are pictures the words are drawn too (see label).
+	words := func(line string, kind int) string {
+		if s, ok := m.label(kind, strings.TrimSpace(ansi.Strip(line)), contentW, alignCentre); ok {
+			return s
+		}
+		return line
+	}
+	albumLine = words(albumLine, labelAlbum)
 
 	// Progress: "0:39  ━━━━━━━━──────  4:41", centred; the bar takes what
 	// the times leave.
@@ -4141,11 +4681,53 @@ func (m *Model) nowPlayingTextLines(contentW, h int) []string {
 	elapsed := views.FormatDuration(pos)
 	total := views.FormatDuration(t.Duration)
 	barW := max(6, contentW-8-lipgloss.Width(elapsed)-lipgloss.Width(total)-4)
-	progressLine := centerStr(styles.NowPlayingTime.Render(elapsed)+"  "+
+	elapsedS, totalS := styles.NowPlayingTime.Render(elapsed), styles.NowPlayingTime.Render(total)
+	if s, ok := m.label(labelTime, elapsed, lipgloss.Width(elapsed), alignRight); ok {
+		elapsedS = s
+	}
+	if s, ok := m.label(labelTime, total, lipgloss.Width(total), alignLeft); ok {
+		totalS = s
+	}
+	progressLine := centerStr(elapsedS+"  "+
 		views.RenderProgressBar(pos, t.Duration, barW)+"  "+
-		styles.NowPlayingTime.Render(total), contentW)
+		totalS, contentW)
 
-	// Controls: ↺  ⇄  ▶/⏸  ♡/♥
+	controls := centerStr(m.controlsText(t), contentW)
+	if m.pixButtons() && contentW >= linesCtlCols {
+		// The buttons are a picture: their cells stay empty, bar the
+		// mark that tells where they are.
+		controls = centerStr(string(linesCtlMark)+strings.Repeat(" ", linesCtlCols-1), contentW)
+	}
+
+	errLine := m.statusLine(contentW)
+
+	// The title last: the cover view writes its own (see coverTitleLines),
+	// and a label that is not on the screen must not be made before it.
+	if !m.coverView {
+		trackLine = words(trackLine, labelTitle)
+	}
+	lines := []string{
+		"",
+		trackLine,
+		albumLine,
+		"",
+		progressLine,
+		"",
+		controls,
+		"",
+		errLine,
+	}
+
+	for len(lines) < h {
+		lines = append(lines, "")
+	}
+	return lines[:h]
+}
+
+// controlsText is the player's buttons as characters: ↺  ⇄  ▶/⏸  ♡/♥, each
+// in the colour of its state (where they are not drawn as a picture).
+func (m *Model) controlsText(t *provider.Track) string {
+	muted := styles.QueueItemMuted
 	var playIcon string
 	var playStyle lipgloss.Style
 	switch {
@@ -4178,32 +4760,10 @@ func (m *Model) nowPlayingTextLines(contentW, h int) []string {
 		heartIcon, heartStyle = "♥", styles.FavoriteActive
 	}
 
-	controls := centerStr(
-		repeatStyle.Render(repeatIcon)+"   "+
-			shuffleStyle.Render("⇄")+"   "+
-			playStyle.Render(playIcon)+"   "+
-			heartStyle.Render(heartIcon),
-		contentW,
-	)
-
-	errLine := m.statusLine(contentW)
-
-	lines := []string{
-		"",
-		trackLine,
-		albumLine,
-		"",
-		progressLine,
-		"",
-		controls,
-		"",
-		errLine,
-	}
-
-	for len(lines) < h {
-		lines = append(lines, "")
-	}
-	return lines[:h]
+	return repeatStyle.Render(repeatIcon) + "   " +
+		shuffleStyle.Render("⇄") + "   " +
+		playStyle.Render(playIcon) + "   " +
+		heartStyle.Render(heartIcon)
 }
 
 // playingQueueIdx returns the queue position of the track the player reports as
@@ -4467,6 +5027,14 @@ func (m *Model) statusNavLines(w int) []string {
 				accent.Render(i18n.T("r")) + muted.Render(i18n.T(" reset all")),
 				accent.Render(i18n.T("e")) + muted.Render(i18n.T(" close")),
 			}
+		case m.activePanel >= 0 && m.panels[m.activePanel] == m.settingsP:
+			parts = []string{
+				styles.ModeNormal.Render(i18n.T("SETTINGS")),
+				accent.Render("↑/↓") + muted.Render(i18n.T(" choose")),
+				accent.Render("←/→") + muted.Render(i18n.T(" change")),
+				accent.Render("enter") + muted.Render(i18n.T(" change / type")),
+				accent.Render("esc/,") + muted.Render(i18n.T(" close")),
+			}
 		case m.activePanel >= 0 && m.panels[m.activePanel] == m.aboutP:
 			parts = []string{
 				styles.ModeNormal.Render(i18n.T("ABOUT")),
@@ -4487,6 +5055,8 @@ func (m *Model) statusNavLines(w int) []string {
 				accent.Render("P") + muted.Render(i18n.T(" add to playlist")),
 				accent.Render("v") + muted.Render(m.layoutHint()),
 				accent.Render("V") + muted.Render(i18n.T(" visualizer")),
+				accent.Render(",") + muted.Render(i18n.T(" settings")),
+				accent.Render("H") + muted.Render(i18n.T(" hide hints")),
 				accent.Render("?") + muted.Render(i18n.T(" about")),
 				accent.Render(i18n.T(":q")) + muted.Render(i18n.T(" quit")),
 			}
@@ -4525,7 +5095,7 @@ func (m *Model) statusPlayLines(w int) []string {
 	parts := []string{
 		accent.Render(i18n.T("spc")) + muted.Render(i18n.T(" play/pause")),
 		accent.Render(i18n.T("n/p")) + muted.Render(i18n.T(" next/prev")),
-		accent.Render("←/→") + muted.Render(i18n.T(" seek ±10s")),
+		accent.Render("←/→") + muted.Render(fmt.Sprintf(i18n.T(" seek ±%ds"), int(m.seekStep().Seconds()))),
 		accent.Render(i18n.T("f")) + muted.Render(i18n.T(" favorite")),
 		accent.Render(i18n.T("s")) + muted.Render(i18n.T(" shuffle")),
 		accent.Render(i18n.T("r")) + muted.Render(i18n.T(" repeat")),
@@ -4572,7 +5142,113 @@ func (m *Model) commandLines(_ int, h int) []string {
 // each already wrapped to fit width w. The count varies with terminal width,
 // so panelHeight consults it rather than assuming a fixed two rows.
 func (m *Model) statusLines(w int) []string {
+	return m.hintsSlide(m.statusLinesFull(w), w)
+}
+
+// statusLinesFull is the status rows as they are when they show.
+func (m *Model) statusLinesFull(w int) []string {
 	return append(m.statusNavLines(w), m.statusPlayLines(w)...)
+}
+
+// hintsSlide is the status rows as the key hints are now (see H), w cells
+// wide: as they are, shown; hidden, one row with only a quiet "H show
+// hints" at its end; and on the way, as they are, faded by fxApply row by
+// row (see hintsFade). Gone, their rows go to the rest of the screen (the
+// panels grow into them; on a small terminal the hints take several rows),
+// once they have faded out; coming back, they take their rows at once and
+// fade in there. What is being typed always shows.
+func (m *Model) hintsSlide(lines []string, w int) []string {
+	if m.mode == modeSearch || m.mode == modeCommand {
+		m.hintsRowsNow = 0
+		return lines
+	}
+	now := time.Now()
+	if m.hintsMoving(now) {
+		m.hintsRowsNow = len(lines) // the rows fxApply fades (fxSoft leaves them be)
+		return lines
+	}
+	m.hintsRowsNow = 0
+	if m.hintsHidden && len(lines) > 0 {
+		muted := lipgloss.NewStyle().Foreground(styles.ColorMuted)
+		back := muted.Render("H" + i18n.T(" show hints"))
+		return []string{strings.Repeat(" ", max(0, w-lipgloss.Width(back))) + back}
+	}
+	return lines
+}
+
+// hintsFade is how much of the key hints' row r of n shows while they go or
+// come back: they go out from the top row down, as if sinking, and come
+// back from the bottom up.
+func hintsFade(shown float64, r, n int) float64 {
+	gone := 1 - shown
+	d := 0.5 * float64(r) / float64(max(1, n))
+	return 1 - smooth(d, d+0.5, gone)
+}
+
+// hintsFor is how long, in seconds, the key hints take to go or to come
+// back.
+const hintsFor = 0.4
+
+// toggleHints hides the key hints, or shows them again, from wherever they
+// are on the way, and remembers it.
+func (m *Model) toggleHints() {
+	m.setHints(!m.hintsHidden)
+	if m.cfg != nil {
+		m.cfg.HideHints = m.hintsHidden
+		if err := m.cfg.Save(""); err != nil {
+			m.appendLog("[hints] config save error: " + err.Error())
+		}
+	}
+}
+
+// setHints hides the key hints or shows them, from wherever they are on
+// the way.
+func (m *Model) setHints(hidden bool) {
+	if hidden == m.hintsHidden {
+		return
+	}
+	now := time.Now()
+	m.hintsFrom = m.hintsShown(now)
+	m.hintsAt = now
+	m.hintsHidden = hidden
+}
+
+// followSettings brings this tab to what the config says of what it keeps
+// as its own (the key hints, the album art of the boxed view): changed in
+// the settings, or in another tab.
+func (m *Model) followSettings() tea.Cmd {
+	if m.cfg == nil {
+		return nil
+	}
+	m.setHints(m.cfg.HideHints)
+	if m.cfg.AlbumArt != m.artMode {
+		m.artMode = m.cfg.AlbumArt
+		if m.artMode {
+			// Covers aren't fetched with the art off: this one is now.
+			return m.fetchArtworkCmd(m.artwork.url, m.artworkGen)
+		}
+	}
+	return nil
+}
+
+// hintsShown is how much of the key hints shows now: 1 all, 0 none, and on
+// the way between while they go or come back.
+func (m *Model) hintsShown(now time.Time) float64 {
+	to := 1.0
+	if m.hintsHidden {
+		to = 0
+	}
+	if m.fxLevel() == 0 || m.hintsAt.IsZero() {
+		return to
+	}
+	p := clamp01(now.Sub(m.hintsAt).Seconds() / hintsFor)
+	p = p * p * (3 - 2*p)
+	return m.hintsFrom + (to-m.hintsFrom)*p
+}
+
+// hintsMoving reports whether the key hints are on their way.
+func (m *Model) hintsMoving(now time.Time) bool {
+	return !m.hintsAt.IsZero() && now.Sub(m.hintsAt).Seconds() < hintsFor && m.fxLevel() > 0
 }
 
 // panelHeight returns the number of rows available inside the panel box.

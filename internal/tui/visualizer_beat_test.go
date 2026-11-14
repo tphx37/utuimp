@@ -144,7 +144,7 @@ func TestBeatTracker_DrawRealMusic(t *testing.T) {
 	if path == "" || dir == "" {
 		t.Skip("VIZ_PCM / VIZ_DUMP not set")
 	}
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // a recording the tester gave
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,11 +218,11 @@ func TestBeatTracker_DrawRealMusic(t *testing.T) {
 		}
 	}
 	t.Logf("%.0f s, %d hits (%.1f a second)", secs, hits, float64(hits)/secs)
-	f, err := os.Create(filepath.Join(dir, "real.png"))
+	f, err := os.Create(filepath.Join(dir, "real.png")) //nolint:gosec // a directory the tester asked for
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := png.Encode(f, img); err != nil {
 		t.Fatal(err)
 	}

@@ -2,9 +2,10 @@ package views
 
 import (
 	"fmt"
-	"github.com/tphx37/utuimp/internal/i18n"
 	"math"
 	"strings"
+
+	"github.com/tphx37/utuimp/internal/i18n"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"

@@ -2,8 +2,14 @@
 
 [← docs](README.md)
 
-`V` (or `:viz`) turns the whole terminal into a visualizer. `esc` leaves it.
-Playback keys keep working inside.
+`V` (or `:viz`) turns the whole terminal into a visualizer. `esc` (or `V`)
+leaves it. Playback keys keep working inside.
+
+Where it is drawn as a picture it opens out of the middle of the screen over
+the interface, which stays where it is under it, and closes back into the
+middle the same way. A new scene melts out of the last one; another song's
+colours, the brightness, the strength and the background come over in a
+moment instead of at once.
 
 ## Scenes
 
@@ -49,6 +55,30 @@ A backdrop behind every scene, shown only where the scene is dark:
 - none.
 
 `b` cycles them. In the config it's `visualizer_background`.
+
+## Real pixels
+
+In kitty and Ghostty the visualizer is drawn as a picture (the kitty
+graphics protocol) instead of coloured cells: several times the detail,
+with no cell grid showing. Everywhere else, in tmux and over ssh it is
+drawn in cells as before.
+
+Settings (`,`), section Graphics:
+
+- **Visualizer as a picture**: auto (the default), on (try in a terminal
+  utuimp doesn't know) or off. `graphics` in the config.
+- **Visualizer detail**: normal or fine (several times the pixels).
+  `visualizer_detail` in the config.
+
+It runs at sixty frames a second. The detail is as fine as the setting
+allows and the machine draws in time: if frames take too long the picture
+gets coarser by itself, and finer again once there is room. Each scene
+remembers the detail it kept up with, so it opens at it instead of
+stuttering for a moment to find out again. The scenes are not equally
+heavy: the tunnel is the dearest. The visualizer is the one part of utuimp
+that keeps several processor cores busy (normal detail in a large window:
+three or four); the rest of the interface takes a fraction of one. For less,
+choose cells (Visualizer as a picture: off) or a smaller window.
 
 ## Colours
 

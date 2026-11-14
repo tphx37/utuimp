@@ -58,7 +58,7 @@ func ConsolePalette(t Theme) [16]color.RGBA {
 	}
 	t = mergeWithDefault(t)
 	white := lipgloss.Color("#ffffff")
-	hex := func(s string) color.Color { return lipgloss.Color(s) }
+	hex := lipgloss.Color
 	cs := [16]color.Color{
 		hex(t.Bg), hex(t.Error), hex(t.Secondary), hex(t.AccentWarm),
 		hex(t.Accent), hex(t.Primary), hex(t.Subtle), hex(t.Fg),
@@ -110,8 +110,8 @@ func ConsoleTheme() Theme {
 func EnterConsole(t Theme) (pal [16]color.RGBA, restore func()) {
 	Console = true
 	consolePal = ConsolePalette(t)
-	fmt.Fprint(os.Stdout, consolePaletteSeq(consolePal))
-	return consolePal, func() { fmt.Fprint(os.Stdout, "\x1b]R") }
+	_, _ = fmt.Fprint(os.Stdout, consolePaletteSeq(consolePal)) // nothing to do if the console can't take it
+	return consolePal, func() { _, _ = fmt.Fprint(os.Stdout, "\x1b]R") }
 }
 
 // consolePaletteSeq sets the console's 16 colours (ESC ] P n rrggbb).

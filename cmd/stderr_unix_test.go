@@ -25,7 +25,7 @@ func TestCaptureStderrSendsNativeWritesToLog(t *testing.T) {
 	_, _ = unix.Write(2, []byte("'impl->recurse > 0' failed\n"))
 	restore()
 
-	data, err := os.ReadFile(filepath.Join(cache, "utuimp", "stderr.log"))
+	data, err := os.ReadFile(filepath.Join(cache, "utuimp", "stderr.log")) //nolint:gosec // under the test's own cache directory
 	if err != nil {
 		t.Fatal(err)
 	}

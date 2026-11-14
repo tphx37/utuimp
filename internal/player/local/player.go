@@ -6,6 +6,7 @@ package local
 
 import (
 	"fmt"
+	"math"
 	"net/url"
 	"sync"
 	"time"
@@ -36,7 +37,8 @@ func New(_ func(string)) (*Player, error) {
 	if err != nil {
 		return nil, fmt.Errorf("local player: %w", err)
 	}
-	p := &Player{gst: gstPlayer, done: make(chan struct{})}
+	// GStreamer starts at full volume.
+	p := &Player{gst: gstPlayer, done: make(chan struct{}), state: player.State{Volume: 1}}
 	p.gst.OnEOS(func() {
 		_ = p.Next()
 	})
@@ -196,7 +198,18 @@ func (p *Player) Seek(pos time.Duration) error {
 }
 
 func (p *Player) SetVolume(v float64) error {
+	if math.IsNaN(v) {
+		v = 0
+	}
+	v = min(max(v, 0), 1)
 	p.gst.SetVolume(v)
+	// The state says it too: the volume line and its number show it, and
+	// without it they read 0 while the song plays.
+	p.mu.Lock()
+	p.state.Volume = v
+	s := p.state
+	p.mu.Unlock()
+	p.broadcast(s)
 	return nil
 }
 

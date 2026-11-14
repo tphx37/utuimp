@@ -1,9 +1,10 @@
 package views
 
 import (
-	"github.com/tphx37/utuimp/internal/i18n"
 	"strings"
 	"time"
+
+	"github.com/tphx37/utuimp/internal/i18n"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -393,9 +394,6 @@ func (l *LyricsModel) visibleEnd(scroll int) int {
 	}
 	return max(i, min(scroll+1, len(l.lines)))
 }
-
-// visibleRows is how many lyric lines fit from the current scroll.
-func (l *LyricsModel) visibleRows() int { return l.visibleEnd(l.scroll) - l.scroll }
 
 // maxScroll is the largest scroll that still fills the panel to the end.
 func (l *LyricsModel) maxScroll() int {

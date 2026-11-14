@@ -43,7 +43,7 @@ type Store struct {
 // Open loads the store at path (a missing file is an empty store).
 func Open(path string) (*Store, error) {
 	s := &Store{path: path}
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) //nolint:gosec // the store's own file under the config directory
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
 	}
@@ -73,7 +73,7 @@ func (s *Store) save() error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil { // the config directory: private, like the rest of it
 		return err
 	}
 	tmp := s.path + ".tmp"
@@ -163,7 +163,7 @@ func (s *Store) RemoveFromPlaylist(id string, index int, trackID string) error {
 			continue
 		}
 		ts := s.d.Playlists[i].Tracks
-		at := -1
+		var at int
 		if index >= 0 && index < len(ts) && ts[index].ID == trackID {
 			at = index
 		} else {

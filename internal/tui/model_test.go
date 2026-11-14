@@ -2493,7 +2493,7 @@ func TestFetchArtworkCmd_NoColorReturnsNil(t *testing.T) {
 
 func TestNowPlayingLines_NoColorFallsBackToText(t *testing.T) {
 	m := newModel(nil)
-	m.artMode = true
+	m.artMode, m.cfg.AlbumArt = true, true
 	m.supportsArtColor = func() bool { return false }
 	m.playerState.Track = &provider.Track{Title: "Text Song", Artist: "Text Artist", Album: "Album", ArtworkURL: "https://example.invalid/a.png", Duration: time.Minute}
 
@@ -2574,7 +2574,7 @@ func TestNowPlayingArtworkFetchAndResizeUsesCachedImage(t *testing.T) {
 
 	m := newModel(newMockPlayer())
 	m.stateCh = nil
-	m.artMode = true
+	m.artMode, m.cfg.AlbumArt = true, true
 	m.supportsArtColor = func() bool { return true }
 	track := &provider.Track{Title: "Art Song", Artist: "Art Artist", Album: "Album", ArtworkURL: server.URL, Duration: time.Minute}
 	_, cmd := m.Update(playerStateMsg{Track: track, Playing: true})
@@ -2605,7 +2605,7 @@ func TestNowPlayingArtworkDownloadFailureFallsBack(t *testing.T) {
 
 	m := newModel(newMockPlayer())
 	m.stateCh = nil
-	m.artMode = true
+	m.artMode, m.cfg.AlbumArt = true, true
 	m.supportsArtColor = func() bool { return true }
 	track := &provider.Track{Title: "Fallback Song", Artist: "Fallback Artist", Album: "Album", ArtworkURL: server.URL, Duration: time.Minute}
 	_, cmd := m.Update(playerStateMsg{Track: track, Playing: true})
@@ -2627,7 +2627,7 @@ func TestNowPlayingArtworkDownloadFailureFallsBack(t *testing.T) {
 func TestArtworkLoadedMsg_DiscardStaleSameURLFailureAfterABA(t *testing.T) {
 	m := newModel(newMockPlayer())
 	m.stateCh = nil
-	m.artMode = true
+	m.artMode, m.cfg.AlbumArt = true, true
 	m.supportsArtColor = func() bool { return true }
 	a := "https://example.invalid/a.png"
 	b := "https://example.invalid/b.png"
@@ -2660,7 +2660,7 @@ func TestArtworkLoadedMsg_DiscardStaleSameURLFailureAfterABA(t *testing.T) {
 
 func TestNowPlayingLines_DoesNotRenderStaleArtworkForNewTrack(t *testing.T) {
 	m := newModel(nil)
-	m.artMode = true
+	m.artMode, m.cfg.AlbumArt = true, true
 	m.supportsArtColor = func() bool { return true }
 	m.artwork = artworkCache{
 		url:      "https://example.invalid/old.png",
@@ -2689,7 +2689,7 @@ func TestNowPlayingLines_DoesNotRenderStaleArtworkForNewTrack(t *testing.T) {
 
 func TestNowPlayingArtModeClipsLongMetadata(t *testing.T) {
 	m := newModel(nil)
-	m.artMode = true
+	m.artMode, m.cfg.AlbumArt = true, true
 	m.supportsArtColor = func() bool { return true }
 	m.artwork = artworkCache{
 		url:      "https://example.invalid/a.png",
@@ -2726,7 +2726,7 @@ func TestNowPlayingArtModeClipsLongMetadata(t *testing.T) {
 // control icons.
 func TestNowPlayingArtMode_LayoutIsMinimal(t *testing.T) {
 	m := newModel(nil)
-	m.artMode = true
+	m.artMode, m.cfg.AlbumArt = true, true
 	m.supportsArtColor = func() bool { return true }
 	m.artwork = artworkCache{
 		url:      "https://example.invalid/a.png",
@@ -2863,7 +2863,7 @@ func TestNowPlayingArtLines_UsesDitheredRenderer(t *testing.T) {
 	m.stateCh = nil
 	m.supportsArtColor = func() bool { return true }
 	m.renderArt = art.RenderDithered
-	m.artMode = true
+	m.artMode, m.cfg.AlbumArt = true, true
 	m.playerState.Track = &provider.Track{Title: "Song", Artist: "Artist", Album: "Album", ArtworkURL: "https://example.com/cover.png", Duration: time.Minute}
 	m.artwork.url = m.playerState.Track.ArtworkURL
 	m.artwork.img = img
@@ -3184,17 +3184,6 @@ func TestQueuePanel_SelectedTrack_Empty(t *testing.T) {
 			break
 		}
 	}
-}
-
-// ─── discoveryQueries ─────────────────────────────────────────────────────────
-
-type searchMockProvider struct {
-	mockProvider
-	tracks []provider.Track
-}
-
-func (p *searchMockProvider) Search(_ context.Context, _ string) (*provider.SearchResult, error) {
-	return &provider.SearchResult{Tracks: p.tracks}, nil
 }
 
 // ─── safeIdx ──────────────────────────────────────────────────────────────────
@@ -4674,8 +4663,7 @@ func runCmds(cmd tea.Cmd) {
 	if cmd == nil {
 		return
 	}
-	switch msg := cmd().(type) {
-	case tea.BatchMsg:
+	if msg, ok := cmd().(tea.BatchMsg); ok {
 		for _, c := range msg {
 			runCmds(c)
 		}

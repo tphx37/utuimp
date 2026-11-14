@@ -68,6 +68,9 @@ func (p *Provider) scan() error {
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(path))
+		if lyricsExts[ext] {
+			return nil // a song's lyrics, beside it: not a song
+		}
 		if !supportedExts[ext] {
 			p.skipped[ext]++
 			return nil
@@ -282,6 +285,31 @@ func (p *Provider) track(id string) (provider.Track, bool) {
 		return provider.Track{}, false
 	}
 	return p.tracks[i], true
+}
+
+// lyricsExts are the files beside a song that hold its lyrics: an .lrc
+// (synced, or plain lines) or a .txt of the same name.
+var lyricsExts = map[string]bool{".lrc": true, ".txt": true}
+
+// TrackLyrics reads the lyrics kept beside a song: an .lrc of the same name
+// when synced lyrics are asked for, else a .txt, else the .lrc as it is.
+func (p *Provider) TrackLyrics(_ context.Context, trackID string, synced bool) (string, error) {
+	if _, ok := p.track(trackID); !ok {
+		return "", errors.New("no such file")
+	}
+	path := strings.TrimPrefix(trackID, "local:")
+	base := strings.TrimSuffix(path, filepath.Ext(path))
+	exts := []string{".lrc"}
+	if !synced {
+		exts = []string{".txt", ".lrc"}
+	}
+	for _, ext := range exts {
+		b, err := os.ReadFile(base + ext) //nolint:gosec // beside a song in the user's music dir
+		if err == nil && strings.TrimSpace(string(b)) != "" {
+			return string(b), nil
+		}
+	}
+	return "", errors.New("no lyrics beside the song")
 }
 
 func (p *Provider) GetAlbumTracks(_ context.Context, albumID string) ([]provider.Track, error) {

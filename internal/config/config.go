@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/tphx37/utuimp/internal/audioquality"
 )
@@ -36,13 +37,18 @@ type Config struct {
 
 	AppleDeveloperToken string `json:"apple_developer_token"`
 	AppleUserToken      string `json:"apple_user_token"`
-	AppleKeyID          string `json:"apple_key_id"`
-	AppleTeamID         string `json:"apple_team_id"`
-	StoreFront          string `json:"storefront"`
-	AuthPort            int    `json:"auth_port"`
-	Provider            string `json:"provider"`
-	Theme               string `json:"theme"`
-	AudioQuality        string `json:"audio_quality,omitempty"`
+	// AppleTokenSource is whose developer token Apple Music may run on:
+	// AppleTokenVibez (borrow the one of the vibez project), AppleTokenOwn
+	// (only apple_developer_token, from the user's own MusicKit key) or
+	// empty, when the user hasn't been asked yet.
+	AppleTokenSource string `json:"apple_token_source,omitempty"`
+	AppleKeyID       string `json:"apple_key_id"`
+	AppleTeamID      string `json:"apple_team_id"`
+	StoreFront       string `json:"storefront"`
+	AuthPort         int    `json:"auth_port"`
+	Provider         string `json:"provider"`
+	Theme            string `json:"theme"`
+	AudioQuality     string `json:"audio_quality,omitempty"`
 	// Volume is the last user-set playback volume (0.0–1.0). nil means
 	// "not yet saved" and the player default (1.0) is used on startup.
 	Volume *float64 `json:"volume,omitempty"`
@@ -125,6 +131,48 @@ type Config struct {
 	// "sparks" (drifting, as behind the ribbons) or "stars" (standing
 	// still, a steady backdrop for the eye).
 	VisualizerBackground string `json:"visualizer_background,omitempty"`
+	// Graphics says whether pictures are drawn as real pixels in terminals
+	// that can show them (kitty, Ghostty): "" or "auto" where the terminal
+	// is known to, "on" always, "off" never (cells only, as everywhere
+	// else).
+	Graphics string `json:"graphics,omitempty"`
+	// VisualizerDetail is how sharp the visualizer's picture is where it
+	// is drawn in real pixels: "" (smooth, light on the processor) or
+	// "fine" (several times the pixels; several cores).
+	VisualizerDetail string `json:"visualizer_detail,omitempty"`
+	// UIStyle is what the interface's lines are made of: "" (pictures of
+	// fine lines that sway with the music, where the terminal shows real
+	// pixels; cells elsewhere) or StyleSimple (cells everywhere).
+	UIStyle string `json:"ui_style,omitempty"`
+	// The parts of that picture, each on its own (UIStyle StyleSimple turns
+	// them all off): "" is the picture, PartCells the terminal's cells.
+	// UICover: the cover. UILines: the frames, rules, the progress and
+	// volume lines and the mark of the chosen row; LinesCalm draws them
+	// still, not swaying with the music nor answering keys. UIText: the
+	// lyrics and the player's words in the system's font. UIButtons: the
+	// player's buttons. UILight: the light behind the cover, "" or LightOff.
+	UICover   string `json:"ui_cover,omitempty"`
+	UILines   string `json:"ui_lines,omitempty"`
+	UIText    string `json:"ui_text,omitempty"`
+	UIButtons string `json:"ui_buttons,omitempty"`
+	UILight   string `json:"ui_light,omitempty"`
+	// HideHints keeps the key hints at the bottom of the screen out of the
+	// way (H shows and hides them).
+	HideHints bool `json:"hide_hints,omitempty"`
+	// FrameRate is how many frames a second the animations are drawn at:
+	// "" as many as fit the screen's refresh (60 or 72), "60", or "30" to
+	// spare the battery.
+	FrameRate string `json:"frame_rate,omitempty"`
+	// SeekStep is how far ← and → move in the song, in seconds (0: 10).
+	SeekStep int `json:"seek_step,omitempty"`
+	// VolumeStep is how far + and - turn the volume, in percent (0: 5).
+	VolumeStep int `json:"volume_step,omitempty"`
+	// LyricsSize is the size of the cover view's lyrics drawn as a picture:
+	// "" normal, "small" or "large".
+	LyricsSize string `json:"lyrics_size,omitempty"`
+	// Notify is when a new song is announced on the desktop: "" never,
+	// "away" while utuimp's window is not the one in use, "always".
+	Notify string `json:"notify,omitempty"`
 	// UIMotion is how lively the interface is: "off", "calm" (a flash on
 	// keys and song changes), "lively" (and the borders move to the beat;
 	// the default) or "wild".
@@ -180,6 +228,22 @@ func (c *Config) SetLyricsSource(trackID, source string) {
 	c.LyricsSources[trackID] = source
 }
 
+// StyleSimple is the Config.UIStyle that keeps the interface in cells.
+const StyleSimple = "simple"
+
+// The values of the parts of the interface's picture (see Config.UICover).
+const (
+	PartCells = "cells"
+	LinesCalm = "calm"
+	LightOff  = "off"
+)
+
+// Values of Config.AppleTokenSource.
+const (
+	AppleTokenVibez = "vibez"
+	AppleTokenOwn   = "own"
+)
+
 type EQBand struct {
 	Frequency float64 `json:"frequency"`
 	Q         float64 `json:"q"`
@@ -225,6 +289,42 @@ func (c *Config) VizBrightness() float64 {
 	}
 	return float64(min(150, max(10, *c.VisualizerBrightness))) / 100
 }
+
+// SeekStepDur is how far ← and → move in the song (see SeekStep).
+func (c *Config) SeekStepDur() time.Duration {
+	if c.SeekStep <= 0 {
+		return 10 * time.Second
+	}
+	return time.Duration(min(c.SeekStep, 600)) * time.Second
+}
+
+// VolumeStepFrac is how far + and - turn the volume, 0..1 (see VolumeStep).
+func (c *Config) VolumeStepFrac() float64 {
+	if c.VolumeStep <= 0 {
+		return 0.05
+	}
+	return float64(min(c.VolumeStep, 50)) / 100
+}
+
+// LyricsScale is how much larger than normal the cover view's lyrics are
+// drawn (see LyricsSize).
+func (c *Config) LyricsScale() float64 {
+	switch c.LyricsSize {
+	case LyricsSmall:
+		return 0.8
+	case LyricsLarge:
+		return 1.25
+	}
+	return 1
+}
+
+// Lyrics sizes, see LyricsSize; notification modes, see Notify.
+const (
+	LyricsSmall  = "small"
+	LyricsLarge  = "large"
+	NotifyAway   = "away"
+	NotifyAlways = "always"
+)
 
 // UI motion levels, see UIMotion.
 const (

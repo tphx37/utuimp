@@ -24,6 +24,16 @@
   <a href="docs/README.md">all docs</a>
 </p>
 
+<p align="center">
+  <img src="assets/readme/cover.png" alt="the cover view: the album art, synced lyrics in large letters, the progress line in the cover's colours" width="49%">
+  <img src="assets/readme/viz.png" alt="the fullscreen visualizer: glowing ribbons that move with the music" width="49%">
+</p>
+<p align="center">
+  <img src="assets/readme/boxed.png" alt="the boxed view: the player on top, search results below" width="49%">
+  <img src="assets/readme/mono.png" alt="the mono theme: a grey interface that keeps the song's colours" width="49%">
+</p>
+
+
 
 ## install
 
@@ -50,12 +60,9 @@ building from source, requirements, uninstalling - see [docs/install.md](docs/in
 
 ## first start
 
-utuimp asks a few things: language, which services you use, discord status,
-how strong the visualizer is. change any of it later:
-
-```bash
-utuimp setup
-```
+the first start opens the settings: turn on the services you use, pick the
+language, theme and look. `,` opens them again any time (or start on them
+with `utuimp setup`).
 
 each service signs in the first time you open its tab. details - see [docs/services.md](docs/services.md)
 
@@ -65,7 +72,7 @@ each service signs in the first time you open its tab. details - see [docs/servi
 |---|---|
 | `space` | play / pause |
 | `n` `p` | next / previous |
-| `←` `→` | 10 seconds back / forward |
+| `←` `→` | 10 seconds back / forward (the step is in the settings) |
 | `+` `-` | volume |
 | `f` | favorite |
 | `s` `r` | shuffle, repeat |
@@ -79,6 +86,8 @@ each service signs in the first time you open its tab. details - see [docs/servi
 | `e` | equalizer |
 | `v` | boxed view ↔ cover view |
 | `V` | fullscreen visualizer |
+| `,` | settings |
+| `H` | hide the key hints at the bottom (again: back) |
 | `:` | commands (`:vol 50`, `:save name`, `:q`) |
 | `esc` | back |
 
@@ -90,10 +99,16 @@ two views. the **boxed** one shows panels side by side. the **cover** one is
 a frameless fullscreen player with the album art and the lyrics. `v` switches
 between them.
 
+in kitty and ghostty the interface is drawn in real pixels under the text:
+fine lines that sway with the music, the cover itself with a light behind
+it, the lyrics large in your system's font, and nothing changes at a stroke,
+at sixty frames a second. each part can be left in plain characters, or all
+of it, in settings → graphics. see [docs/usage.md](docs/usage.md#the-look)
+
 `V` turns the whole terminal into a visualizer with six different scenes that reacts to the sound. see [docs/visualizer.md](docs/visualizer.md)
 
 colours follow your terminal by default (`system` theme), or pick `dracula`,
-`gruvbox`, `nord`, `classic`. see [docs/configuration.md](docs/configuration.md)
+`gruvbox`, `nord`, `classic`, or `mono` (black and white). see [docs/configuration.md](docs/configuration.md)
 
 ## something's off
 
@@ -111,6 +126,9 @@ type `:debug-logs` inside utuimp to see what happened, and check
 utuimp started as a fork of [vibez](https://github.com/simonepelosi/vibez) by
 simonepelosi. for credits see
 [docs/credits.md](docs/credits.md)
+
+apple music runs on the developer token of vibez, not on one of utuimp's
+own. see [docs/apple-music-tokens.md](docs/apple-music-tokens.md).
 
 not affiliated with yandex, apple, spotify, google or soundcloud.
 

@@ -163,7 +163,7 @@ func (p *Provider) aacViaFFmpeg(ctx context.Context, u string) (io.ReadCloser, e
 	}
 	base := resp.Request.URL
 	var out bytes.Buffer
-	for _, line := range strings.Split(string(body), "\n") {
+	for line := range strings.SplitSeq(string(body), "\n") {
 		line = strings.TrimSpace(line)
 		if line != "" && !strings.HasPrefix(line, "#") {
 			if ref, err := url.Parse(line); err == nil {

@@ -86,7 +86,38 @@ terminal's palette, the others use fixed colours. See
 256 colours (true colour looks best).
 
 **Something fades in and you'd rather it didn't.** `ui_motion: "off"` in the
-config, or `utuimp setup interface`.
+config, or `utuimp setup interface`. That puts the whole interface in
+characters: for the pixel lines standing still instead, choose Settings →
+Graphics → Frames and lines: still.
+
+**The pixel interface is gone (lines, the cover as a picture).** It needs
+kitty or Ghostty, and is off with Animation off or Graphics → Pixel
+interface off. Not in tmux nor over ssh.
+
+**The lyrics are in the terminal's letters, not drawn large.** Drawn text
+needs fontconfig (`fc-match` on the path) and a font it finds; otherwise, or
+with Graphics → Text: terminal, they stay letters.
+
+**utuimp uses more processor than you'd like.** While a song plays the
+interface keeps a fraction of one core busy (it draws as many frames a
+second as fit the screen, 60 or 72, see
+[Environment variables](configuration.md#environment-variables)); paused,
+next to nothing. `UTUIMP_FPS=60` on a 144 Hz screen is a little cheaper and
+a little less smooth. The visualizer is the heavy part, see
+[Visualizer](visualizer.md#real-pixels). On battery: Graphics → Frames and
+lines: still, Light behind the cover: off, or Pixel interface: off for the
+least.
+
+**Animations stutter.** Note where (a view change, the lyrics, opening a
+panel, a visualizer scene) and run `UTUIMP_FRAMES=/tmp/frames.log utuimp`
+while it happens: every frame of every animation is in it, with how long it
+took. Attach the log to the [issue](#reporting-a-bug), and say how often
+your screen refreshes.
+
+**A picture is in the wrong place, or one is left behind.** Run
+`UTUIMP_LINES_LOG=/tmp/lines.log utuimp`, show it happening, and attach the
+log (it holds no songs nor accounts) to the [issue](#reporting-a-bug), with
+your terminal and its version.
 
 **The visualizer makes you dizzy.** Turn its strength down with `[`, or to
 0 in `utuimp setup visualizer`, see [Visualizer](visualizer.md#strength).

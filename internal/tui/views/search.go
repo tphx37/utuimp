@@ -3,10 +3,11 @@ package views
 import (
 	"context"
 	"fmt"
-	"github.com/tphx37/utuimp/internal/i18n"
 	"image/color"
 	"strings"
 	"time"
+
+	"github.com/tphx37/utuimp/internal/i18n"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"

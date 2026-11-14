@@ -208,9 +208,7 @@ func (p *Provider) Search(ctx context.Context, query string) (*provider.SearchRe
 	if arts != nil {
 		res.Artists = make([]provider.Artist, len(arts.Entries))
 		for i, e := range arts.Entries {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				d, err := p.flat(ctx, "https://music.youtube.com/browse/"+url.PathEscape(e.ID), 1)
 				if err != nil {
 					return
@@ -222,7 +220,7 @@ func (p *Provider) Search(ctx context.Context, query string) (*provider.SearchRe
 				mu.Lock()
 				res.Artists[i] = provider.Artist{ID: e.ID, Name: cleanName(name)}
 				mu.Unlock()
-			}()
+			})
 		}
 	}
 	wg.Wait()
@@ -240,9 +238,7 @@ func (p *Provider) searchAlbums(ctx context.Context, query string, limit int) ([
 	out := make([]provider.Album, len(d.Entries))
 	var wg sync.WaitGroup
 	for i, e := range d.Entries {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			d, err := p.flat(ctx, listURL(e.ID), 1)
 			if err != nil || d.Title == "" {
 				return
@@ -255,7 +251,7 @@ func (p *Provider) searchAlbums(ctx context.Context, query string, limit int) ([
 				a.Artist = provider.Clean(artistName(d.Entries[0]))
 			}
 			out[i] = a
-		}()
+		})
 	}
 	wg.Wait()
 	return slices.DeleteFunc(out, func(a provider.Album) bool { return a.Title == "" }), nil

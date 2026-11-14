@@ -1,6 +1,7 @@
 package views
 
 import (
+	"slices"
 	"strings"
 	"time"
 
@@ -157,9 +158,9 @@ func (l *LyricsModel) CoverView(w, h int) []string {
 	var above []placed
 	for i := focus - 1; i >= 0 && len(above) < anchor; i-- {
 		block := l.coverBlock(i, w)
-		rows := append(block, coverRow{line: -1})
-		for j := len(rows) - 1; j >= 0; j-- {
-			above = append(above, placed{rows[j], i - focus})
+		rows := append(slices.Clip(block), coverRow{line: -1}) // a copy: the block is not changed
+		for _, row := range slices.Backward(rows) {
+			above = append(above, placed{row, i - focus})
 		}
 	}
 	var below []placed

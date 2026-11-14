@@ -2,16 +2,19 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/tphx37/utuimp/internal/i18n"
 	"os"
 	"path/filepath"
+	"runtime/pprof"
 	"strings"
+
+	"github.com/tphx37/utuimp/internal/i18n"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/spf13/cobra"
 	"github.com/tphx37/utuimp/internal/assets"
 	"github.com/tphx37/utuimp/internal/config"
+	"github.com/tphx37/utuimp/internal/gfx"
 	demoPlayer "github.com/tphx37/utuimp/internal/player/demo"
 	demoProvider "github.com/tphx37/utuimp/internal/provider/demo"
 	"github.com/tphx37/utuimp/internal/tui"
@@ -43,9 +46,33 @@ var rootCmd = &cobra.Command{
 }
 
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
+	stop := startCPUProfile()
+	err := rootCmd.Execute()
+	stop()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+}
+
+// startCPUProfile records where the CPU time goes when UTUIMP_CPUPROFILE
+// names a file, for "go tool pprof"; the returned func writes it out.
+func startCPUProfile() (stop func()) {
+	path := os.Getenv("UTUIMP_CPUPROFILE")
+	if path == "" {
+		return func() {}
+	}
+	f, err := os.Create(path) //nolint:gosec // a path the user gave
+	if err != nil {
+		return func() {}
+	}
+	if pprof.StartCPUProfile(f) != nil {
+		_ = f.Close()
+		return func() {}
+	}
+	return func() {
+		pprof.StopCPUProfile()
+		_ = f.Close()
 	}
 }
 
@@ -125,19 +152,26 @@ func runTUI(_ *cobra.Command, _ []string) error {
 	} else {
 		i18n.Set(i18n.Detect())
 	}
-	// First run: a few quick questions (utuimp setup changes them later).
-	if !cfg.SetupDone && !demo && isInteractive() {
-		if err := runSetup(cfg, os.Stdin, os.Stdout); err != nil {
-			return err
+	opts := tui.Options{MemProfiling: memProfiling, OpenSettings: openSettings}
+	firstRun := false
+	// First run: the settings open by themselves, with a greeting.
+	if !cfg.SetupDone && !demo {
+		cfg.SetupDone = true
+		if len(cfg.Services) == 0 {
+			// Apple Music waits for the user to say whose token it may use.
+			cfg.Services = []string{"yandex", "local"}
 		}
+		if err := cfg.Save(cfgFile); err != nil {
+			return fmt.Errorf("saving config: %w", err)
+		}
+		opts.OpenSettings, opts.Welcome = "services", true
+		firstRun = true
 	}
 
 	audioBitrateKbps, err := cfg.AudioBitrateKbps()
 	if err != nil {
 		return err
 	}
-
-	opts := tui.Options{MemProfiling: memProfiling}
 
 	// Apply theme before creating any TUI model so all panels pick up the palette.
 	theme, themeErr := styles.LoadTheme(cfg.Theme, filepath.Dir(cfgPath))
@@ -154,6 +188,8 @@ func runTUI(_ *cobra.Command, _ []string) error {
 	}
 	styles.Apply(theme)
 	styles.QueryPalette()
+	gfx.CleanStale()
+	defer gfx.CleanOwn()
 
 	if musicDir != "" {
 		cfg.MusicDir = musicDir
@@ -192,6 +228,10 @@ func runTUI(_ *cobra.Command, _ []string) error {
 
 	initial := ""
 	switch {
+	case firstRun:
+		// Local files ask for no sign-in: nothing gets in the way of the
+		// settings a new user is looking at.
+		initial = "local"
 	case useApple:
 		initial = "apple"
 	case local:
@@ -203,9 +243,24 @@ func runTUI(_ *cobra.Command, _ []string) error {
 // programOptions are the Bubble Tea options every utuimp program uses. On
 // the Linux console the output is held to its 16 colours, so the palette
 // indices console mode draws with reach it as they are.
+// programOptions is how the interface runs. It also sets the pace the
+// screen is drawn at to fit the display's refresh (see tui.InitScreenPace),
+// as the program starts.
 func programOptions() []tea.ProgramOption {
+	tui.InitScreenPace()
+	// Bubble Tea writes what was drawn (and the pictures with it) to the
+	// terminal on a clock of its own, sixty times a second by default.
+	// Against the screen's pace that clock beats: now and then two frames
+	// went out together and the next one late, and what moved jerked.
+	// At its fastest a frame goes out within a few milliseconds of being
+	// drawn; a flush with nothing new writes nothing.
+	// The terminal, shared: pictures are written to it the moment their
+	// frame is drawn, not on Bubble Tea's clock (see tui.SharedOutput).
+	out := tui.NewSharedOutput(os.Stdout)
+	tui.SetDirectOutput(out)
+	opts := []tea.ProgramOption{tea.WithFPS(120), tea.WithOutput(out)}
 	if styles.Console {
-		return []tea.ProgramOption{tea.WithColorProfile(colorprofile.ANSI)}
+		opts = append(opts, tea.WithColorProfile(colorprofile.ANSI))
 	}
-	return nil
+	return opts
 }

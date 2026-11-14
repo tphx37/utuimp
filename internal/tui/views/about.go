@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"image/color"
 	"strings"
+	"time"
 
+	"github.com/tphx37/utuimp/internal/auth"
 	"github.com/tphx37/utuimp/internal/i18n"
 
 	tea "charm.land/bubbletea/v2"
@@ -27,6 +29,31 @@ func NewAbout() *AboutModel {
 func (a *AboutModel) SetSize(w, h int) {
 	a.width = w
 	a.height = h
+}
+
+// appleTokenLine says whose Apple Music developer token is in use and for
+// how long; empty when Apple Music hasn't asked for one.
+func appleTokenLine(now time.Time) string {
+	info := auth.DeveloperTokenInfo()
+	var who string
+	switch info.Source {
+	case auth.SourceVibez:
+		who = i18n.T("Apple Music runs on the developer token of vibez")
+	case auth.SourceOwn, auth.SourceBuild:
+		who = i18n.T("Apple Music runs on your own developer token")
+	case auth.SourceBroker:
+		who = i18n.T("Apple Music runs on utuimp's developer token")
+	default:
+		return ""
+	}
+	if info.Expires.IsZero() {
+		return who
+	}
+	left := info.Expires.Sub(now)
+	if left <= 0 {
+		return who + " · " + i18n.T("expired")
+	}
+	return who + " · " + fmt.Sprintf(i18n.T("%d d left"), int(left.Hours()/24))
 }
 
 func (a *AboutModel) Update(tea.KeyPressMsg) tea.Cmd { return nil }
@@ -54,6 +81,9 @@ func (a *AboutModel) View() string {
 		lipgloss.NewStyle().Foreground(styles.ColorSubtle).Underline(true).Render("https://github.com/tphx37/utuimp"),
 	}
 
+	if line := appleTokenLine(time.Now()); line != "" {
+		contentLines = append(contentLines, "", muted.Render(line))
+	}
 	if a.status != "" {
 		contentLines = append(contentLines, "", styles.ControlActive.Render(a.status))
 	}

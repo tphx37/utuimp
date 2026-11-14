@@ -129,7 +129,7 @@ func TestLoginPKCE(t *testing.T) {
 	// The "browser": follow the consent URL's redirect back with a code.
 	open := func(start string) error {
 		// utuimp's own page first; its button is the consent URL.
-		resp, err := http.Get(start)
+		resp, err := http.Get(start) //nolint:gosec,noctx // the test's own local server
 		if err != nil {
 			t.Errorf("start page: %v", err)
 			return nil

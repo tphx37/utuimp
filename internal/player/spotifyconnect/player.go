@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"math"
 	"net/http"
 	"net/url"
@@ -372,9 +373,7 @@ func (p *Player) simple(method, path string, extra url.Values) error {
 	if err != nil {
 		return p.fail(err)
 	}
-	for k, v := range extra {
-		q[k] = v
-	}
+	maps.Copy(q, extra)
 	return p.fail(p.c.Do(ctx, method, path, q, nil, nil))
 }
 

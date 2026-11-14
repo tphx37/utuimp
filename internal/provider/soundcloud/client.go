@@ -86,7 +86,7 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, body
 	if body != nil {
 		payload, _ = json.Marshal(body)
 	}
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := range 2 {
 		req, err := http.NewRequestWithContext(ctx, method, u, bytes.NewReader(payload))
 		if err != nil {
 			return nil, err

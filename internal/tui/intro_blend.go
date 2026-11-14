@@ -1,10 +1,11 @@
 package tui
 
 import (
-	"github.com/tphx37/utuimp/internal/tui/styles"
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/tphx37/utuimp/internal/tui/styles"
 
 	"github.com/charmbracelet/x/ansi"
 )
@@ -310,7 +311,7 @@ func parseCellsInto(buf [][]uiCell, frame string, w, h int, fg, bg [3]uint8) [][
 		case b == 0x1b && i+1 < len(frame) && frame[i+1] == ']':
 			// OSC (a hyperlink): up to BEL or ST.
 			j := i + 2
-			for j < len(frame) && frame[j] != 0x07 && !(frame[j] == 0x1b && j+1 < len(frame) && frame[j+1] == '\\') {
+			for j < len(frame) && frame[j] != 0x07 && (frame[j] != 0x1b || j+1 >= len(frame) || frame[j+1] != '\\') {
 				j++
 			}
 			if j < len(frame) && frame[j] == 0x07 {
@@ -327,7 +328,7 @@ func parseCellsInto(buf [][]uiCell, frame string, w, h int, fg, bg [3]uint8) [][
 			i++
 		default:
 			r, size := utf8.DecodeRuneInString(frame[i:])
-			ch := frame[i : i+size]
+			start := i
 			i += size
 			// Combining marks and variation selectors join the cell before.
 			for i < len(frame) {
@@ -335,11 +336,13 @@ func parseCellsInto(buf [][]uiCell, frame string, w, h int, fg, bg [3]uint8) [][
 				if r2 < 0x300 || ansi.StringWidth(string(r2)) != 0 || r2 == 0x1b {
 					break
 				}
-				ch += frame[i : i+s2]
 				i += s2
 			}
+			// The cell's letter and what joined it: one piece of the frame
+			// (no copy: this runs for every cell of every frame).
+			ch := frame[start:i]
 			width := 1
-			if len(ch) != size || r >= 0x1100 && !(r >= 0x2500 && r <= 0x25ff) {
+			if len(ch) != size || r >= 0x1100 && (r < 0x2500 || r > 0x25ff) {
 				width = ansi.StringWidth(ch) // box drawing and blocks are narrow
 			}
 			if r < 0x20 {

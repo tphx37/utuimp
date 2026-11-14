@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -155,12 +156,17 @@ func mp4Duration(f io.ReaderAt, size int64) time.Duration {
 			n := int64(binary.BigEndian.Uint32(hdr[:4]))
 			typ := string(hdr[4:8])
 			hl := int64(8)
-			if n == 1 {
+			switch n {
+			case 1:
 				if _, err := f.ReadAt(hdr[8:16], pos+8); err != nil {
 					return 0
 				}
-				n, hl = int64(binary.BigEndian.Uint64(hdr[8:16])), 16
-			} else if n == 0 {
+				big := binary.BigEndian.Uint64(hdr[8:16])
+				if big > math.MaxInt64 {
+					return 0 // no file is that long: a broken one
+				}
+				n, hl = int64(big), 16
+			case 0:
 				n = end - pos
 			}
 			if n < hl {
@@ -179,7 +185,11 @@ func mp4Duration(f io.ReaderAt, size int64) time.Duration {
 				var scale, dur int64
 				if b[0] == 1 {
 					scale = int64(binary.BigEndian.Uint32(b[20:24]))
-					dur = int64(binary.BigEndian.Uint64(b[24:32]))
+					d := binary.BigEndian.Uint64(b[24:32])
+					if d > math.MaxInt64 {
+						return 0 // a broken length
+					}
+					dur = int64(d)
 				} else {
 					scale = int64(binary.BigEndian.Uint32(b[12:16]))
 					dur = int64(binary.BigEndian.Uint32(b[16:20]))

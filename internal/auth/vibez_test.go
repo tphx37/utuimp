@@ -76,12 +76,12 @@ func TestVerifyChecksum(t *testing.T) {
 	}
 }
 
-func TestRunUpstreamForTokenUsesSandbox(t *testing.T) {
+func TestRunVibezForTokenUsesSandbox(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake binary")
 	}
 	tok := jwtExpiring(time.Now().Add(7 * 24 * time.Hour))
-	// The fake upstream checks it was sandboxed (HOME is not the real one,
+	// The fake vibez checks it was sandboxed (HOME is not the real one,
 	// --no-update passed, its config exists) and then caches a token.
 	script := fmt.Sprintf(`#!/bin/sh
 [ "$1" = "--no-update" ] || exit 3
@@ -92,11 +92,11 @@ printf '{"token":"%s","expires_at":%d}' > "$XDG_CACHE_HOME/vibez/devtoken.json"
 /bin/sleep 30
 `, tok, time.Now().Add(7*24*time.Hour).Unix())
 	bin := filepath.Join(t.TempDir(), "vibez")
-	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil { //nolint:gosec // a fake program: it must run
 		t.Fatal(err)
 	}
 	start := time.Now()
-	c, err := runUpstreamForToken(context.Background(), bin)
+	c, err := runVibezForToken(context.Background(), bin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,10 +110,10 @@ printf '{"token":"%s","expires_at":%d}' > "$XDG_CACHE_HOME/vibez/devtoken.json"
 
 func TestResolveWithoutBroker(t *testing.T) {
 	now := time.Now()
-	t.Cleanup(func() { upstreamRefresh = nil })
+	t.Cleanup(func() { vibezRefresh = nil })
 	calls := 0
 	fresh := jwtExpiring(now.Add(7 * 24 * time.Hour))
-	upstreamRefresh = func(context.Context, string) (cachedToken, error) {
+	vibezRefresh = func(context.Context, string) (cachedToken, error) {
 		calls++
 		return cachedToken{Token: fresh, ExpiresAt: now.Add(7 * 24 * time.Hour).Unix()}, nil
 	}
@@ -127,22 +127,60 @@ func TestResolveWithoutBroker(t *testing.T) {
 	}
 
 	// Expiring: refresh, and cache the result for next time.
-	cfg = &config.Config{AppleDeveloperToken: jwtExpiring(now.Add(time.Hour))}
+	cfg = &config.Config{AppleTokenSource: config.AppleTokenVibez, AppleDeveloperToken: jwtExpiring(now.Add(time.Hour))}
 	if err := resolveWithoutBroker(cfg, now); err != nil || cfg.AppleDeveloperToken != fresh || calls != 1 {
 		t.Fatalf("expiring token: got fresh=%v calls=%d err=%v", cfg.AppleDeveloperToken == fresh, calls, err)
 	}
-	cfg = &config.Config{AppleDeveloperToken: jwtExpiring(now.Add(time.Hour))}
+	cfg = &config.Config{AppleTokenSource: config.AppleTokenVibez, AppleDeveloperToken: jwtExpiring(now.Add(time.Hour))}
 	if err := resolveWithoutBroker(cfg, now); err != nil || cfg.AppleDeveloperToken != fresh || calls != 1 {
 		t.Fatalf("second start should use the cache, calls=%d", calls)
 	}
 
 	// Refresh failing keeps the old token rather than failing start-up.
 	_ = os.Remove(cachePath())
-	upstreamRefresh = func(context.Context, string) (cachedToken, error) { return cachedToken{}, errors.New("offline") }
+	vibezRefresh = func(context.Context, string) (cachedToken, error) { return cachedToken{}, errors.New("offline") }
 	old := jwtExpiring(now.Add(time.Hour))
-	cfg = &config.Config{AppleDeveloperToken: old}
+	cfg = &config.Config{AppleTokenSource: config.AppleTokenVibez, AppleDeveloperToken: old}
 	if err := resolveWithoutBroker(cfg, now); err != nil || cfg.AppleDeveloperToken != old {
 		t.Errorf("failed refresh: err=%v kept=%v", err, cfg.AppleDeveloperToken == old)
+	}
+}
+
+// vibez is only asked for a token once the user has agreed to it.
+func TestResolveWithoutBrokerNeedsConsent(t *testing.T) {
+	now := time.Now()
+	t.Cleanup(func() { vibezRefresh = nil })
+	calls := 0
+	fresh := jwtExpiring(now.Add(7 * 24 * time.Hour))
+	vibezRefresh = func(context.Context, string) (cachedToken, error) {
+		calls++
+		return cachedToken{Token: fresh, ExpiresAt: now.Add(7 * 24 * time.Hour).Unix()}, nil
+	}
+	_ = os.Remove(cachePath())
+
+	cfg := &config.Config{}
+	if err := resolveWithoutBroker(cfg, now); !errors.Is(err, ErrVibezNotAllowed) || calls != 0 {
+		t.Fatalf("not asked yet: err=%v calls=%d", err, calls)
+	}
+	cfg = &config.Config{AppleTokenSource: config.AppleTokenOwn}
+	if err := resolveWithoutBroker(cfg, now); err == nil || errors.Is(err, ErrVibezNotAllowed) || calls != 0 {
+		t.Fatalf("own key, no token: err=%v calls=%d", err, calls)
+	}
+	// A token that still works keeps working without asking vibez.
+	old := jwtExpiring(now.Add(time.Hour))
+	cfg = &config.Config{AppleDeveloperToken: old}
+	if err := resolveWithoutBroker(cfg, now); err != nil || cfg.AppleDeveloperToken != old || calls != 0 {
+		t.Fatalf("old token: err=%v calls=%d", err, calls)
+	}
+	if got := DeveloperTokenInfo().Source; got != SourceOwn {
+		t.Errorf("source = %q, want own", got)
+	}
+	cfg = &config.Config{AppleTokenSource: config.AppleTokenVibez}
+	if err := resolveWithoutBroker(cfg, now); err != nil || cfg.AppleDeveloperToken != fresh || calls != 1 {
+		t.Fatalf("allowed: err=%v calls=%d", err, calls)
+	}
+	if got := DeveloperTokenInfo().Source; got != SourceVibez {
+		t.Errorf("source = %q, want vibez", got)
 	}
 }
 

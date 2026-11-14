@@ -59,10 +59,21 @@ func TestVisualizer_FullscreenFrame(t *testing.T) {
 	if !m.vizOpen() {
 		t.Fatal("V should open the visualizer")
 	}
+	// Just opened, the picture is still opening out of the middle: its
+	// corners are dark, its middle is not.
+	m.viz.openedAt = time.Now().Add(-time.Duration(vizOpenFor * 0.45 * float64(time.Second)))
+	m.vizStep()
+	v0 := m.viz
+	sum := func(c vcol) float64 { return c.r + c.g + c.b }
+	if corner, mid := sum(v0.out[0]), sum(v0.out[(v0.h2/2)*v0.w+v0.w/2]); corner > 0.001 {
+		t.Errorf("while it opens the corners are still dark: corner %.3f, middle %.3f", corner, mid)
+	}
+	m.viz.openedAt = time.Now().Add(-time.Minute) // open
+	m.viz.hintUntil = time.Now().Add(time.Minute) // and its hint up, however slow this machine draws
 	for scene := range sceneCount {
 		m.viz.scene = scene
 		for range 90 { // three seconds at 30 fps
-			m.viz.last = time.Now().Add(-vizFrame)
+			m.viz.last = time.Now().Add(-screenFrame)
 			m.vizStep()
 		}
 		if !m.viz.live {
@@ -123,6 +134,7 @@ func TestVisualizer_Keys(t *testing.T) {
 	if m.viz.scene != 1 || m.cfg.VisualizerScene != vizSceneNames[1] {
 		t.Errorf("tab should switch to the next scene and remember it, got %d %q", m.viz.scene, m.cfg.VisualizerScene)
 	}
+	m.vizStep() // the next frame
 	if !strings.Contains(ansi.Strip(m.View().Content), vizSceneNames[1]) {
 		t.Error("switching scenes should name the new one")
 	}
@@ -281,11 +293,11 @@ func dumpViz(t *testing.T, v *visualizer, name string) {
 			}
 		}
 	}
-	f, err := os.Create(filepath.Join(dir, name+".png"))
+	f, err := os.Create(filepath.Join(dir, name+".png")) //nolint:gosec // a directory the tester asked for
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := png.Encode(f, img); err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +320,7 @@ func TestVisualizer_Console(t *testing.T) {
 	for scene := range sceneCount {
 		m.viz.scene = scene
 		for range 45 {
-			m.viz.last = time.Now().Add(-vizFrame)
+			m.viz.last = time.Now().Add(-screenFrame)
 			m.vizStep()
 		}
 		frame := m.View().Content
@@ -405,7 +417,7 @@ func dumpVizConsole(t *testing.T, v *visualizer, name string) {
 					case "▒":
 						on = (x+y)%2 == 0
 					case "▓":
-						on = !(x%2 == 0 && y%2 == 0 && (x/2+y/2)%2 == 0 || x%4 == 2 && y%4 == 2)
+						on = (x%2 != 0 || y%2 != 0 || (x/2+y/2)%2 != 0) && (x%4 != 2 || y%4 != 2)
 					}
 					c := rgb(bg)
 					if on {
@@ -416,11 +428,11 @@ func dumpVizConsole(t *testing.T, v *visualizer, name string) {
 			}
 		}
 	}
-	f, err := os.Create(filepath.Join(dir, name+".png"))
+	f, err := os.Create(filepath.Join(dir, name+".png")) //nolint:gosec // a directory the tester asked for
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := png.Encode(f, img); err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +494,7 @@ func TestVisualizer_InfoLine(t *testing.T) {
 	m.openVisualizer()
 	m.handleKey(tea.KeyPressMsg{Code: 'i', Text: "i"})
 	for range 10 {
-		m.viz.last = time.Now().Add(-vizFrame)
+		m.viz.last = time.Now().Add(-screenFrame)
 		m.vizStep()
 	}
 	if plain := ansi.Strip(m.View().Content); !strings.Contains(plain, "sound +0 ms") || !strings.Contains(plain, "hits/s") {
@@ -507,7 +519,7 @@ func TestVisualizer_MarginTakesThePicturesColour(t *testing.T) {
 	}
 	m.openVisualizer()
 	for range 10 {
-		m.viz.last = time.Now().Add(-vizFrame)
+		m.viz.last = time.Now().Add(-screenFrame)
 		m.vizStep()
 	}
 	bg := m.View().BackgroundColor
@@ -516,7 +528,7 @@ func TestVisualizer_MarginTakesThePicturesColour(t *testing.T) {
 	}
 	r, g, b, _ := bg.RGBA()
 	e := m.viz.edge
-	if uint8(r>>8) != e[0] || uint8(g>>8) != e[1] || uint8(b>>8) != e[2] {
+	if uint8(r>>8) != e[0] || uint8(g>>8) != e[1] || uint8(b>>8) != e[2] { //nolint:gosec // 16-bit channels: their top byte
 		t.Errorf("background %v, want the edge colour %v", bg, e)
 	}
 	m.handleKey(tea.KeyPressMsg{Code: tea.KeyEscape})
@@ -544,5 +556,40 @@ func TestViz_BrightnessKeys(t *testing.T) {
 	}
 	if m.viz.bright != 0.1 {
 		t.Errorf("the floor is 10%%: %v", m.viz.bright)
+	}
+}
+
+// The scenes' quick remainders give what math.Mod does.
+func TestVisualizer_Fmod(t *testing.T) {
+	seed := uint32(7)
+	next := func() float64 {
+		seed ^= seed << 13
+		seed ^= seed >> 17
+		seed ^= seed << 5
+		return (float64(seed)/math.MaxUint32 - 0.5) * 2000
+	}
+	for range 100000 {
+		x := next()
+		if a, b := fmod1(x), math.Mod(x, 1); a != b {
+			t.Fatalf("fmod1(%v) = %v, math.Mod gives %v", x, a, b)
+		}
+		if a, b := fmodN(x, 2), math.Mod(x, 2); a != b {
+			t.Fatalf("fmodN(%v, 2) = %v, math.Mod gives %v", x, a, b)
+		}
+		if a, b := fmodN(math.Floor(x), 72), math.Mod(math.Floor(x), 72); a != b {
+			t.Fatalf("fmodN(%v, 72) = %v, math.Mod gives %v", math.Floor(x), a, b)
+		}
+	}
+}
+
+// The scenes' quick sine keeps to math's far closer than a colour can show.
+func TestVisualizer_FastSin(t *testing.T) {
+	worst := 0.0
+	for i := range 200000 {
+		x := (float64(i)/200000 - 0.5) * 2000
+		worst = math.Max(worst, math.Abs(fsin(x)-math.Sin(x)))
+	}
+	if worst > 1e-6 {
+		t.Errorf("off by up to %.2g", worst)
 	}
 }

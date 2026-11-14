@@ -28,18 +28,19 @@ import (
 // config.UIMotion turns it off; on the Linux console there is none.
 
 const (
-	fxFrame    = 33 * time.Millisecond
 	fxTrackFor = 0.6 // seconds
 	fxWipeFor  = 0.45
 )
 
 type fxTickMsg struct{ gen int }
 
-func fxTick(gen int, d time.Duration) tea.Cmd {
-	return tea.Tick(d, func(time.Time) tea.Msg { return fxTickMsg{gen} })
+// fxTick asks for the next frame on the beat kept in *due (see nextFrame).
+func fxTick(gen int, due *time.Time) tea.Cmd {
+	return frameTick(due, screenFrame, func() tea.Msg { return fxTickMsg{gen} })
 }
 
 type uiFX struct {
+	due     time.Time // when the frame is due (see nextFrame)
 	ticking bool
 	gen     int
 	last    time.Time
@@ -96,7 +97,7 @@ func (m *Model) fxBusy(now time.Time) bool {
 	if f == nil {
 		return false
 	}
-	return fxAge(f.trackAt, now) < fxTrackFor || fxAge(f.wipeAt, now) < fxWipeFor
+	return fxAge(f.trackAt, now) < fxTrackFor || fxAge(f.wipeAt, now) < fxWipeFor || m.hintsMoving(now)
 }
 
 // fxEnsure notices what changed since the last message (a new song, another
@@ -119,21 +120,25 @@ func (m *Model) fxEnsure() tea.Cmd {
 		sig := strings.Join([]string{
 			strconv.Itoa(m.activePanel), strconv.Itoa(int(mode)), boolS(m.coverView), boolS(m.debugView),
 		}, ",")
-		if f.sig != "" && sig != f.sig {
-			f.wipeAt = now
+		if f.sig != "" && sig != f.sig && fxAge(f.wipeAt, now) > fxWipeFor*0.7 {
+			f.wipeAt = now // one still under way goes on (a held key)
 		}
 		f.sig = sig
 	}
-	if m.trackChangedAt.After(f.trackAt) {
-		f.trackAt = m.trackChangedAt
+	if m.trackChangedAt.After(f.trackAt) && fxAge(f.trackAt, now) > fxTrackFor*0.7 {
+		f.trackAt = m.trackChangedAt // likewise
 	}
-	if f.ticking || !m.fxBusy(now) || m.vizOpen() || m.introStep != introDone {
+	// The lines' clock draws the screen sixty times a second already: the
+	// words are drawn on its frames, and a clock of their own would only
+	// draw it twice as often.
+	if f.ticking || !m.fxBusy(now) || m.vizOpen() || m.introStep != introDone || m.linesTicking() {
 		return nil
 	}
 	f.ticking = true
 	f.gen++
 	f.last = now
-	return fxTick(f.gen, fxFrame)
+	f.due = time.Time{}
+	return fxTick(f.gen, &f.due)
 }
 
 // fxFrameMsg handles a tick of the frame clock: the next one, or none
@@ -144,12 +149,13 @@ func (m *Model) fxFrameMsg(msg fxTickMsg) tea.Cmd {
 		return nil
 	}
 	now := time.Now()
-	if m.fxLevel() == 0 || !m.fxBusy(now) || m.vizOpen() {
+	if m.fxLevel() == 0 || !m.fxBusy(now) || m.vizOpen() || m.linesTicking() {
 		f.ticking = false
 		return nil
 	}
 	m.fxStep(now)
-	return fxTick(f.gen, fxFrame)
+	framesLog.note("fx", 0, "")
+	return fxTick(f.gen, &f.due)
 }
 
 // fxStep moves the clock on.
@@ -253,7 +259,7 @@ func fxFade(c *uiCell, k float64, screen [3]uint8) {
 func (m *Model) fxApply(content string) string {
 	amp := m.fxLevel()
 	f := m.fx
-	if amp == 0 || f == nil || !f.ticking || m.width <= 2 || m.height <= 0 {
+	if amp == 0 || f == nil || !f.ticking && !m.linesTicking() || m.width <= 2 || m.height <= 0 {
 		return content
 	}
 	now := time.Now()
@@ -273,7 +279,7 @@ func (m *Model) fxApply(content string) string {
 		for y := panel.y0; y < panel.y1; y++ {
 			for x := panel.x0; x < panel.x1; x++ {
 				k := smooth(0, 1, a/fxWipeFor*1.7-0.7*float64(y-panel.y0)/float64(panel.y1-panel.y0)-0.06*math.Sin(float64(x)*0.12))
-				fxFade(&cells[y][x], k, bg)
+				fxReveal(&cells[y][x], k, bg, m.linesOn())
 			}
 		}
 	}
@@ -283,7 +289,18 @@ func (m *Model) fxApply(content string) string {
 		for y := song.y0; y < song.y1; y++ {
 			for x := song.x0; x < song.x1; x++ {
 				k := smooth(0, 1, a/fxTrackFor*1.6-0.6*float64(x-song.x0)/float64(song.x1-song.x0)-0.05*math.Sin(float64(y)*0.9))
-				fxFade(&cells[y][x], k, bg)
+				fxReveal(&cells[y][x], k, bg, m.linesOn())
+			}
+		}
+	}
+
+	// ── The key hints go or come back (see H): row by row ──
+	if n := min(m.hintsRowsNow, h); n > 0 && m.hintsMoving(now) {
+		shown := m.hintsShown(now)
+		for r := range n {
+			k := hintsFade(shown, r, n)
+			for x := range w {
+				fxFade(&cells[h-n+r][x], k, bg)
 			}
 		}
 	}
@@ -295,13 +312,6 @@ func (m *Model) fxApply(content string) string {
 func isBlockRune(s string) bool {
 	for _, r := range s {
 		return r >= 0x2580 && r <= 0x259f || r >= 0x1fb00 && r <= 0x1fbaf // and the sextants
-	}
-	return false
-}
-
-func isBoxRune(s string) bool {
-	for _, r := range s {
-		return r >= 0x2500 && r <= 0x257f
 	}
 	return false
 }
@@ -382,4 +392,25 @@ func boolS(b bool) string {
 		return "1"
 	}
 	return "0"
+}
+
+// fxReveal shows k of a cell like fxFade, or, when whole is set, shows it
+// as it is once k is half way and not at all before. A fade mixes a
+// letter's colour with the screen's background; where that background is
+// not what is seen behind the letters (a see-through terminal over a
+// picture), a fade shows as letters turning up black and then taking their
+// colour. So where the interface is drawn in pictures (they sit on such
+// backgrounds as well as on any) words arrive in a sweep, each letter whole.
+func fxReveal(c *uiCell, k float64, screen [3]uint8, whole bool) {
+	if !whole {
+		fxFade(c, k, screen)
+		return
+	}
+	if k >= 0.5 || isBlockRune(c.ch) && !c.bgDefault || c.ch == "" || c.ch == " " && c.bgDefault {
+		return
+	}
+	if !c.bgDefault {
+		return // a filled cell (a badge) stays: an empty hole would flash
+	}
+	c.ch, c.wide, c.sgr, c.mod = " ", false, "", false
 }

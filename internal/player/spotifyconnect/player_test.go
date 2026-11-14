@@ -40,7 +40,7 @@ func TestSetQueuePlaysOnTheComputerAndMirrorsState(t *testing.T) {
 	c := spotify.NewClient("cid", spotify.Token{AccessToken: "at"}, nil)
 	c.SetBaseURL(srv.URL)
 	p := New(spotify.New(c), nil)
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	if err := p.SetQueue([]string{"t1", "t2"}); err != nil {
 		t.Fatal(err)
@@ -87,7 +87,7 @@ func TestVolumeBurstAndStaleReport(t *testing.T) {
 	c := spotify.NewClient("cid", spotify.Token{AccessToken: "at"}, nil)
 	c.SetBaseURL(srv.URL)
 	p := New(spotify.New(c), nil)
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 	p.SetDevice("pc")
 
 	for _, v := range []float64{0.25, 0.30, 0.35} {

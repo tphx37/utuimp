@@ -91,7 +91,7 @@ func iconPixelsOf(w, corner int, note []string, sparks int) ([][3]uint8, []bool)
 	for i, c := range v.out {
 		// Grey through and through: the glow mixes no tint back in.
 		b := toByte3(c)
-		l := uint8((299*int(b[0]) + 587*int(b[1]) + 114*int(b[2])) / 1000)
+		l := uint8((299*int(b[0]) + 587*int(b[1]) + 114*int(b[2])) / 1000) //nolint:gosec // a weighted mean of bytes: 0..255
 		px[i] = [3]uint8{l, l, l}
 	}
 	// The note, its stem in the middle: the stem is the run of '#' a third

@@ -16,7 +16,7 @@ import (
 )
 
 // ErrPremiumRequired is returned by playback calls on a free account.
-var ErrPremiumRequired = errors.New("Spotify Premium is required to control playback")
+var ErrPremiumRequired = errors.New("Spotify Premium is required to control playback") //nolint:staticcheck // it starts with a name
 
 // ErrNoDevice means no Spotify app or device is available to play on.
 var ErrNoDevice = errors.New("no Spotify device: open Spotify on this computer or your phone (or run spotifyd)")
@@ -42,7 +42,7 @@ const maxRetryWait = 15 * time.Second
 // ErrClientLimited means Spotify refuses this sign-in app outright (a 429
 // with no Retry-After): it throttles the shared public client for everyone.
 // The cure is the user's own app Client ID.
-var ErrClientLimited = errors.New("Spotify is refusing requests from the shared sign-in app")
+var ErrClientLimited = errors.New("Spotify is refusing requests from the shared sign-in app") //nolint:staticcheck // it starts with a name
 
 // ErrRateLimited is returned while Spotify is rate-limiting this app.
 type ErrRateLimited struct{ Wait time.Duration }
@@ -124,7 +124,7 @@ type apiError struct {
 // nil) receives the decoded response.
 func (c *Client) call(ctx context.Context, method, path string, q url.Values, body, out any) error {
 	refreshed := false
-	for attempt := 0; attempt < 4; attempt++ {
+	for range 4 {
 		if err := c.waitTurn(ctx); err != nil {
 			return err
 		}

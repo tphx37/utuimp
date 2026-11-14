@@ -13,6 +13,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/tphx37/utuimp/internal/gfx"
 	"github.com/tphx37/utuimp/internal/i18n"
 	"github.com/tphx37/utuimp/internal/player/tap"
 	"github.com/tphx37/utuimp/internal/tui/art"
@@ -33,13 +34,12 @@ import (
 // the Linux console, its 16 colours (see visualizer_out.go).
 
 const (
-	vizFFT      = 2048                  // samples per spectrum
-	vizRead     = 8192                  // samples taken each frame (the beat tracker looks further back)
-	vizBands    = 48                    // spectrum bands, bass first
-	vizWave     = 256                   // points of the waveform
-	vizHistory  = 72                    // spectrum rows kept for the terrain
-	vizRowRate  = 24.0                  // terrain rows per second
-	vizFrame    = 33 * time.Millisecond // ~30 frames per second
+	vizFFT      = 2048 // samples per spectrum
+	vizRead     = 8192 // samples taken each frame (the beat tracker looks further back)
+	vizBands    = 48   // spectrum bands, bass first
+	vizWave     = 256  // points of the waveform
+	vizHistory  = 72   // spectrum rows kept for the terrain
+	vizRowRate  = 24.0 // terrain rows per second
 	vizHintFor  = 2500 * time.Millisecond
 	vizLabelFor = 1500 * time.Millisecond
 	vizFadeFor  = 600 * time.Millisecond
@@ -104,17 +104,37 @@ type vizDue struct{ at, strength float64 }
 type vizPart struct {
 	x, y, z, vx, vy, vz float64
 	life, hue           float64
+	// Where it was drawn last frame, in pixels (seen: it was), for the
+	// streak to this one (see streak).
+	sx, sy float64
+	seen   bool
 }
 
 type visualizer struct {
-	open       bool
-	gen        int // tick chain id: a stale chain stops on its next tick
-	scene      int
-	drawn      int // the scene prev belongs to
-	hintUntil  time.Time
-	label      string
-	labelUntil time.Time
-	last       time.Time
+	due time.Time // when the frame is due (see nextFrame)
+	// Nothing in it changes at a stroke: lit is the brightness shown,
+	// going to bright; palTo the colours pal goes to (another song's);
+	// fade the last picture of the scene left behind, melting into the
+	// next one from fadeAt; closing that it is closing (from closedAt),
+	// into the middle of the screen, over the interface coming back.
+	lit   float64
+	palTo [3]vcol
+	// strengthTo is the strength asked for, which strength goes to; the
+	// backdrop comes up over backdropK (0..1), backdropWas going.
+	strengthTo, backdropK float64
+	backdropWas           string
+	fade                  []vcol
+	fadeW, fadeH          int
+	fadeAt, closedAt      time.Time
+	closing               bool
+	open                  bool
+	gen                   int // tick chain id: a stale chain stops on its next tick
+	scene                 int
+	drawn                 int // the scene prev belongs to
+	hintUntil             time.Time
+	label                 string
+	labelUntil            time.Time
+	last                  time.Time
 
 	t      float64 // animation clock in seconds; runs faster on loud parts
 	beatT  float64 // time since the last detected beat
@@ -168,18 +188,50 @@ type visualizer struct {
 
 	pal    [3]vcol
 	palURL string
-	palImg image.Image
 
-	w, h, h2 int     // terminal cells; h2 is the picture's height in pixels
-	ya, sc   float64 // pixel height/width; pixels per scene unit
-	cx, cy   float64 // the centre, in pixels
+	// The picture is w×h2 pixels. In a terminal's cells that is two pixels
+	// a cell (h rows of them); a terminal that shows real pixels gets px
+	// times as many each way over the same cw×ch cells (see gfx).
+	w, h, h2 int
+	cw, ch   int       // the terminal's size in cells
+	px       int       // pixels per cell pixel: 1 in cells, more as a picture
+	gmode    gfx.Mode  // how pictures reach the terminal
+	img      gfx.Image // the picture on screen
+	rgb      []byte    // its bytes, kept between frames
+	cost     float64   // how long a frame takes to draw, smoothed, in seconds
+	slowFor  int       // frames in a row that took too long
+	openedAt time.Time // the picture comes up out of the dark, not at once
+	lead     []vcol    // the ribbons it opens with, while they give way to the scene
+	fastFor  int       // frames in a row that a finer picture would have fit in
+	pxMax    int       // px as fine as the settings ask for
+	pxBudget int       // the pixels the settings allow a frame
+	// pxScene is the px each scene last kept up with at pxMax pxOf (0:
+	// none yet): the scenes cost very differently, and the visualizer
+	// opens, or goes to another scene, at once at the detail that will
+	// keep up, not at the finest, slow for a second or two until it has
+	// found out again.
+	pxScene [sceneCount]int
+	pxOf    int
+	warm    int // frames drawn since the cost was last let go: the first few are dear
+	// over is whether the picture is still opening over the interface
+	// (see finishFrame), and alpha how much of each pixel it covers then.
+	over   bool
+	alpha  []float32
+	under  string  // the interface as it was when it opened, kept under it meanwhile
+	ya, sc float64 // pixel height/width; pixels per scene unit
+	cx, cy float64 // the centre, in pixels
 
 	fb, prev, out []vcol
 	glowA, glowB  []vcol // half-size buffers of the glow
-	stars         []vizStar
-	orb           []vec3
-	parts         []vizPart
-	frame         string
+	// closeN counts the frames while it closes, closeOut is the last scene
+	// drawn then (see vizStep).
+	closeN   int
+	closeOut []vcol
+	ribbonBg []vcol // the ribbons' backdrop down the picture, a frame's
+	stars    []vizStar
+	orb      []vec3
+	parts    []vizPart
+	frame    string
 
 	console bool      // draw for the Linux console
 	con     *vizCon   // its palette and colour tables
@@ -250,8 +302,10 @@ func (v *visualizer) rnd() float64 {
 
 type vizTickMsg struct{ gen int }
 
-func vizTick(gen int) tea.Cmd {
-	return tea.Tick(vizFrame, func(time.Time) tea.Msg { return vizTickMsg{gen} })
+// vizTick asks for the next frame on the beat kept in *due, however long
+// the last one took to draw (see nextFrame).
+func vizTick(gen int, due *time.Time) tea.Cmd {
+	return frameTick(due, screenFrame, func() tea.Msg { return vizTickMsg{gen} })
 }
 
 // openVisualizer shows the visualizer and starts its frame clock.
@@ -267,26 +321,154 @@ func (m *Model) openVisualizer() tea.Cmd {
 		}
 	}
 	v.strength = m.cfg.VizStrength()
+	v.strengthTo, v.backdropK, v.backdropWas = v.strength, 1, ""
 	v.bright = m.cfg.VizBrightness()
 	v.backdrop = m.cfg.VisualizerBackground
-	v.open = true
+	v.open, v.closing, v.fade = true, false, nil
 	v.gen++
 	v.last = time.Now()
 	v.hintUntil = v.last.Add(vizHintFor)
+	v.openedAt = v.last
 	v.labelUntil = time.Time{}
 	v.con = nil // the console palette is set anew
+	v.px, v.pxMax, v.pxBudget, v.cost, v.slowFor, v.fastFor, v.warm = 1, 1, 0, 0, 0, 0, 0
+	v.gmode = gfx.Off
+	if !v.console {
+		v.gmode = gfxDetect(m.cfg.Graphics)
+	}
+	if v.gmode == gfx.Shm {
+		// Real pixels: as many as a frame can be drawn with in time.
+		v.img.ID, v.img.Z = vizImageID, -1 // kept across openings: it knows what it left behind
+		pixels := vizPixels
+		if m.cfg.VisualizerDetail == "fine" {
+			pixels = vizPixelsFine
+		}
+		v.pxBudget = pixels
+		v.pxMax = vizPixelScale(m.width, m.height+m.hostRows, pixels)
+		v.px = v.scenePx()
+	}
 	m.vizStep()
-	return tea.Batch(vizTick(v.gen), m.vizRaw())
+	v.due = time.Time{}
+	return tea.Batch(vizTick(v.gen, &v.due), m.vizRaw())
 }
 
-// vizRaw sends the console palette the visualizer asked for, if any.
+// gfxDetect says how the terminal takes pictures (tests replace it).
+var gfxDetect = func(setting string) gfx.Mode { return gfx.Detect(os.Getenv, setting) } //nolint:gochecknoglobals // swapped in tests
+
+// vizImageID is the visualizer's picture in the terminal (see gfx.Image).
+const vizImageID = 71
+
+// How many pixels a frame may have when it is shown as a picture. Drawing
+// takes as much processor as there are pixels: the normal picture has a few
+// times those of the cells (the terminal smooths it out to the screen's
+// own), the fine one is sharper and costs several cores. A frame that still
+// takes too long makes the picture coarser for a while (see vizAdaptPx).
+const (
+	vizPixels     = 400_000
+	vizPixelsFine = 800_000
+)
+
+// vizPixelScale is how many pixels a cell pixel is split into, each way,
+// for a terminal of w×h cells and that many pixels to spend.
+func vizPixelScale(w, h, pixels int) int {
+	if w <= 0 || h <= 0 {
+		return 1
+	}
+	return min(8, max(2, int(math.Sqrt(float64(pixels)/float64(w*h*2))+0.5)))
+}
+
+// scenePx is the detail the scene showing starts at: what it last kept up
+// with on a terminal this size; one not shown yet, the detail the last one
+// had (opened at the finest, a heavy scene missed frames until it had come
+// down; a light one goes up again soon); else the finest the settings ask
+// for.
+func (v *visualizer) scenePx() int {
+	if v.pxOf != v.pxMax {
+		v.pxScene, v.pxOf = [sceneCount]int{}, v.pxMax
+	}
+	if p := v.pxScene[v.scene]; p >= 2 && p <= v.pxMax {
+		return p
+	}
+	if v.px >= 2 && v.px <= v.pxMax && v.cost > 0 {
+		// What it would cost at the detail the last scene had, from how
+		// much heavier one is than the other.
+		frame := screenFrame.Seconds()
+		cost := v.cost * vizSceneCost[v.scene] / vizSceneCost[v.drawn]
+		p := v.px
+		for p > 2 && cost*sq(float64(p)/float64(v.px)) > vizFit*frame {
+			p--
+		}
+		for p < v.pxMax && cost*sq(float64(p+1)/float64(v.px)) < vizRoom*frame {
+			p++
+		}
+		return p
+	}
+	return v.pxMax
+}
+
+// vizSceneCost is how much work a frame of each scene is, as against the
+// ribbons', at the same detail (measured on a laptop: the tunnel twice
+// theirs, the spectrum a little less).
+var vizSceneCost = [sceneCount]float64{
+	sceneTunnel: 2.0, sceneTerrain: 1.35, sceneNebula: 1.85, sceneSpectrum: 0.85, sceneOrb: 1.65, sceneRibbons: 1,
+}
+
+// vizAdaptPx fits the picture's detail to what the machine manages: px goes
+// down when frames keep taking more than vizFit of their turn, and back up,
+// as far as pxMax, once a finer picture would take less than vizRoom of it.
+// (It used to go down only: a busy minute left the picture coarse for good.)
+// A frame that takes longer than its turn is a frame the screen misses: a
+// few of them in a row, and the detail goes straight to what fits, not a
+// step every second while it stutters (a heavy scene, opened at the detail
+// a light one kept up with, stuttered for over half a second). cost is the
+// smoothed time a frame takes, in seconds; slow and fast count the frames
+// in a row that asked for either. The turn is the screen's frame (see
+// screenFrame): the detail follows the pace too.
+func vizAdaptPx(px, pxMax int, cost float64, slow, fast int) (int, int, int) {
+	frame := screenFrame.Seconds()
+	finer := cost * sq(float64(px+1)/float64(px)) // what a step up would cost
+	switch {
+	case cost > vizFit*frame && px > 2:
+		slow, fast = slow+1, 0
+	case px < pxMax && finer < vizRoom*frame:
+		slow, fast = 0, fast+1
+	default:
+		slow, fast = 0, 0
+	}
+	if slow >= 4 && cost > frame {
+		p := px - 1
+		for p > 2 && cost*sq(float64(p)/float64(px)) > vizFit*frame {
+			p--
+		}
+		return p, 0, 0
+	}
+	if slow > 20 {
+		return px - 1, 0, 0
+	}
+	if fast > 90 {
+		return px + 1, 0, 0
+	}
+	return px, slow, fast
+}
+
+// vizFit is the most of a frame's turn the visualizer's drawing may take:
+// the rest of the frame (the interface's own work, writing it out) needs
+// the remainder, or a frame is missed now and then. vizRoom is what a step
+// finer must take less than, so that it does not come straight back down.
+const (
+	vizFit  = 0.85
+	vizRoom = 0.7
+)
+
+// vizRaw sends what the visualizer has for the terminal itself: the console
+// palette it asked for, or the frame as a picture.
 func (m *Model) vizRaw() tea.Cmd {
 	if m.viz == nil || m.viz.rawSeq == "" {
 		return nil
 	}
 	seq := m.viz.rawSeq
 	m.viz.rawSeq = ""
-	return tea.Raw(seq)
+	return m.sendRaw(seq)
 }
 
 // closeVisualizer hides the visualizer; on the Linux console the returned
@@ -297,8 +479,32 @@ func (m *Model) closeVisualizer() tea.Cmd {
 	}
 	v := m.viz
 	v.open = false
-	v.frame, v.fb, v.prev, v.out, v.glowA, v.glowB = "", nil, nil, nil, nil, nil // the picture is big: let it go
+	if m.lines != nil {
+		// The interface comes back as it first came: its frames and
+		// rules draw themselves in.
+		m.lines.boxes, m.lines.rules, m.lines.boxGeo = nil, nil, nil
+	}
+	if v.px > 1 && !v.console && m.fxLevel() > 0 && len(v.out) > 0 {
+		// As a picture it closes the way it opened, back into the middle
+		// of the screen, over the interface coming back under it; its
+		// clock goes on until it has (see vizRelease).
+		v.closing, v.closedAt = true, time.Now()
+		return nil
+	}
+	return m.vizRelease()
+}
+
+// vizRelease lets the visualizer's picture go once it is closed.
+func (m *Model) vizRelease() tea.Cmd {
+	v := m.viz
+	v.closing = false
+	v.frame, v.fb, v.prev, v.out, v.glowA, v.glowB, v.rgb, v.lead, v.alpha = "", nil, nil, nil, nil, nil, nil, nil, nil // the picture is big: let it go
+	v.over, v.under = false, ""
 	v.rawSeq = ""
+	if v.px > 1 {
+		v.px = 1
+		return tea.Raw(v.img.Delete())
+	}
 	if seq := art.ConsolePaletteSeq(); v.console && seq != "" {
 		return tea.Raw(seq)
 	}
@@ -320,13 +526,13 @@ func (m *Model) handleVizKey(k string) tea.Cmd {
 		return nil
 	case "[", "]":
 		// The strength, in steps of a quarter, saved for next time.
-		pct := int(math.Round(v.strength * 100))
+		pct := int(math.Round(v.strengthTo * 100))
 		if k == "[" {
 			pct = max(0, (pct-1)/25*25)
 		} else {
 			pct = min(200, pct/25*25+25)
 		}
-		v.strength = float64(pct) / 100
+		v.strengthTo = float64(pct) / 100 // the motion eases to it
 		m.cfg.VisualizerStrength = &pct
 		if pct == 100 {
 			m.cfg.VisualizerStrength = nil
@@ -350,6 +556,7 @@ func (m *Model) handleVizKey(k string) tea.Cmd {
 		return nil
 	case "b":
 		next := map[string]string{"": "stars", "stars": "sparks", "sparks": ""}
+		v.backdropWas, v.backdropK = v.backdrop, 0 // the one there goes as the next comes
 		v.backdrop = next[v.backdrop]
 		m.cfg.VisualizerBackground = v.backdrop
 		name := v.backdrop
@@ -363,10 +570,21 @@ func (m *Model) handleVizKey(k string) tea.Cmd {
 		if k == "shift+tab" {
 			step = sceneCount - 1
 		}
+		// The scene left behind melts into the next one (where effects are
+		// on).
+		if m.fxLevel() > 0 && len(v.out) > 0 {
+			if now := time.Now(); now.Sub(v.fadeAt).Seconds() > vizFadeScene*0.6 || len(v.fade) == 0 {
+				v.fade, v.fadeW, v.fadeH, v.fadeAt = append(v.fade[:0], v.out...), v.w, v.h2, now
+			} // (a held tab goes on melting from the one it began with)
+		}
 		v.scene = (v.scene + step) % sceneCount
+		if v.px > 1 {
+			v.px, v.cost, v.slowFor, v.fastFor, v.warm = v.scenePx(), 0, 0, 0, 0
+		}
 		v.label = i18n.T(vizSceneNames[v.scene])
 		v.labelUntil = time.Now().Add(vizLabelFor)
-		m.vizStep()
+		// (Drawn on the next frame, a few milliseconds away: drawn here as
+		// well, two frames' work fell in one and the screen missed one.)
 		m.cfg.VisualizerScene = vizSceneNames[v.scene]
 		if err := m.cfg.Save(""); err != nil {
 			m.appendLog("[visualizer] config save error: " + err.Error())
@@ -398,17 +616,32 @@ func (m *Model) vizStep() {
 	dt := min(0.1, max(0.001, now.Sub(v.last).Seconds()))
 	v.last = now
 
+	// Another song's colours: the picture goes over to them in a moment
+	// (just opened, or on the console, whose palette is set once, at once).
+	fresh := now.Sub(v.openedAt) < 50*time.Millisecond || v.console
+	if v.palTo == ([3]vcol{}) {
+		v.palTo = v.pal
+	}
 	if m.artwork.img != nil && m.artwork.url != v.palURL {
 		if v.palURL != "" {
 			v.newSong()
 		}
 		v.palURL = m.artwork.url
-		v.pal = vizPalette(m.artwork.img)
+		v.palTo = vizPalette(m.artwork.img)
 		v.con = nil // the cover took some console colours: take them back
 	} else if m.artwork.url == "" && v.palURL != "" {
 		// A song with no cover: not the last one's colours.
-		v.palURL, v.pal, v.con = "", defaultVizPalette, nil
+		v.palURL, v.palTo, v.con = "", defaultVizPalette, nil
 	}
+	if fresh {
+		v.pal, v.lit = v.palTo, v.bright
+	}
+	for i := range v.pal {
+		v.pal[i] = v.pal[i].mix(v.palTo[i], min(1, dt*6))
+	}
+	v.lit += (v.bright - v.lit) * min(1, dt*8)
+	v.strength += (v.strengthTo - v.strength) * min(1, dt*4)
+	v.backdropK = math.Min(1, v.backdropK+dt/0.5)
 	v.listen(m.playerState.Playing && !m.playerState.Loading, m.playerState.Position, dt)
 	v.analyse(dt)
 
@@ -416,7 +649,13 @@ func (m *Model) vizStep() {
 	if w <= 0 || h <= 0 {
 		return
 	}
+	if v.px > 1 && v.pxBudget > 0 && (w != v.cw || h != v.ch) {
+		// Another size of terminal: the detail is worked out anew.
+		v.pxMax = vizPixelScale(w, h, v.pxBudget)
+		v.px, v.cost, v.slowFor, v.fastFor, v.warm = v.scenePx(), 0, 0, 0, 0
+	}
 	v.resize(w, h)
+	w = v.w
 	if v.scene != v.drawn {
 		v.drawn = v.scene
 		clear(v.prev)
@@ -435,6 +674,75 @@ func (m *Model) vizStep() {
 	v.cx = float64(w)/2 + shake*math.Sin(v.t*61)
 	v.cy = float64(v.h2)/2 + shake*math.Cos(v.t*47)/v.ya
 
+	// Closing, the scene is drawn every other frame and only shrinks on
+	// the others: the interface is drawn anew under it then, and both in
+	// one frame missed frames. Half a second, fading: no step shows.
+	if v.closing {
+		v.closeN++
+		if v.closeN%2 == 0 && len(v.closeOut) == len(v.out) {
+			copy(v.out, v.closeOut)
+			v.finishFrame(m, now, dt)
+			return
+		}
+	} else {
+		v.closeN = 0
+	}
+
+	// It opens out of the interface's lines: for a moment every scene is
+	// the ribbons, flat and thin at first, which swell and then give way
+	// to the scene itself.
+	since := now.Sub(v.openedAt).Seconds()
+	var lead []vcol
+	if since < vizLeadFor && !v.console {
+		held := v.voice
+		for i := range v.voice {
+			v.voice[i] *= smooth(0.1, vizLeadFor, since)
+		}
+		v.drawRibbons()
+		v.voice = held
+		if v.scene != sceneRibbons {
+			if len(v.lead) != len(v.fb) {
+				v.lead = make([]vcol, len(v.fb))
+			}
+			copy(v.lead, v.fb)
+			lead = v.lead
+		}
+	} else {
+		v.lead = nil
+	}
+	switch {
+	case since < vizLeadFor && !v.console && v.scene == sceneRibbons:
+		// Drawn above.
+	default:
+		v.drawScene(dt)
+	}
+	if lead != nil {
+		k := smooth(0.45*vizLeadFor, vizLeadFor, since)
+		for i := range v.fb {
+			v.fb[i] = lead[i].mix(v.fb[i], k)
+		}
+	}
+	v.post()
+	v.drawBackdrop()
+	if v.closing {
+		v.closeOut = append(v.closeOut[:0], v.out...) // for the frames it only shrinks
+	}
+	v.finishFrame(m, now, dt)
+}
+
+// vizLeadFor is how long the visualizer takes to open out of lines, and
+// vizOpenFor how long its picture takes to open out of the middle.
+const (
+	vizLeadFor = 0.9
+	vizOpenFor = 0.7
+	// vizCloseFor is how long it takes to close, and vizFadeScene how long
+	// one scene takes to melt into the next.
+	vizCloseFor  = 0.5
+	vizFadeScene = 0.45
+)
+
+// drawScene draws the chosen scene.
+func (v *visualizer) drawScene(dt float64) {
 	switch v.scene {
 	case sceneTerrain:
 		v.drawTerrain()
@@ -449,15 +757,78 @@ func (m *Model) vizStep() {
 	default:
 		v.drawTunnel()
 	}
-	v.post()
-	v.drawBackdrop()
-	if v.bright != 1 {
+}
+
+// finishFrame turns the drawn picture into what the terminal is sent.
+func (v *visualizer) finishFrame(m *Model, now time.Time, dt float64) {
+	since := now.Sub(v.openedAt).Seconds()
+	// How far it has opened, 0..1: it opens out of the middle of the
+	// screen, and closes back into it.
+	p, masked := 1.0, false
+	switch {
+	case v.closing:
+		p, masked = clamp01(1-now.Sub(v.closedAt).Seconds()/vizCloseFor), true
+	case since < vizOpenFor:
+		p, masked = since/vizOpenFor, true
+	}
+	// The last scene melts into this one.
+	if age := now.Sub(v.fadeAt).Seconds(); age < vizFadeScene && len(v.fade) > 0 {
+		if len(v.fade) != len(v.out) {
+			v.fade = resampleVcol(v.fade, v.fadeW, v.fadeH, v.w, v.h2)
+			v.fadeW, v.fadeH = v.w, v.h2
+		}
+		// Quick at first, settling at the end: the last picture is a
+		// still, and must not stand there looking stuck.
+		q := 1 - age/vizFadeScene
+		k := 1 - q*q*q
 		for i := range v.out {
-			v.out[i] = v.out[i].mul(v.bright)
+			v.out[i] = v.fade[i].mix(v.out[i], k)
+		}
+	} else {
+		v.fade = nil
+	}
+	// As a picture it opens over the interface, which stays as it was under
+	// it: the picture is drawn above the words then, and is see-through
+	// where it has not reached yet. In cells there is nothing to see
+	// through, and it opens over the dark.
+	v.over = masked && v.px > 1 && !v.console
+	if !v.over {
+		v.under = ""
+	}
+	if masked && !v.console && v.w > 0 && v.h2 > 0 {
+		// A circle of the picture, soft at its edge.
+		reach := p * p * (3 - 2*p) * 1.45
+		w, h2 := v.w, v.h2
+		cx, cy := float64(w)/2, float64(h2)/2
+		far := math.Hypot(cx, cy*v.ya*2)
+		if v.over && len(v.alpha) != w*h2 {
+			v.alpha = make([]float32, w*h2)
+		}
+		par(h2, func(y0, y1 int) {
+			for y := y0; y < y1; y++ {
+				dy := (float64(y) - cy) * v.ya * 2
+				for x := range w {
+					k := clamp01((reach - math.Hypot(float64(x)-cx, dy)/far) / 0.4)
+					k = k * k * (3 - 2*k)
+					if v.over {
+						v.out[y*w+x] = v.out[y*w+x].mul(v.lit)
+						v.alpha[y*w+x] = float32(k)
+					} else {
+						v.out[y*w+x] = v.out[y*w+x].mul(v.lit * k)
+					}
+				}
+			}
+		})
+	} else if k := v.lit; k != 1 {
+		for i := range v.out {
+			v.out[i] = v.out[i].mul(k)
 		}
 	}
 	v.edge = v.edgeColour()
 	v.fb, v.prev = v.prev, v.fb
+	if !v.over {
+		v.alpha = nil
+	}
 
 	label := ""
 	if v.info {
@@ -466,7 +837,8 @@ func (m *Model) vizStep() {
 	if path := os.Getenv("UTUIMP_VIZ_INFO"); path != "" && int(v.clock) != int(v.clock-dt) {
 		// For debugging: the same line once a second into a file.
 		if f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil { //nolint:gosec // the user's own path
-			_, _ = f.WriteString(v.infoLine(m.playerState.Playing && !m.playerState.Loading) + "\n")
+			_, _ = fmt.Fprintf(f, "%s · px %d (%dx%d) · draw %.1f ms · step %.1f ms\n",
+				v.infoLine(m.playerState.Playing && !m.playerState.Loading), v.px, v.w, v.h2, v.cost*1000, dt*1000)
 			_ = f.Close()
 		}
 	}
@@ -476,13 +848,47 @@ func (m *Model) vizStep() {
 	if m.errMsg != "" {
 		label = m.errMsg
 	}
-	if v.console {
+	switch {
+	case v.console:
 		if v.con == nil {
 			v.con = newVizCon(v.pal)
 			v.rawSeq = v.con.seq
 		}
 		v.frame = v.encodeConsole(label, now)
-	} else {
+	case v.px > 1:
+		v.frame = v.encodeText(label, now)
+		v.img.Alpha, v.img.Z = v.over, -1
+		if v.over {
+			v.img.Z = 1 // over the interface's words while it opens
+		}
+		seq, err := v.img.Frame(v.gmode, v.pixels(), v.w, v.h2, 0, 0, v.cw, v.ch)
+		if err != nil {
+			// No pictures after all: back to cells, from the next frame.
+			v.rawSeq = v.img.Delete()
+			v.px, v.gmode = 1, gfx.Off
+			break
+		}
+		v.rawSeq = seq
+		// The first frames at this detail (after opening, another scene
+		// or size) take longer than the rest, with memory to get and the
+		// opening to draw: they are not counted. Then the first that is
+		// counted is the guess, and the rest smooth it.
+		switch took := time.Since(now).Seconds(); {
+		case v.cost > 0:
+			v.cost += (took - v.cost) * 0.1
+		case v.warm >= 3:
+			v.cost = took
+		default:
+			v.warm++
+		}
+		if v.cost > 0 {
+			px := v.px
+			v.px, v.slowFor, v.fastFor = vizAdaptPx(v.px, v.pxMax, v.cost, v.slowFor, v.fastFor)
+			// A frame costs as many pixels as it has: the guess goes with it.
+			v.cost *= sq(float64(v.px) / float64(px))
+			v.pxScene[v.scene], v.pxOf = v.px, v.pxMax
+		}
+	default:
 		v.frame = v.encode(label, now)
 	}
 }
@@ -818,9 +1224,30 @@ func (v *visualizer) pix(u, w float64) (float64, float64) {
 	return v.cx + u*v.sc - 0.5, v.cy + w*v.sc/v.ya - 0.5
 }
 
-// splat adds colour c at (px, py), shared between the four pixels around it.
+// splat adds colour c at (px, py), shared between the pixels around it:
+// the four nearest in cells, and as a picture a spot as wide as a cell
+// pixel was, so things drawn with it keep their size and brightness.
 func (v *visualizer) splat(px, py float64, c vcol) {
 	if px < -1 || py < -1 || px >= float64(v.w) || py >= float64(v.h2) {
+		return
+	}
+	if k := v.px; k > 1 {
+		// A round spot k pixels across, soft to its edge: (1-d²)², which
+		// holds as much light as the square tent it replaced (whose
+		// corners showed as little squares, a point being a diamond).
+		r := float64(k)
+		x0, x1 := max(0, int(math.Ceil(px-r))), min(v.w-1, int(math.Floor(px+r)))
+		y0, y1 := max(0, int(math.Ceil(py-r))), min(v.h2-1, int(math.Floor(py+r)))
+		for y := y0; y <= y1; y++ {
+			dy := (float64(y) - py) / r
+			row := y * v.w
+			for x := x0; x <= x1; x++ {
+				dx := (float64(x) - px) / r
+				if q := 1 - (dx*dx + dy*dy); q > 0.01 {
+					v.fb[row+x] = v.fb[row+x].add(c.mul(q * q * splatRound))
+				}
+			}
+		}
 		return
 	}
 	x0, y0 := int(math.Floor(px)), int(math.Floor(py))
@@ -837,12 +1264,42 @@ func (v *visualizer) splat(px, py float64, c vcol) {
 	put(x0+1, y0+1, fx*fy)
 }
 
+// splatRound evens the round spot's light out to the tent's: its whole
+// is π/3 r², the tent's r².
+const splatRound = 3 / math.Pi
+
+// streak adds a point of colour c that went from (x0, y0) to (x1, y1)
+// this frame, as the path it drew: as much light as a point, spread along
+// it. (A point a frame left a string of beads behind anything fast.)
+func (v *visualizer) streak(x0, y0, x1, y1 float64, c vcol) {
+	step := math.Max(1, float64(v.px)/2)
+	n := int(math.Hypot(x1-x0, y1-y0)/step) + 1
+	if n > 4*(v.w+v.h2) {
+		return
+	}
+	c = c.mul(1 / float64(n))
+	for i := range n {
+		f := 1.0
+		if n > 1 {
+			f = float64(i) / float64(n-1)
+		}
+		v.splat(x0+(x1-x0)*f, y0+(y1-y0)*f, c)
+	}
+}
+
 // line adds a line of colour c between two points given in pixels.
 func (v *visualizer) line(x0, y0, x1, y1 float64, c vcol) {
 	dx, dy := x1-x0, y1-y0
 	n := int(math.Max(math.Abs(dx), math.Abs(dy))) + 1
 	if n > 4*(v.w+v.h2) {
 		return
+	}
+	if k := v.px; k > 1 {
+		// The spots are k wide: one every k/2 pixels joins them up, each
+		// as bright as the k/2 one-pixel steps it stands for.
+		step := max(1, k/2)
+		n = (n + step - 1) / step
+		c = c.mul(float64(step))
 	}
 	for i := range n {
 		f := float64(i) / float64(n)
@@ -889,17 +1346,19 @@ func (v *visualizer) warp(fade float64, from func(u, w float64) (float64, float6
 // corners go darker.
 func (v *visualizer) post() {
 	w, h2 := v.w, v.h2
-	bw, bh := (w+1)/2, (h2+1)/2
+	ds := 2 * max(1, v.px) // the glow is as wide on screen whatever the picture's size
+	bw, bh := (w+ds-1)/ds, (h2+ds-1)/ds
 	a, b := v.glowA, v.glowB
-	// The bright parts, at half size.
+	fds := float64(ds)
+	// The bright parts, at half the size of a picture in cells.
 	par(bh, func(y0, y1 int) {
 		for by := y0; by < y1; by++ {
 			for bx := range bw {
 				var s vcol
 				n := 0.0
-				for dy := range 2 {
-					for dx := range 2 {
-						if x, y := bx*2+dx, by*2+dy; x < w && y < h2 {
+				for dy := range ds {
+					for dx := range ds {
+						if x, y := bx*ds+dx, by*ds+dy; x < w && y < h2 {
 							s = s.add(v.fb[y*w+x])
 							n++
 						}
@@ -932,14 +1391,14 @@ func (v *visualizer) post() {
 
 	par(h2, func(y0, y1 int) {
 		for y := y0; y < y1; y++ {
-			gy := math.Max(0, (float64(y)+0.5)/2-0.5)
+			gy := math.Max(0, (float64(y)+0.5)/fds-0.5)
 			gy0 := min(int(gy), bh-1)
 			gy1 := min(gy0+1, bh-1)
 			fy := gy - float64(gy0)
 			ny := (float64(y)+0.5)/float64(h2)*2 - 1
 			for x := range w {
 				c := v.fb[y*w+x]
-				gx := math.Max(0, (float64(x)+0.5)/2-0.5)
+				gx := math.Max(0, (float64(x)+0.5)/fds-0.5)
 				gx0 := min(int(gx), bw-1)
 				gx1 := min(gx0+1, bw-1)
 				fx := gx - float64(gx0)
@@ -969,16 +1428,20 @@ func (v *visualizer) infoLine(playing bool) string {
 		i18n.T("drive"), int(v.drive*100), float64(len(v.hits))/5, i18n.T("hits/s"))
 }
 
-// resize makes the picture w×h cells (two pixels each, one above the
-// other).
+// resize makes the picture fit w×h cells: two pixels a cell, one above the
+// other, or px times that each way when it is shown as a picture.
 func (v *visualizer) resize(w, h int) {
-	if v.w == w && v.h == h && len(v.fb) == w*h*2 {
+	k := max(1, v.px)
+	pw, ph := w*k, h*k
+	if v.cw == w && v.ch == h && v.w == pw && len(v.fb) == pw*ph*2 {
 		return
 	}
-	v.w, v.h, v.h2 = w, h, h*2
-	n := w * h * 2
+	v.cw, v.ch = w, h
+	v.w, v.h, v.h2 = pw, ph, ph*2
+	n := pw * ph * 2
 	v.fb, v.prev, v.out = make([]vcol, n), make([]vcol, n), make([]vcol, n)
-	g := ((w + 1) / 2) * ((v.h2 + 1) / 2)
+	ds := 2 * k
+	g := ((pw + ds - 1) / ds) * ((v.h2 + ds - 1) / ds)
 	v.glowA, v.glowB = make([]vcol, g), make([]vcol, g)
 }
 
@@ -1014,8 +1477,8 @@ func (v *visualizer) edgeColour() [3]uint8 {
 // vizBackground is what the terminal's background is set to while the
 // visualizer is open (see edgeColour); nil gives the terminal its own back.
 func (m *Model) vizBackground() color.Color {
-	if !m.vizOpen() || m.viz.console || len(m.viz.out) == 0 {
-		return nil
+	if !m.vizOpen() || m.viz.console || m.viz.over || len(m.viz.out) == 0 {
+		return nil // the terminal's own while it opens over the interface
 	}
 	e := m.viz.edge
 	return color.RGBA{R: e[0], G: e[1], B: e[2], A: 255}
@@ -1024,7 +1487,7 @@ func (m *Model) vizBackground() color.Color {
 // renderVisualizer is the whole screen while the visualizer is open.
 func (m *Model) renderVisualizer() string {
 	v := m.viz
-	if v.frame == "" || v.w != m.width || v.h != m.height+m.hostRows {
+	if v.frame == "" || v.cw != m.width || v.ch != m.height+m.hostRows {
 		m.vizStep()
 	}
 	return v.frame
@@ -1246,4 +1709,27 @@ func smooth(a, b, x float64) float64 {
 func hash1(x float64) float64 {
 	s := math.Sin(x*127.1+311.7) * 43758.5453
 	return s - math.Floor(s)
+}
+
+// resampleVcol is src (sw×sh) spread smoothly over dw×dh.
+func resampleVcol(src []vcol, sw, sh, dw, dh int) []vcol {
+	out := make([]vcol, dw*dh)
+	if sw <= 0 || sh <= 0 || len(src) < sw*sh {
+		return out
+	}
+	par(dh, func(y0, y1 int) {
+		for y := y0; y < y1; y++ {
+			fy := (float64(y)+0.5)*float64(sh)/float64(dh) - 0.5
+			ya := max(0, min(sh-1, int(math.Floor(fy))))
+			yb, ky := min(sh-1, ya+1), clamp01(fy-float64(ya))
+			for x := range dw {
+				fx := (float64(x)+0.5)*float64(sw)/float64(dw) - 0.5
+				xa := max(0, min(sw-1, int(math.Floor(fx))))
+				xb, kx := min(sw-1, xa+1), clamp01(fx-float64(xa))
+				top := src[ya*sw+xa].mix(src[ya*sw+xb], kx)
+				out[y*dw+x] = top.mix(src[yb*sw+xa].mix(src[yb*sw+xb], kx), ky)
+			}
+		}
+	})
+	return out
 }

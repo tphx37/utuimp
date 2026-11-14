@@ -14,11 +14,16 @@ tests and pull requests are in [Contributing](../CONTRIBUTING.md).
 ```
 cmd/                     command line: flags, setup, starting each service
   services.go            the list of tabs (serviceDefs)
-  setup.go               `utuimp setup` and its menu of sections
+  setup.go               `utuimp setup`: opens utuimp on its settings panel (internal/settings, internal/tui/views/settings.go)
   *_flow.go              sign-in and start-up of each service
   discord.go             starting Discord Rich Presence
 internal/
   config/                config.json (and credentials.json, see keep.go)
+  settings/              everything the settings panel shows and changes, in
+                         sections (the panel itself is tui/views/settings.go)
+  gfx/                   pictures in the terminal: the kitty graphics protocol
+                         (kitty.go) and text drawn in the system's fonts
+                         through fontconfig (text.go)
   i18n/                  translations (ru.go)
   signin/                the browser sign-in page all services share
   provider/              music services: search, library, albums, radio…
@@ -42,9 +47,20 @@ internal/
   tui/                   the interface (Bubble Tea v2)
     model.go             state, keys and the boxed view
     cover.go             the cover view (v)
+    nowplaying_bar.go    the boxed view's Now Playing panel laid out as a bar
+    lines*.go            the pixel interface (kitty, Ghostty): the screen is
+                         laid out in cells, then linesPlace finds its frames,
+                         lines, the cover's and the buttons' marks and the
+                         player's words, empties those cells and draws each as
+                         a picture under the text (lines_frame.go frames and
+                         the cover, lines_ctl.go buttons, lines_label.go
+                         words, lines_touch.go how they answer keys)
+    lyrics_pic.go        the cover view's lyrics as a picture
+    fx_soft.go           words that come, go or change colour softly
+    frames.go            the clocks' steady sixty frames a second
     visualizer*.go       the fullscreen visualizer (V): scenes, beat finding,
                          drawing
-    fx.go                fade-ins of what opens
+    fx.go                fade-ins of what opens (in cells)
     intro*.go            the start screen
     link.go              share links in search and :link
     playlists.go         making, renaming, deleting and filling playlists

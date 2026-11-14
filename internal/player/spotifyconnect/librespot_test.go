@@ -22,7 +22,7 @@ func TestStartLibrespotAndWaitForDevice(t *testing.T) {
 	bin := filepath.Join(dir, "librespot")
 	// A stand-in librespot: records its arguments and keeps running.
 	script := "#!/bin/sh\necho \"$@\" > " + argsFile + "\nexec /bin/sleep 30\n"
-	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil { //nolint:gosec // a fake program: it must run
 		t.Fatal(err)
 	}
 	if got, err := FindLibrespot(bin); err != nil || got != bin {

@@ -28,7 +28,24 @@ type Options struct {
 	HistoryName string
 	// EmptyQueueHint replaces "Queue is empty" (e.g. where local music goes).
 	EmptyQueueHint string
+	// Restart, when set, arranges for utuimp to start again once the
+	// program quits (the settings use it to apply what needs a restart).
+	Restart func()
+	// OnSetting, when set, is told the key of every setting changed in the
+	// settings panel (internal/settings), after the config has the new
+	// value: the host applies what lives outside the TUI (tabs, Discord,
+	// the theme, Last.fm).
+	OnSetting func(key string)
+	// OpenSettings opens the settings panel at start-up, on the section
+	// with that key ("services" for the first one).
+	OpenSettings string
+	// Welcome greets a first-time user in the settings panel.
+	Welcome bool
 }
+
+// ServiceOffMsg tells a service's Model its tab was turned off in the
+// settings: it goes quiet.
+type ServiceOffMsg struct{}
 
 // InitStatusMsg updates the status text shown on the loading screen.
 type InitStatusMsg string

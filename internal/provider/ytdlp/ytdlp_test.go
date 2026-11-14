@@ -40,12 +40,12 @@ func TestStreamPipelineMakesADTS(t *testing.T) {
 	}
 	dir := t.TempDir()
 	m4a := filepath.Join(dir, "a.m4a")
-	if out, err := exec.Command(ffmpeg, "-loglevel", "error", "-f", "lavfi", "-i", "sine=d=1",
+	if out, err := exec.Command(ffmpeg, "-loglevel", "error", "-f", "lavfi", "-i", "sine=d=1", //nolint:gosec // ffmpeg found on the path, a fixed command
 		"-c:a", "aac", m4a).CombinedOutput(); err != nil {
 		t.Skipf("ffmpeg can't encode AAC: %v %s", err, out)
 	}
 	fake := filepath.Join(dir, "yt-dlp")
-	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexec cat "+m4a+"\n"), 0o755); err != nil {
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexec cat "+m4a+"\n"), 0o700); err != nil { //nolint:gosec // a fake program: it must run
 		t.Fatal(err)
 	}
 	s := Streamer{YtDlp: fake, FFmpeg: ffmpeg}
@@ -69,7 +69,7 @@ func TestStreamPipelineReportsFailure(t *testing.T) {
 		t.Skip("ffmpeg not installed")
 	}
 	fake := filepath.Join(t.TempDir(), "yt-dlp")
-	_ = os.WriteFile(fake, []byte("#!/bin/sh\necho 'ERROR: [youtube] x: Video unavailable' >&2\nexit 1\n"), 0o755)
+	_ = os.WriteFile(fake, []byte("#!/bin/sh\necho 'ERROR: [youtube] x: Video unavailable' >&2\nexit 1\n"), 0o700) //nolint:gosec // a fake program: it must run
 	rc, err := Streamer{YtDlp: fake, FFmpeg: ffmpeg}.Open(context.Background(), []byte(`{}`), "140", true)
 	if err != nil {
 		t.Fatal(err)

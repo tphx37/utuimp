@@ -45,8 +45,8 @@ func credentialsPath(configPath string) string {
 func knownKeys() map[string]bool {
 	out := map[string]bool{}
 	t := reflect.TypeFor[Config]()
-	for i := range t.NumField() {
-		tag := t.Field(i).Tag.Get("json")
+	for field := range t.Fields() {
+		tag := field.Tag.Get("json")
 		if name, _, _ := strings.Cut(tag, ","); name != "" && name != "-" {
 			out[name] = true
 		}

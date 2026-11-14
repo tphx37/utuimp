@@ -1,11 +1,317 @@
 # Changelog
 
+## 4.0
+
+Interface
+ - In kitty and Ghostty the interface is drawn in real pixels under the
+  text, in the song's colours, and moves a little with the music. Nothing
+made of cells moves. In Settings under Interface and Lines, "simple"
+keeps the plain cells, and animation "off" does too.
+  - The progress line is fine strands that sway and settle into one line
+    when the music stops. A new song sends a wave along it, and waves keep
+    coming while a song loads. The cover view's volume line stirs when the
+    volume changes.
+  - The frames of the panels are lines held at their round corners that
+    sway between them, the colours run round the panel in focus, and a new
+    frame draws itself in. The rules under headings are soft lines.
+  - The cover is the picture itself instead of coloured cells, with a
+    light behind it that breathes with the bass.
+  - The mark of the chosen row flows from row to row.
+  - The cover view's lyrics are drawn large, in the system's bold sans,
+    the way a fullscreen player shows them, down the whole column. A line
+    change glides the text up, the line being sung brightens, and with
+    word times the light runs along it with the voice. (Needs fontconfig,
+    without it they stay in the terminal's letters.)
+  - The player's own words are drawn too, the title large and bold, the
+    artist in the song's colour, the album, the times and the volume in
+    the system's sans, and a small loudspeaker in place of the note sign,
+    with more waves the louder it is.
+  - The boxed view's Now Playing panel is laid out as a player's bar, the
+    cover small on the left with the song beside it, the buttons in the
+    middle, the volume on the right, the progress line under them from
+    the cover to the panel's edge.
+  - The drawn words look the same in any language, letters the font lacks
+    come from a font of its own family where the system has one (Noto
+    Sans CJK for Noto Sans), upright and as heavy.
+  - The player's buttons (repeat, shuffle, play or pause, favourite) are
+    drawn in the same fine strokes, larger than a character, one that
+    changes springs for a moment, and a ring round the play button
+    breathes with the drum.
+  - Nothing changes at a stroke. Changing the view moves the cover to its
+    new place, growing or shrinking on the way, pictures come and go
+    softly, new words arrive in a quick sweep and old ones are swept
+    away (the key hints at the bottom too), each letter whole and in
+    its own colour, a frame takes and loses the colour of focus
+    gradually.
+  - The bass drum shows, the frames, the light behind the cover and the
+    mark of the chosen row brighten for a moment on each beat, in place.
+  - The start screen's ribbons are a picture too, smooth instead of made
+    of cells, with a soft round opening as the interface comes in.
+  - The lines answer the hand. Enter presses a frame in and it springs
+    back, esc lets it out, moving through a list sloshes the frame that
+    way and sends a swell down its sides, tab and the arrows send one
+    along its top and bottom, a new song sends one all the way round.
+    Play and pause ripple out of the song's point on the progress line, a
+    seek sends a wave the way it goes, and a press squeezes the mark of
+    the chosen row. It is all over in under a second.
+  - A held key is one steady push, not a shake, the frame leans the way
+    of the move for as long as the key is down and springs back once when
+    it is let go, words, a new cover and the wave of a new song under way
+    run on instead of beginning again with every repeat.
+  - The progress line's light and the point where the song is run a
+    little past the line's ends instead of being cut off there.
+  - A new cover comes up softly instead of replacing the old one at once,
+    and on leaving the visualizer the frames draw themselves in again.
+  - In the boxed view's player bar the volume line and the progress line
+    no longer swap places (the progress line showed the volume, and the
+    other way round).
+  - A frame keeps the colour of focus while the theme is being changed
+    (a key held on Theme in the settings), instead of flashing plain.
+  - As the start screen gives way, the interface's pictures (the cover,
+    frames, the lyrics) come as its opening reaches them, instead of all
+    at once after it, with an empty hole where they belong until then,
+    the logo's letters stay whole until the interface is over them.
+  - The start screen runs at the screen's own sixty frames a second, each
+    frame is made and sent on one tick, and a frame was now and then
+    shown twice.
+  - Everything that moves runs at sixty frames a second, the lines (thirty
+    before, while nothing travelled), the words' effects (thirty), the
+    lyrics' and the progress line's clock (twenty-five), the visualizer
+    (fifty). They keep to one steady beat instead of waiting a frame after
+    each one, which made some 57 a second, and while the lines' clock runs
+    the others draw on its frames instead of drawing the screen again.
+  - Light on the machine, at the same sixty frames a second and looking
+    the same, about a third of the processor it took while a song plays,
+    a quarter of it paused, and half the terminal's. The screen is laid
+    out anew only when something in its cells changed, not on every frame
+    of the lines (nor a second time for every picture sent), with nothing
+    playing and nothing moving the lines' clock slows to a watch, and a
+    key brings it back at once. The pictures sent are smaller, thin lines
+    without the clear rows round them, the light behind the cover at half
+    its pixels (it is soft through and through), the lyrics in bands of
+    which only those that changed go again. Lines and glows are drawn with
+    a few e^x a column instead of one a pixel.
+  - A frame that changes its size or place (switching views with a panel
+    open, a panel growing as the key hints under it shrink) goes over to
+    its new place, its sides sliding and stretching by the pixel and a
+    touch past before they settle, instead of going and drawing itself in
+    anew. Each new frame goes over from the old one that shared most of
+    its cells.
+  - More of it changes softly. Words that stay but change colour (the
+    chosen row of a list, a title taking focus, a whole theme) go from the
+    one colour to the other in a fifth of a second. The progress and
+    volume lines run to where they should be after a seek, another song or
+    a step of the volume, instead of jumping. Another song's title, artist
+    and album melt in as the last one's melt away, the times and the
+    volume staying as they are (and they are no longer typed out letter by
+    letter under that). The lyrics melt from one song's into "fetching
+    lyrics…" and into the next song's, and as the translation is turned
+    on or off.
+  - Settings, Graphics, each part of the pixel interface has its own item
+    besides "Pixel interface" (which turns them all off), the cover
+    (picture or characters), frames and lines (moving, still or
+    characters), text (drawn or the terminal's), buttons (strokes or
+    characters) and the light behind the cover. In the config, `ui_cover`,
+    `ui_lines`, `ui_text`, `ui_buttons`, `ui_light`.
+  - With the lyrics hidden, the song beside the cover is set large, the
+    title twice its size, the artist, the album and the times larger
+    too, in proportion to the cover instead of small beside it.
+  - The cover keeps its shape on its way to another place (another view,
+    the lyrics opened or closed), kitty stretches a picture from the
+    pixel it starts at to the edge of the last cell, and it was sent as
+    if from the cell's edge, so it grew and shrank by up to a cell with
+    every frame as it moved.
+  - On changing the view the cover travels more slowly and evenly, the
+    lyrics and the song's words come once it has all but got to its
+    place, and the old ones go at once, so the terminal is not taking in
+    their pictures while it moves the cover (it showed the cover's way in
+    jumps).
+  - Frames going over to a new place and size no longer break, each keeps
+    its own sides while it is there (a frame that came or went before it
+    handed its sides, with their colour and picture, to another), and none
+    goes a touch past where it goes and back.
+  - With a key held (a list scrolled) the words no longer flash in another
+    colour and back, they change at once while it is down. Play and pause
+    pressed again and again ripple the progress line on every press.
+  - Opening the visualizer no longer jumps the interface up first (the tab
+    row went away under it).
+  - The lyrics glide from line to line more slowly and evenly, gathering
+    speed and settling instead of leaping.
+
+Visualizer
+- In kitty and Ghostty the visualizer is drawn in real pixels (the kitty
+  graphics protocol) instead of two coloured halves a cell. Settings,
+  section Graphics, on/off/auto and how fine the picture is.
+- Frames keep their pace however long one takes to draw.
+- The picture is drawn with several times more pixels than before (as
+  many as the machine draws in time).
+- The picture no longer stays coarse after a busy moment, its detail comes
+  back once frames are quick again, and is worked out anew when the window
+  changes size.
+- It opens out of the interface's lines, for a moment every scene is the
+  ribbons, thin and flat, which swell and give way to the scene.
+- It opens over the interface, which stays where it is under it, the
+  picture grows out of the middle of the screen and covers it, instead of
+  the screen going black at once and the picture coming out of the dark.
+- It closes the way it opens, the picture goes back into the middle of
+  the screen while the interface comes back under it. A new scene melts
+  out of the last one, another song's colours, the brightness, the
+  strength and the background come over in a moment instead of at once.
+- A frame takes about a third less to draw (the tone curve and the glows
+  read off tables, the tunnel's squeeze without a sine), so the picture
+  keeps its full detail at sixty frames a second.
+- The backdrop's stars and sparks are soft round points that move by the
+  pixel and trail along their way, under the scene, instead of square dots
+  stepping from one place to the next over it, the scenes' particles trail
+  the same way.
+- 60 frames a second instead of 30. The scenes draw faster (the tunnel by
+  about a third, the ribbons twice as fast), and each scene remembers the
+  detail it kept up with, so it opens at that detail instead of at the
+  finest, stuttering for a second or two until it found out again, when a
+  frame is far too slow the detail goes straight down to what keeps up.
+
+Settings
+- `,` (or `:settings`) opens the settings inside utuimp, services and their
+  keys, language, theme, animation, start screen, visualizer, Discord
+  status, Last.fm, Apple Music quality, lyrics translation, library.
+- More in the settings, all taking effect at once and in every tab
+  - Interface, the view (boxed or with the cover), the lyrics in the cover
+    view, the album art in the boxed view, the key hints, and the frame
+    rate (auto, 60, or 30 for the battery). Changing the view there leaves
+    the settings open.
+  - Playback, a new section (`utuimp setup playback`), how far `←` `→` seek
+    (5, 10, 15, 30 s, the key hints say it) and `+` `-` turn the volume
+    (2, 5, 10%), and song notifications, the song, its artist and album and
+    its cover on the desktop when the next one starts, always or only while
+    you are in another window (the terminal says when it is not in use).
+    One replaces the last. Offered where `notify-send` or `osascript` is.
+  - Lyrics, the size of the cover view's lyrics (small, medium, large).
+  - Visualizer, the scene it opens with, and its brightness.
+- Turning a service on or off shows or hides its tab at once. The theme,
+  language, animation, visualizer and Discord status also apply without a
+  restart. What does need one says so, and `R` restarts utuimp in place.
+- Last.fm is connected from the settings (no `utuimp lastfm login` needed).
+- The key hints at the bottom show `,` for the settings.
+- A song's cover melts into the next one's, the old cover stays under the
+  new one as it comes up, instead of going and the new one coming up out
+  of nothing. Nothing more is sent for it.
+- `H` hides the key hints at the bottom, they fade away from the top row
+  down, and come back from the bottom up with `H` again. Once they have
+  gone their rows go to the rest of the screen (on a small terminal they
+  take several), the panels grow into them and the cover view spreads
+  down, a quiet "H show hints" is left on one row at the bottom. utuimp
+  remembers it.
+- A second logo, black and white, its ribbons drawn as the interface's
+  fine strands, `assets/utuimp_logo_lines.*` (and a square copy). The old
+  logo stays. `scripts/art/` draws it and the social previews.
+- A black and white theme, `mono` (Settings, Theme, black and white), the
+  interface in greys, white for what matters most. What takes the song's
+  colours (the progress line, the title and artist, the lines, the
+  visualizer) keeps them, as with every theme. A theme in greys gives the
+  start screen grey ribbons, not tinted ones.
+- Animation off says what it does, the interface in characters (its pixel
+  lines and pictures move). The Graphics items it leaves nothing to set
+  for can't be changed then, and say why.
+- The first start opens the settings instead of asking questions in the
+  terminal. `utuimp setup [section]` now opens utuimp on its settings, the
+  question-by-question setup is gone.
+
+Speed
+- The start screen shows once, on the tab utuimp opens on. A tab opened
+  while it was up danced a start screen of its own over the others until
+  its service was ready, for good if it never was, and kept the processor
+  busy all the while.
+- Animations keep a pace that fits the screen, a frame lasts a whole number
+  of its refreshes, or what moves jerks (60 frames a second showed for two
+  refreshes, then three, on a 144 Hz screen). 72 frames a second at 144 Hz,
+  60 at 60, 120 and 240 Hz, utuimp asks Hyprland, sway or X11.
+  `UTUIMP_FPS` sets it.
+- A frame goes to the terminal as soon as it is drawn, Bubble Tea wrote to
+  it on a clock of its own, sixty times a second, that beat against the
+  animations' and sent two frames together now and then.
+- No more stall on the first cover view and on a view change, the fonts the
+  words are drawn in are found and read once, in the background, and the
+  cover's pixels are kept instead of read again for every size.
+- What only sways, breathes or fades (the frames with the bass, the light
+  behind the cover, the buttons with the drum, a picture coming or going)
+  is drawn every other frame, the light behind the cover is not sent while
+  the cover travels and none of it shows. Half the pictures for the
+  terminal to take in, for no step that shows.
+- The cover view's lyrics go to the terminal a line a picture, a line
+  that glides to its new place is moved there, not drawn and sent again.
+  Only what changes how a line looks is (the light running along the line
+  sung, a line taking or losing its light, a line in the edges' melting),
+  every other frame. A line change sent some 70 MB a second, now a tenth.
+- The start screen is sharper, its ribbons are drawn at about three times
+  the pixels on a full HD screen (as many as keep a frame at the same cost
+  on any screen), their thin threads no longer come out as a string of
+  beads at a coarse size (the visualizer's ribbons neither), and their
+  colours have no steps. It takes more processor than it did, for the
+  second or two it shows (some 1.3 cores of a laptop's against 0.6).
+- With the pixel interface the text's effects (a panel's words coming up,
+  a new song's) had stopped showing, they show again.
+- Frames come on a steady beat, a frame's clock waits for the moment it
+  is due, not for a span from when Bubble Tea got round to starting it
+  (after a heavy frame, a little later). Every animation keeps its pace
+  within a couple of milliseconds now, at 60, 72 and 90 frames a second
+  alike.
+- The visualizer keeps up at any pace, its detail goes to what fits in
+  85% of a frame (95% left the rest of the frame no room and it missed
+  frames), down in a few frames when a scene is too heavy, not over half a
+  second, a scene not shown yet starts at the detail the last one had,
+  weighed by how heavy each is, tab draws the next scene on the next frame
+  only, not twice. Closing, it draws its scene every other frame and the
+  interface coming back under it on the others.
+- No missed frame when a song changes, the new cover's pixels are read out
+  as it loads. The lyrics' karaoke clock stops while the visualizer covers
+  them.
+- A frame's pictures go to the terminal the moment the frame is drawn,
+  written straight to it (each write whole, one at a time with Bubble
+  Tea's), Bubble Tea sent them on its own clock, up to 8 ms late, by a
+  different amount every frame against the animations' pace.
+- The light behind the cover is drawn at a third of the screen's pixels
+  (a half before), as the terminal shows it, stretched, it differs from it
+  drawn at full size by at most 3 of 255 where it shows, as before, for
+  less than half of what is sent, it has its colour also where none of it
+  shows, so the edges of it no longer darken as the terminal stretches it.
+- What remains is the terminal's, on a 144 Hz screen kitty shows even a
+  lone picture moving 72 times a second for two refreshes, then three,
+  whatever its settings.
+- `UTUIMP_FRAMES=<file>` notes every frame of every animation, for a bug
+  report about stutter, `UTUIMP_CPUPROFILE=<file>` records where the
+  processor's time goes, and a slow frame in `UTUIMP_LINES_LOG` says what
+  took the time.
+
+Local files
+- Lyrics from beside the song, `song.lrc` (in time with the song) or
+  `song.txt` (plain) next to `song.mp3`. They are not counted as files the
+  scan skipped.
+- The volume line showed 0 and a muted speaker on Linux while the song
+  played, and `+`/`-` seemed to do nothing, the player never said its
+  volume. It does now.
+
+
+
+Signing in
+- A sign-in page opens as a new tab of the browser already running, not a
+  window of another browser (the one the system names is not always the
+  one in use), and the browser no longer closes with the terminal.
+Apple Music
+- utuimp says plainly that its Apple Music developer token is borrowed from
+  vibez. `utuimp setup services` asks before using it (or takes your own
+  MusicKit key instead) and saves the answer as `apple_token_source`. A
+  token that is already saved keeps working, a new one is only fetched from
+  vibez after you agree.
+- The About panel and `utuimp auth status` show whose token is in use and
+  how long it has left.
+
 ## 3.0.1
 
 Start screen
 - With the system theme the ribbons use the real colours of the terminal's
   palette (as it reported them), not xterm's standard ones, so they follow
   the terminal's colour scheme.
+
 Install
 - `install.sh` finds the latest release from the redirect of
   `github.com/<repo>/releases/latest` instead of the GitHub API. The API's

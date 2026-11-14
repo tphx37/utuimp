@@ -2083,14 +2083,15 @@ func (p *RawPlayer) feed(src io.Reader) {
 				sound(c, false)
 				quiet = -time.Hour // back to sound: leave the loop
 			default:
-				if p.hold.Load() {
+				switch {
+				case p.hold.Load():
 					time.Sleep(20 * time.Millisecond) // nothing is to be heard now
-				} else if quiet >= rest {
+				case quiet >= rest:
 					// Closed down: no stream is held open on the sound
 					// server while nothing plays.
 					resting = true
 					C.utuimp_raw_stop(p.r)
-				} else if !push(silence) {
+				case !push(silence):
 					time.Sleep(20 * time.Millisecond) // paused or flushing: don't spin
 				}
 			}

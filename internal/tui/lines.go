@@ -316,9 +316,17 @@ func (l *uiLines) unsee() {
 	l.backWant, l.coverWant, l.lyrWant = false, false, false
 }
 
+// resetLayout forgets geometry that belongs to the previous terminal size.
+func (l *uiLines) resetLayout() {
+	l.unsee()
+	l.boxes, l.boxGeo, l.boxSlot = nil, nil, nil
+	l.coverCol, l.coverRow, l.coverCols, l.coverRows = 0, 0, 0, 0
+	l.coverKey, l.covUp = "", ""
+}
+
 // linesOn reports whether the interface draws its lines as pictures.
 func (m *Model) linesOn() bool {
-	return m.lines != nil && m.lines.mode == gfx.Shm && m.cfg != nil &&
+	return m.lines != nil && (m.lines.mode == gfx.Shm || m.lines.mode == gfx.File) && m.cfg != nil &&
 		m.cfg.UIStyle != config.StyleSimple && m.cfg.Motion() != config.MotionOff && !styles.Console
 }
 
@@ -602,7 +610,7 @@ func (m *Model) linesFrameMsg(msg linesTickMsg) tea.Cmd {
 		l.last = now
 		return linesTick(l.gen, &l.due, screenFrame)
 	}
-	if !m.linesOn() || !l.seen() || m.background || m.vizOpen() || m.introStep != introDone && !m.introOpening() {
+	if !m.linesOn() || !l.seen() || m.background || m.vizOpen() || m.introStep != introDone {
 		// The glow's slower tick starts the clock again when it is back.
 		l.ticking = false
 		return m.linesHide()
@@ -736,25 +744,47 @@ func haloGain(now, covAt, cameAt time.Time) float64 {
 
 // linesHide takes the pictures off the screen.
 func (m *Model) linesHide() tea.Cmd {
+	seq := m.linesHideSeq()
+	if seq == "" {
+		return nil
+	}
+	return tea.Raw(seq)
+}
+
+// linesHideSeq takes the interface's pictures off the screen. The visualizer
+// uses the sequence directly so it can delete these layers before placing its
+// own full-screen picture in the same terminal update.
+func (m *Model) linesHideSeq() string {
 	l := m.lines
 	if l == nil {
-		return nil
+		return ""
 	}
 	var seq strings.Builder
 	for i := range l.strips {
-		if st := &l.strips[i]; st.shown {
-			st.shown = false
-			st.sentKey = [5]int{}
-			seq.WriteString(st.img.Delete())
-		}
+		st := &l.strips[i]
+		st.shown = false
+		st.sentKey = [5]int{}
+		// Delete even when our state says it is gone: Kitty may still have
+		// a placement left from an interrupted redraw or an earlier session.
+		seq.WriteString(st.img.Delete())
 	}
-	seq.WriteString(l.bandsDelete())
-	seq.WriteString(l.lyrLinesDelete())
-	seq.WriteString(l.dropOldCover())
-	if seq.Len() == 0 {
-		return nil
+	for k := range l.lyrBands {
+		b := &l.lyrBands[k]
+		b.shown, b.prev = false, b.prev[:0]
+		seq.WriteString(b.img.Delete())
 	}
-	return tea.Raw(seq.String())
+	for k := range l.lyrLines {
+		ln := &l.lyrLines[k]
+		ln.shown, ln.what = false, ""
+		seq.WriteString(ln.img.Delete())
+	}
+	if l.coverOldOn {
+		seq.WriteString(l.coverOld.Delete())
+	}
+	l.coverOldOn = false
+	coverAlt := gfx.Image{ID: linesCoverAltID}
+	seq.WriteString(coverAlt.Delete())
+	return seq.String()
 }
 
 // lineWave is a wave that runs along a line: a new song sends one across
@@ -1258,7 +1288,7 @@ func (m *Model) linesDraw(dt float64, now time.Time) string {
 			// What this song's words are, for when the next one comes.
 			l.songWords = l.songWords[:0]
 			for _, lb := range l.labels {
-				if lb.found && isSongWord(lb.kind) {
+				if lb.found && isSongWord(lb) {
 					l.songWords = append(l.songWords, lb)
 				}
 			}

@@ -972,6 +972,7 @@ func (m *Model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 			// The cells may be another size now (a new font size): the
 			// lines' pictures are measured anew.
 			m.lines.cellW, m.lines.cellH, m.lines.coverKey = 0, 0, ""
+			m.lines.resetLayout()
 		}
 		inner := max(0, m.width-2)
 		contentW := max(0, inner-2)
@@ -1618,6 +1619,14 @@ func (m *Model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 			return nil
 		}))
 		cmds = append(cmds, m.showPlaybackHome())
+
+	case AuthPendingMsg:
+		// A service opened after the app's one-time intro normally skips its
+		// own intro. Bring up the same visible waiting screen for Apple login.
+		if m.intro == nil && m.introStep == introDone && m.cfg != nil && m.cfg.IntroEnabled() {
+			m.introStep = 0
+			cmds = append(cmds, introTick(), m.introBegin())
+		}
 
 	case InitStatusMsg:
 		m.initStatus = string(msg)
@@ -2601,7 +2610,7 @@ func (m *Model) revealLine(line string) string {
 func (m *Model) scrollTitle(line string, width int) string {
 	if width <= 0 || ansi.StringWidth(ansi.Strip(line)) <= width ||
 		len([]rune(ansi.Strip(line))) <= 24 {
-		return centerStr(line, width)
+		return line
 	}
 	const (
 		pause = 1200 * time.Millisecond
@@ -2623,7 +2632,7 @@ func (m *Model) scrollTitle(line string, width int) string {
 		offset = overflow
 	}
 	repeated := line + "   " + line
-	return centerStr(ansi.Cut(repeated, offset, offset+width), width)
+	return ansi.Cut(repeated, offset, offset+width)
 }
 
 // lyricsVisible reports whether the lyrics panel is open with a track.
@@ -4269,7 +4278,7 @@ func (m *Model) renderIntro() string {
 				status = "connecting…"
 			}
 		}
-		if s := m.renderIntroDance(m.introLogo(), status, m.renderScreen); s != "" {
+		if s := m.renderIntroDance(m.introLogo(), status, m.renderMain); s != "" {
 			return s
 		}
 	}
@@ -4394,8 +4403,8 @@ func (m *Model) nowPlayingArtLines(contentW, h int) []string {
 		}
 	}
 
-	trackLine := m.revealLine(m.renderTrackTitleLine(t, contentW, true))
-	albumLine := m.revealLine(m.renderAlbumMetaLine(t, contentW, true, true))
+	trackLine := m.renderTrackTitleLine(t, contentW, true)
+	albumLine := m.renderAlbumMetaLine(t, contentW, true, true)
 	lines = append(lines, "", trackLine, albumLine, m.statusLine(contentW))
 	return lines
 }
@@ -4664,11 +4673,15 @@ func (m *Model) nowPlayingTextLines(contentW, h int) []string {
 		return lines
 	}
 
-	trackLine := m.revealLine(m.renderTrackTitleLine(t, contentW, false))
-	albumLine := m.revealLine(m.renderAlbumMetaLine(t, contentW, false, false))
+	trackLine := m.renderTrackTitleLine(t, contentW, false)
+	albumLine := m.renderAlbumMetaLine(t, contentW, false, false)
 	// Where the lines are pictures the words are drawn too (see label).
+	metadataAlign := alignCentre
+	if !m.coverView {
+		metadataAlign = alignLeft
+	}
 	words := func(line string, kind int) string {
-		if s, ok := m.label(kind, strings.TrimSpace(ansi.Strip(line)), contentW, alignCentre); ok {
+		if s, ok := m.label(kind, strings.TrimSpace(ansi.Strip(line)), contentW, metadataAlign); ok {
 			return s
 		}
 		return line

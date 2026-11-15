@@ -50,6 +50,10 @@ type ServiceOffMsg struct{}
 // InitStatusMsg updates the status text shown on the loading screen.
 type InitStatusMsg string
 
+// AuthPendingMsg asks the service screen to show the start screen while an
+// external sign-in is in progress (including when its tab was opened later).
+type AuthPendingMsg struct{}
+
 // EngineReadyMsg is sent when the audio engine and provider are both ready.
 type EngineReadyMsg struct {
 	Player   player.Player

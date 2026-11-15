@@ -19,7 +19,7 @@ repos:
       - id: go-test
         name: go test
         language: system
-        entry: go test ./...
+        entry: go test ./... -timeout=2m
         types: [go]
         pass_filenames: false
 

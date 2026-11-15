@@ -2,6 +2,19 @@
 
 ## 4.0
 
+Follow-up fixes
+- The start screen keeps its pixel ribbons with Pixel interface both on
+  and off. With interface pictures off, it uses solid terminal half-blocks -
+  the ribbons stay vivid, the status text is easier to read, and the intro
+  no longer shows through to or overlaps the screen behind it.
+- On macOS, compatible terminals receive graphics through private temporary
+  files when POSIX shared memory is unavailable. The pixel interface and
+  picture visualizer no longer depend on Linux's `/dev/shm`.
+- If Apple Music sign-in is needed after the start screen has already
+  finished, utuimp brings up the visible waiting screen again. Sign-in
+  progress and the fallback link are shown inside the interface instead
+  of being overlapped.
+
 Interface
  - In kitty and Ghostty the interface is drawn in real pixels under the
   text, in the song's colours, and moves a little with the music. Nothing

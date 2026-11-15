@@ -217,7 +217,7 @@ func (m *Model) coverTitleLines(t *provider.Track, w int) (title, artist string)
 	}
 	title = m.scrollTitle(title, w)
 	artist = ansi.Truncate(styles.NowPlayingTrackArtist.Render(t.Artist), w, "…")
-	title, artist = m.revealLine(centerStr(title, w)), m.revealLine(centerStr(artist, w))
+	title, artist = centerStr(title, w), centerStr(artist, w)
 	rows := 1
 	if m.songBig {
 		rows = songBigRows

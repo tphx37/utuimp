@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/tphx37/utuimp/internal/tui/styles"
 )
 
@@ -136,12 +137,23 @@ func (m *Model) fxSoft(content string) string {
 		if rows[y] == s.rows[y] {
 			continue
 		}
+		if !m.coverView && m.activePanel < 0 && m.playerState.Track != nil &&
+			m.isNowPlayingMetadataRow(rows[y]) {
+			// The boxed player's metadata should change as one stable
+			// block. The per-cell sweep makes a new title briefly dark,
+			// then bright again, which reads as a flicker.
+			clear(s.born[y])
+			clear(s.gone[y])
+			clear(s.tint[y])
+			continue
+		}
 		if y >= h-m.hintsRowsNow {
 			// The key hints sliding down or up: whole rows that move, as
 			// they are, not words coming and going.
 			for x := range cells[y] {
 				s.born[y][x], s.gone[y][x] = 0, 0
 			}
+
 			continue
 		}
 		moved := false
@@ -283,6 +295,20 @@ func (m *Model) fxSoft(content string) string {
 		return content
 	}
 	return encodeCells(cells, w, h)
+}
+
+func (m *Model) isNowPlayingMetadataRow(row string) bool {
+	plain := strings.TrimSpace(ansi.Strip(row))
+	t := m.playerState.Track
+	if plain == "" || t == nil {
+		return false
+	}
+	for _, text := range []string{t.Title, t.Artist, t.Album} {
+		if text != "" && strings.Contains(plain, text) {
+			return true
+		}
+	}
+	return false
 }
 
 // shown is the colours of the cell at (x, y) age seconds into its change

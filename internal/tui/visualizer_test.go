@@ -129,6 +129,9 @@ func TestVisualizer_Keys(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("opening the visualizer should start its frame clock")
 	}
+	// The app normally receives this after the queued raw picture command has
+	// been written; direct handler calls in this test need to model that flush.
+	m.Update(tea.RawMsg{Msg: "test"})
 
 	m.handleKey(tea.KeyPressMsg{Code: tea.KeyTab})
 	if m.viz.scene != 1 || m.cfg.VisualizerScene != vizSceneNames[1] {
@@ -156,8 +159,8 @@ func TestVisualizer_Keys(t *testing.T) {
 	if m.vizOpen() {
 		t.Fatal("esc should close the visualizer")
 	}
-	if strings.Contains(m.View().Content, "▀▀▀▀▀▀▀▀▀▀") {
-		t.Error("the player should be back after esc")
+	if !strings.Contains(ansi.Strip(m.View().Content), "Night Song") {
+		t.Errorf("the player should be back after esc: %q", ansi.Strip(m.View().Content))
 	}
 	// A stale tick from the closed visualizer stops its clock.
 	if _, c := m.Update(vizTickMsg{gen: m.viz.gen}); c != nil {
@@ -180,6 +183,7 @@ func TestVisualizer_NoSamplesStillDances(t *testing.T) {
 	tap.Register(func([]float32) (int, float64, int64) { return 0, 0, 0 })
 	m := vizModel(t)
 	m.openVisualizer()
+	m.Update(tea.RawMsg{Msg: "test"})
 	m.playerState.Position = 1250 * time.Millisecond
 	for range 5 {
 		m.viz.listen(true, m.playerState.Position, 0.05)
@@ -492,6 +496,7 @@ func TestVisualizer_InfoLine(t *testing.T) {
 	fakeTap(t)
 	m := vizModel(t)
 	m.openVisualizer()
+	m.Update(tea.RawMsg{Msg: "test"})
 	m.handleKey(tea.KeyPressMsg{Code: 'i', Text: "i"})
 	for range 10 {
 		m.viz.last = time.Now().Add(-screenFrame)
@@ -518,6 +523,7 @@ func TestVisualizer_MarginTakesThePicturesColour(t *testing.T) {
 		t.Fatal("the background must be left alone while the visualizer is closed")
 	}
 	m.openVisualizer()
+	m.Update(tea.RawMsg{Msg: "test"})
 	for range 10 {
 		m.viz.last = time.Now().Add(-screenFrame)
 		m.vizStep()

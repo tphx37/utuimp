@@ -24,7 +24,8 @@ import (
 
 func jwtExpiring(exp time.Time) string {
 	enc := base64.RawURLEncoding.EncodeToString
-	return enc([]byte(`{"alg":"ES256"}`)) + "." + enc([]byte(fmt.Sprintf(`{"exp":%d}`, exp.Unix()))) + ".sig"
+	return enc([]byte(`{"alg":"ES256","kid":"test-key"}`)) + "." +
+		enc([]byte(fmt.Sprintf(`{"iss":"test-team","iat":%d,"exp":%d}`, time.Now().Unix(), exp.Unix()))) + ".sig"
 }
 
 func TestJWTExpiry(t *testing.T) {

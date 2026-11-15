@@ -22,6 +22,11 @@ const minimalTemplate = `<html><body>{{.DeveloperToken}}</body></html>`
 
 const testState = "test-state"
 
+// A structurally valid MusicKit JWT fixture. Login now validates Apple's
+// required public claims before opening the browser, so opaque placeholder
+// strings would make flow tests return before their callback runs.
+const testAppleDeveloperToken = "eyJhbGciOiJFUzI1NiIsImtpZCI6IlRFU1QifQ.eyJpc3MiOiJ0ZXNULmlzc3VlciIsImlhdCI6MTczNTY4OTYwMCwiZXhwIjo0MTAyNDQ0ODAwfQ.c2ln" //nolint:gosec // G101: test JWT; no credential or valid signature
+
 func newTestMux(t *testing.T) (*http.ServeMux, chan string, chan error) {
 	t.Helper()
 	tmpl, err := template.New("login").Parse(minimalTemplate)
@@ -126,7 +131,7 @@ func TestLoginHandler_ServesHTML(t *testing.T) {
 	}
 }
 
-func TestLoginHTML_UsesDirectAppleAuthorizePopupWithoutMusicKitCDN(t *testing.T) {
+func TestLoginHTML_UsesMusicKitJSAndSafeReferrerPolicy(t *testing.T) {
 	tmpl, err := loginTemplate()
 	if err != nil {
 		t.Fatalf("parsing loginHTML: %v", err)
@@ -140,11 +145,14 @@ func TestLoginHTML_UsesDirectAppleAuthorizePopupWithoutMusicKitCDN(t *testing.T)
 		t.Errorf("Referrer-Policy = %q, want %q", got, "strict-origin")
 	}
 	body := w.Body.String()
-	if containsSubstr(body, "js-cdn.music.apple.com") {
-		t.Error("login.html should not load musickit.js from Apple CDN")
+	if !containsSubstr(body, "https://js-cdn.music.apple.com/musickit/v3/musickit.js") {
+		t.Error("login.html should load Apple's documented MusicKit JS")
 	}
-	if !containsSubstr(body, "https://authorize.music.apple.com") {
-		t.Error("login.html missing direct Apple authorization popup origin")
+	if !containsSubstr(body, "music.authorize()") {
+		t.Error("login.html should use MusicKit's authorization flow")
+	}
+	if containsSubstr(body, "authorize.music.apple.com/woa?") {
+		t.Error("login.html should not construct Apple's private authorization URL")
 	}
 }
 
@@ -313,7 +321,7 @@ func TestLogin_ListensOnLoopbackOnly(t *testing.T) {
 	_ = ln.Close()
 
 	states := captureLoginState(t)
-	cfg := &config.Config{AppleDeveloperToken: "test-dev-token", AuthPort: port} //nolint:gosec // G101: test value
+	cfg := &config.Config{AppleDeveloperToken: testAppleDeveloperToken, AuthPort: port} //nolint:gosec // G101: test value
 	done := make(chan error, 1)
 	go func() { done <- Login(cfg) }()
 
@@ -415,7 +423,7 @@ func TestLogin_SuccessFlow(t *testing.T) {
 	}
 
 	cfg := &config.Config{ //nolint:gosec // G101: test credentials, not real secrets
-		AppleDeveloperToken: "test-dev-token",
+		AppleDeveloperToken: testAppleDeveloperToken,
 		AuthPort:            port,
 		StoreFront:          "us",
 		Provider:            "apple",
@@ -438,7 +446,7 @@ func TestLogin_SuccessFlow(t *testing.T) {
 func TestLogin_UsesInjectedDevToken(t *testing.T) {
 	// Temporarily set the package-level injected token.
 	original := devToken
-	devToken = "injected-dev-token" //nolint:gosec // G101: test value, not a real credential
+	devToken = testAppleDeveloperToken
 	t.Cleanup(func() { devToken = original })
 
 	port := 17782
@@ -464,7 +472,7 @@ func TestLogin_UsesInjectedDevToken(t *testing.T) {
 // never use a stale user-supplied token.
 func TestLogin_EmbeddedTokenOverridesExplicit(t *testing.T) {
 	original := devToken
-	devToken = "embedded-takes-priority" //nolint:gosec // G101: test value, not a real credential
+	devToken = testAppleDeveloperToken
 	t.Cleanup(func() { devToken = original })
 
 	port := 17783
@@ -480,7 +488,7 @@ func TestLogin_EmbeddedTokenOverridesExplicit(t *testing.T) {
 		t.Fatalf("Login: %v", err)
 	}
 	// The embedded token must override the stale config token.
-	if cfg.AppleDeveloperToken != "embedded-takes-priority" {
-		t.Errorf("AppleDeveloperToken = %q, want embedded token %q", cfg.AppleDeveloperToken, "embedded-takes-priority")
+	if cfg.AppleDeveloperToken != testAppleDeveloperToken {
+		t.Errorf("AppleDeveloperToken = %q, want embedded token %q", cfg.AppleDeveloperToken, testAppleDeveloperToken)
 	}
 }

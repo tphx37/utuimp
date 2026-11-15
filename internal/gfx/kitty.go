@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -21,6 +22,9 @@ const (
 	// Shm: the pixels are left in shared memory and only its name is sent.
 	// Fast enough for full-screen animation; local terminals only.
 	Shm
+	// File: the pixels are written to a private temporary file and its path
+	// is sent. This works on systems without POSIX /dev/shm.
+	File
 	// Direct: the pixels travel in the escape sequence itself. Works over
 	// ssh; slow, so pictures are kept small.
 	Direct
@@ -30,6 +34,8 @@ func (m Mode) String() string {
 	switch m {
 	case Shm:
 		return "shm"
+	case File:
+		return "file"
 	case Direct:
 		return "direct"
 	}
@@ -54,10 +60,10 @@ func Detect(getenv func(string) string, setting string) Mode {
 	if getenv("SSH_CONNECTION") != "" || getenv("SSH_TTY") != "" {
 		return Direct // the terminal is on another machine: no shared memory
 	}
-	if st, err := os.Stat(shmDir); err != nil || !st.IsDir() {
-		return Direct
+	if st, err := os.Stat(shmDir); err == nil && st.IsDir() {
+		return Shm
 	}
-	return Shm
+	return File
 }
 
 // shmDir is where POSIX shared memory objects live on Linux.
@@ -80,9 +86,8 @@ type Image struct {
 	// picture this scales it to any size, not just whole cells (see Place).
 	SrcW, SrcH int
 	n          uint64
-	// The shared memory files of the last few frames. The terminal removes
-	// each once it has read it; one it never read (it was busy, or isn't
-	// what it seemed) is removed here when it falls out of the list.
+	// Files for the last few frames, whether shared memory or temporary.
+	// One the terminal has not read yet is kept briefly, then removed here.
 	sent []string
 }
 
@@ -120,10 +125,7 @@ func (im *Image) Frame(mode Mode, rgb []byte, w, h, col, row, cols, rows int) (s
 	fmt.Fprintf(&sb, "\x1b[?2026h\x1b7\x1b[%d;%dH", row+1, col+1)
 	switch mode {
 	case Shm:
-		for len(im.sent) >= keepFrames {
-			_ = os.Remove(im.sent[0])
-			im.sent = im.sent[1:]
-		}
+		im.makeFrameRoom()
 		im.n++
 		name := fmt.Sprintf("utuimp-%d-%d-%d", os.Getpid(), im.ID, im.n)
 		path := filepath.Join(shmDir, name)
@@ -133,6 +135,12 @@ func (im *Image) Frame(mode Mode, rgb []byte, w, h, col, row, cols, rows int) (s
 		im.sent = append(im.sent, path)
 		// kitty takes the name only with its leading slash.
 		sb.WriteString(apc(ctl+",t=s", base64.StdEncoding.EncodeToString([]byte("/"+name))))
+	case File:
+		path, err := im.writeFrameFile(rgb)
+		if err != nil {
+			return "", err
+		}
+		sb.WriteString(apc(ctl+",t=f", base64.StdEncoding.EncodeToString([]byte(path))))
 	default:
 		enc := base64.StdEncoding.EncodeToString(rgb)
 		const chunk = 4096
@@ -157,24 +165,76 @@ func (im *Image) Frame(mode Mode, rgb []byte, w, h, col, row, cols, rows int) (s
 	return sb.String(), nil
 }
 
-// CleanStale removes frames left in shared memory by utuimp processes that
-// are gone (one that was killed has no chance to tidy up after itself).
+// makeFrameRoom bounds the frames a terminal may not have read yet. Keep a
+// few because the terminal consumes the PTY asynchronously.
+func (im *Image) makeFrameRoom() {
+	for len(im.sent) >= keepFrames {
+		_ = os.Remove(im.sent[0])
+		im.sent = im.sent[1:]
+	}
+}
+
+// writeFrameFile gives the terminal a complete, private file to read. A new
+// name per frame avoids racing the terminal when it is still reading the
+// previous one.
+func (im *Image) writeFrameFile(rgb []byte) (string, error) {
+	im.makeFrameRoom()
+	f, err := os.CreateTemp(os.TempDir(), fmt.Sprintf("utuimp-%d-%d-", os.Getpid(), im.ID))
+	if err != nil {
+		return "", err
+	}
+	path := f.Name()
+	if _, err = f.Write(rgb); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return "", err
+	}
+	if err = f.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	im.sent = append(im.sent, path)
+	return path, nil
+}
+
+// CleanStale removes frames left by utuimp processes that are gone (one that
+// was killed has no chance to tidy up after itself).
 func CleanStale() {
-	entries, err := os.ReadDir(shmDir)
+	cleanStaleDir(shmDir)
+	cleanStaleDir(os.TempDir())
+}
+
+func cleanStaleDir(dir string) {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
 	for _, e := range entries {
-		var pid, id, n int
-		if c, err := fmt.Sscanf(e.Name(), "utuimp-%d-%d-%d", &pid, &id, &n); err != nil || c != 3 || pid <= 0 {
+		name := e.Name()
+		if !strings.HasPrefix(name, "utuimp-") {
 			continue
 		}
-		// This process's own are stale too: this is called before it has
-		// drawn anything, so they are from before it restarted in place.
-		if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); err == nil && pid != os.Getpid() {
-			continue // still running
+		parts := strings.SplitN(strings.TrimPrefix(name, "utuimp-"), "-", 2)
+		if len(parts) != 2 {
+			continue
 		}
-		_ = os.Remove(filepath.Join(shmDir, e.Name()))
+		pid, err := strconv.Atoi(parts[0])
+		if err != nil || pid <= 0 {
+			continue
+		}
+		// Our own files are stale at process startup. On Linux, leave files
+		// belonging to a live process alone; on other systems /proc is absent,
+		// so only this process's old files can be identified safely.
+		if pid == os.Getpid() {
+			_ = os.Remove(filepath.Join(dir, name))
+			continue
+		}
+		if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); err == nil {
+			continue
+		}
+		if _, err := os.Stat("/proc"); err == nil {
+			_ = os.Remove(filepath.Join(dir, name))
+		}
 	}
 }
 
@@ -191,14 +251,16 @@ func (im *Image) Delete() string {
 // CleanOwn removes the frames this process left in shared memory: the last
 // few a terminal had not read yet when the program ended.
 func CleanOwn() {
-	entries, err := os.ReadDir(shmDir)
-	if err != nil {
-		return
-	}
 	prefix := fmt.Sprintf("utuimp-%d-", os.Getpid())
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), prefix) {
-			_ = os.Remove(filepath.Join(shmDir, e.Name()))
+	for _, dir := range []string{shmDir, os.TempDir()} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), prefix) {
+				_ = os.Remove(filepath.Join(dir, e.Name()))
+			}
 		}
 	}
 }
@@ -223,20 +285,25 @@ func (im *Image) Place(col, row, cols, rows int) string {
 }
 
 // Upload hands the terminal a picture (w×h pixels, as for Frame) without
-// showing it: Place shows it then, as often and wherever. Shared memory
-// only; ok is false when it could not be sent.
+// showing it: Place shows it then, as often and wherever. Shared memory or
+// file transfer; ok is false when it could not be sent.
 func (im *Image) Upload(mode Mode, rgb []byte, w, h int) (seq string, ok bool) {
 	bpp, format := 3, 24
 	if im.Alpha {
 		bpp, format = 4, 32
 	}
-	if mode != Shm || w <= 0 || h <= 0 || len(rgb) < w*h*bpp {
+	if (mode != Shm && mode != File) || w <= 0 || h <= 0 || len(rgb) < w*h*bpp {
 		return "", false
 	}
-	for len(im.sent) >= keepFrames {
-		_ = os.Remove(im.sent[0])
-		im.sent = im.sent[1:]
+	rgb = rgb[:w*h*bpp]
+	if mode == File {
+		path, err := im.writeFrameFile(rgb)
+		if err != nil {
+			return "", false
+		}
+		return apc(fmt.Sprintf("a=t,f=%d,s=%d,v=%d,i=%d,q=2,t=f", format, w, h, im.ID), base64.StdEncoding.EncodeToString([]byte(path))), true
 	}
+	im.makeFrameRoom()
 	im.n++
 	name := fmt.Sprintf("utuimp-%d-%d-%d", os.Getpid(), im.ID, im.n)
 	path := filepath.Join(shmDir, name)

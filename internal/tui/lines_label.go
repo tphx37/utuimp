@@ -59,6 +59,8 @@ type lineLabel struct {
 	scale       float64
 	scroll      bool
 	scrollAt    time.Time
+	animate     bool
+	glide       bool
 }
 
 // label makes a label of text, cells wide, and returns what to put into the
@@ -106,6 +108,8 @@ func (m *Model) labelSized(kind int, text string, cells, align, rows int, scale 
 		rows: max(1, rows), scale: scale,
 		scroll:   kind == labelTitle && len([]rune(text)) > 24,
 		scrollAt: m.trackChangedAt,
+		animate:  m.coverView && (kind == labelTitle || kind == labelArtist || kind == labelAlbum),
+		glide:    m.coverView || (kind != labelTitle && kind != labelArtist && kind != labelAlbum),
 	})
 	return string(rune(labelMark0+len(l.labels)-1)) + strings.Repeat(" ", cells-1), true //nolint:gosec // under labelMarkEnd, checked above
 }
@@ -257,7 +261,7 @@ func (l *uiLines) drawLabelSet(buf []byte, w, h int, ox, oy float64, labels []li
 		switch {
 		case gone:
 			k = look.gone
-		case isSongWord(lb.kind):
+		case isSongWord(lb):
 			k = look.fade
 		}
 		if k <= 0 {
@@ -391,16 +395,15 @@ func (l *uiLines) labelsSig() string {
 // labelsFadeFor is how long before another change starts it all again (a
 // held key goes on with the one under way).
 const (
-	labelsOutFor  = 220 * time.Millisecond
-	labelsInAfter = 60 * time.Millisecond
-	labelsInFor   = 360 * time.Millisecond
-	labelsFadeFor = 300 * time.Millisecond
+	labelsOutFor  = 500 * time.Millisecond
+	labelsInAfter = 0 * time.Millisecond
+	labelsInFor   = 500 * time.Millisecond
+	labelsFadeFor = 500 * time.Millisecond
 )
 
-// isSongWord reports whether a kind of label is the song's own (its title,
-// artist, album), which change with it, unlike the times and the volume.
-func isSongWord(kind int) bool {
-	return kind == labelTitle || kind == labelArtist || kind == labelAlbum
+// isSongWord reports whether a label gets the crossfade animation.
+func isSongWord(lb lineLabel) bool {
+	return lb.animate
 }
 
 // over lays a pixel of colour (r, g, b) and cover a (0..1) over the one at

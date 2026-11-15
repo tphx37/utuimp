@@ -86,8 +86,9 @@ func startAppleEngine(cfg *config.Config, send func(tea.Msg), env *engineEnv, id
 	}
 
 	if cfg.AppleUserToken == "" {
+		send(tui.AuthPendingMsg{})
 		status(i18n.T("Authorizing with Apple Music (see your browser)..."))
-		if err := auth.Login(cfg); err != nil {
+		if err := auth.LoginWithStatus(cfg, status); err != nil {
 			send(tui.InitErrMsg{Err: fmt.Errorf("authentication: %w", err)})
 			return
 		}
@@ -115,7 +116,7 @@ func startAppleEngine(cfg *config.Config, send func(tea.Msg), env *engineEnv, id
 	blPlayer.OnSessionExpired = func() {
 		send(tui.SessionExpiredMsg{})
 		go func() {
-			if err := auth.Login(cfg); err != nil {
+			if err := auth.LoginWithStatus(cfg, status); err != nil {
 				send(tui.InitErrMsg{Err: fmt.Errorf("re-auth: %w", err)})
 				return
 			}

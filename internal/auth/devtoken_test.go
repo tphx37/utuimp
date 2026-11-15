@@ -174,8 +174,8 @@ func TestResolveDeveloperToken(t *testing.T) {
 
 	t.Run("neither configured leaves the config value", func(t *testing.T) {
 		devToken, tokenURL, clientKey = "", "", ""
-		cfg := &config.Config{AppleDeveloperToken: "mine"}
-		if err := ResolveDeveloperToken(cfg); err != nil || cfg.AppleDeveloperToken != "mine" {
+		cfg := &config.Config{AppleDeveloperToken: testAppleDeveloperToken}
+		if err := ResolveDeveloperToken(cfg); err != nil || cfg.AppleDeveloperToken != testAppleDeveloperToken {
 			t.Errorf("got %q, %v", cfg.AppleDeveloperToken, err)
 		}
 	})
@@ -187,11 +187,11 @@ func TestResolveDeveloperToken(t *testing.T) {
 		var hits atomic.Int32
 		srv := brokerServer(t, "right", fakeJWT, time.Now().Add(time.Hour), &hits)
 		devToken, tokenURL, clientKey = "", srv.URL, "wrong"
-		cfg := &config.Config{AppleDeveloperToken: "mine"}
+		cfg := &config.Config{AppleDeveloperToken: testAppleDeveloperToken}
 		if err := ResolveDeveloperToken(cfg); err == nil {
 			t.Error("want an error when the broker rejects the client")
 		}
-		if cfg.AppleDeveloperToken != "mine" {
+		if cfg.AppleDeveloperToken != testAppleDeveloperToken {
 			t.Errorf("config token clobbered: %q", cfg.AppleDeveloperToken)
 		}
 	})

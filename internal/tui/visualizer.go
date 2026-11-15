@@ -314,6 +314,10 @@ func (m *Model) openVisualizer() tea.Cmd {
 		m.viz = newVisualizer()
 		m.viz.console = art.ConsoleMode()
 	}
+	// Remove the interface's Kitty pictures before the full-screen image is
+	// placed. Its frame clock may be asleep, or its last placements may have
+	// outlived the state that tracked them.
+	hideLines := m.linesHideSeq()
 	v := m.viz
 	for i, name := range vizSceneNames {
 		if name == m.cfg.VisualizerScene {
@@ -333,12 +337,14 @@ func (m *Model) openVisualizer() tea.Cmd {
 	v.con = nil // the console palette is set anew
 	v.px, v.pxMax, v.pxBudget, v.cost, v.slowFor, v.fastFor, v.warm = 1, 1, 0, 0, 0, 0, 0
 	v.gmode = gfx.Off
+	clearViz := ""
 	if !v.console {
 		v.gmode = gfxDetect(m.cfg.Graphics)
 	}
-	if v.gmode == gfx.Shm {
+	if v.gmode == gfx.Shm || v.gmode == gfx.File {
 		// Real pixels: as many as a frame can be drawn with in time.
 		v.img.ID, v.img.Z = vizImageID, -1 // kept across openings: it knows what it left behind
+		clearViz = v.img.Delete()
 		pixels := vizPixels
 		if m.cfg.VisualizerDetail == "fine" {
 			pixels = vizPixelsFine
@@ -349,7 +355,9 @@ func (m *Model) openVisualizer() tea.Cmd {
 	}
 	m.vizStep()
 	v.due = time.Time{}
-	return tea.Batch(vizTick(v.gen, &v.due), m.vizRaw())
+	raw := hideLines + clearViz + v.rawSeq
+	v.rawSeq = ""
+	return tea.Batch(vizTick(v.gen, &v.due), m.sendRaw(raw))
 }
 
 // gfxDetect says how the terminal takes pictures (tests replace it).

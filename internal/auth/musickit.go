@@ -48,6 +48,18 @@ type callbackPayload struct {
 // Login starts the MusicKit auth flow: serves a local web page, opens the browser,
 // waits for the user token, then saves it to config.
 func Login(cfg *config.Config) error {
+	return LoginWithStatus(cfg, func(s string) { fmt.Println(s) })
+}
+
+// LoginWithStatus is Login with progress reported to the caller. TUI callers
+// must use this instead of writing progress to stdout, which is the terminal
+// screen that Bubble Tea owns.
+func LoginWithStatus(cfg *config.Config, report func(string)) error {
+	status := func(s string) {
+		if report != nil {
+			report(s)
+		}
+	}
 	if err := ResolveDeveloperToken(cfg); err != nil && cfg.AppleDeveloperToken == "" {
 		return err
 	}
@@ -61,6 +73,9 @@ To get one:
   3. Download the .p8 key file
   4. Run: go run ./scripts/gen-devtoken with the required env vars
   5. Set apple_developer_token in the utuimp config file (see utuimp --help for its platform path)`)
+	}
+	if problem := appleDeveloperTokenProblem(cfg.AppleDeveloperToken); problem != "" {
+		return fmt.Errorf("invalid Apple Music developer token: %s. Set apple_developer_token to a valid MusicKit token, or choose the vibez token in `utuimp setup services`", problem)
 	}
 
 	tokenCh := make(chan string, 1)
@@ -105,16 +120,16 @@ To get one:
 	}
 
 	loginURL := fmt.Sprintf("http://localhost:%d/login?state=%s", cfg.AuthPort, state)
-	fmt.Println("Connecting to Apple Music...")
-	fmt.Println("Your browser will open to complete the login.")
+	status("Connecting to Apple Music...")
+	status("Your browser will open to complete the login.")
 
 	_ = openBrowser(loginURL) // intentional best-effort browser open
 
-	// Print the fallback URL after a short delay so users whose browser did
+	// Show the fallback URL after a short delay so users whose browser did
 	// not open automatically can still complete the flow.
 	go func() {
 		time.Sleep(4 * time.Second)
-		fmt.Printf("\nIf your browser did not open, visit:\n  %s\n\n", loginURL)
+		status("If your browser did not open, visit: " + loginURL)
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -133,7 +148,7 @@ To get one:
 		if err := cfg.Save(""); err != nil {
 			return fmt.Errorf("saving config: %w", err)
 		}
-		fmt.Println("✓ Apple Music connected successfully!")
+		status("✓ Apple Music connected successfully!")
 		return nil
 	case err := <-errCh:
 		shutdownSrv()

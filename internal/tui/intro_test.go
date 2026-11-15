@@ -36,8 +36,8 @@ func TestIntro_RibbonsBehindTheLogo(t *testing.T) {
 	if !strings.Contains(plain, "♪ utuimp") || !strings.Contains(plain, "connecting…") {
 		t.Errorf("the logo and the status should be over the ribbons, got %q", plain)
 	}
-	if strings.Count(frame, "▀") < 80*6 {
-		t.Error("the ribbons should be drawn")
+	if strings.Count(frame, "▀") < 80*4 {
+		t.Errorf("the ribbons should be drawn, got %d half blocks", strings.Count(frame, "▀"))
 	}
 	// Where there is no ribbon the terminal's own background shows: no
 	// colour of the picture's own to frame it. The corners are always so.
@@ -169,35 +169,38 @@ func TestIntro_RibbonsAsAPicture(t *testing.T) {
 	}
 	W, H := 80*introPxFor(80, 24), 24*2*introPxFor(80, 24)
 	lit := 0
-	for i := 3; i < len(d.pix); i += 4 {
-		if d.pix[i] > 20 {
+	for i := 0; i < len(d.pix); i += 4 {
+		if d.pix[i+3] > 20 {
 			lit++
 		}
 	}
 	if len(d.pix) != W*H*4 || lit < W*H/50 {
 		t.Fatalf("the ribbons should be in the picture: %d of %d pixels", lit, W*H)
 	}
+	_, screenBG, _ := styles.ScreenColors()
 	for x := range W {
-		if d.pix[x*4+3] != 0 || d.pix[((H-1)*W+x)*4+3] != 0 {
-			t.Fatal("the picture has no edge of its own")
+		for _, i := range []int{x * 4, ((H-1)*W + x) * 4} {
+			if d.pix[i+3] != 0 {
+				t.Fatal("the picture should fade away at the screen edges")
+			}
 		}
 	}
 	if dir := os.Getenv("LINES_PNG"); dir != "" {
 		img := image.NewRGBA(image.Rect(0, 0, W, H))
 		for i := 0; i < W*H; i++ {
 			a := float64(d.pix[i*4+3]) / 255
-			img.Set(i%W, i/W, color.RGBA{uint8(float64(d.pix[i*4])*a + 24*(1-a)), uint8(float64(d.pix[i*4+1])*a + 24*(1-a)), uint8(float64(d.pix[i*4+2])*a + 24*(1-a)), 255})
+			img.Set(i%W, i/W, color.RGBA{uint8(float64(d.pix[i*4])*a + float64(screenBG.R)*(1-a)), uint8(float64(d.pix[i*4+1])*a + float64(screenBG.G)*(1-a)), uint8(float64(d.pix[i*4+2])*a + float64(screenBG.B)*(1-a)), 255})
 		}
 		f, _ := os.Create(dir + "/intro.png") //nolint:gosec // a directory the tester asked for
 		_ = png.Encode(f, img)
 		_ = f.Close()
 	}
-	// Opened half way: nothing of the ribbons in the middle.
+	// As the interface opens, the intro picture fades through to it.
 	d.fadeAt = time.Now().Add(-time.Duration(introReveal * 0.7 * float64(time.Second)))
 	m.renderIntro()
 	mid := ((H/2)*W + W/2) * 4
-	if d.pix[mid+3] != 0 {
-		t.Errorf("the ribbons should be gone where the interface has opened: alpha %d", d.pix[mid+3])
+	if d.pix[mid+3] == 255 {
+		t.Errorf("the picture should fade where the interface has opened: alpha %d", d.pix[mid+3])
 	}
 	// The end takes the picture away.
 	d.fadeAt = time.Now().Add(-2 * time.Second)

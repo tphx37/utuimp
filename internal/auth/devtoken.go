@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -151,6 +152,45 @@ func isValidJWT(tok string) bool {
 		}
 	}
 	return true
+}
+
+// appleDeveloperTokenProblem checks the public JWT fields Apple requires
+// before a token is sent to MusicKit. A three-part token with only an exp
+// claim is syntactically a JWT, but Apple rejects it as an invalid token.
+func appleDeveloperTokenProblem(tok string) string {
+	parts := strings.Split(tok, ".")
+	if len(parts) != 3 {
+		return "expected a signed JWT with three parts"
+	}
+	decode := func(part string, dst any) bool {
+		raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(part, "="))
+		return err == nil && json.Unmarshal(raw, dst) == nil
+	}
+	var header struct {
+		Alg string `json:"alg"`
+		Kid string `json:"kid"`
+	}
+	if !decode(parts[0], &header) {
+		return "could not read the JWT header"
+	}
+	if header.Alg != "ES256" || header.Kid == "" {
+		return "JWT must use ES256 and include Apple's key ID (kid)"
+	}
+	var claims struct {
+		Iss string `json:"iss"`
+		Iat int64  `json:"iat"`
+		Exp int64  `json:"exp"`
+	}
+	if !decode(parts[1], &claims) {
+		return "could not read the JWT claims"
+	}
+	if claims.Iss == "" || claims.Iat == 0 || claims.Exp == 0 {
+		return "JWT must include the issuer (iss), issued-at time (iat), and expiry (exp)"
+	}
+	if !time.Unix(claims.Exp, 0).After(time.Now()) {
+		return "JWT has expired"
+	}
+	return ""
 }
 
 type nonRetryableError struct{ error }
@@ -409,6 +449,12 @@ func DeveloperTokenInfo() TokenInfo {
 func resolveWithoutBroker(cfg *config.Config, now time.Time) error {
 	cache := cachePath()
 	cached, cacheErr := readCache(cache)
+	// A cached token whose exp claim looked fresh may still be unusable by
+	// Apple (for example, a JWT containing only exp). When vibez is selected,
+	// discard that cache entry and fetch a properly formed token.
+	if cacheErr == nil && appleDeveloperTokenProblem(cached.Token) != "" {
+		cached, cacheErr = cachedToken{}, errors.New("cached developer token is not a valid Apple Music token")
+	}
 	// Without a broker the cache is only ever written from vibez, and the
 	// token is saved to the config along with everything else.
 	sourceOf := func(tok string) string {
@@ -419,10 +465,13 @@ func resolveWithoutBroker(cfg *config.Config, now time.Time) error {
 	}
 	tok := cfg.AppleDeveloperToken
 	if tok != "" {
-		if exp := jwtExpiry(tok); exp.IsZero() || exp.After(now.Add(refreshBefore)) {
-			logBroker("[token] using developer token from config file (" + sourceOf(tok) + ")")
-			setTokenInfo(sourceOf(tok), tok)
-			return nil
+		preferredToken := cfg.AppleTokenSource != config.AppleTokenVibez || sourceOf(tok) == SourceVibez
+		if preferredToken && appleDeveloperTokenProblem(tok) == "" {
+			if exp := jwtExpiry(tok); exp.IsZero() || exp.After(now.Add(refreshBefore)) {
+				logBroker("[token] using developer token from config file (" + sourceOf(tok) + ")")
+				setTokenInfo(sourceOf(tok), tok)
+				return nil
+			}
 		}
 	}
 	if cacheErr == nil && cached.validFor(now, refreshBefore) {
@@ -433,6 +482,9 @@ func resolveWithoutBroker(cfg *config.Config, now time.Time) error {
 	}
 	// Nothing fresh. Whatever is left is used when a new one can't be had.
 	keep := func() bool {
+		if appleDeveloperTokenProblem(cfg.AppleDeveloperToken) != "" {
+			cfg.AppleDeveloperToken = ""
+		}
 		if cfg.AppleDeveloperToken == "" && cacheErr == nil && cached.validFor(now, 0) {
 			cfg.AppleDeveloperToken = cached.Token
 		}

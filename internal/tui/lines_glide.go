@@ -185,6 +185,12 @@ func (l *uiLines) glideLabels(now time.Time, hostRows int, carry bool) bool {
 		to := l.labelTarget(lb, hostRows)
 		g, ok := l.labelGlides[keys[i]]
 		switch {
+		case !lb.glide:
+			// Album metadata keeps its row and anchor when a track changes.
+			// Moving it across the boxed player makes the old text appear
+			// to slide in from the side.
+			g = &labelGlide{from: to, to: to}
+			l.labelGlides[keys[i]] = g
 		case !ok || !carry || g.seen != l.labelGen-1:
 			// New, or not there in the last frame: there at once.
 			g = &labelGlide{from: to, to: to}

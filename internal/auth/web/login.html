@@ -28,91 +28,36 @@
     </div>
   </main>
 
+  <script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js" async></script>
   <script>
     const appleGlyph = document.getElementById("connectBtn").querySelector("svg").outerHTML;
     const developerToken = "{{.DeveloperToken}}";
     const callbackState = "{{.State}}";
-    const authorizeOrigin = "https://authorize.music.apple.com";
-
-    function requestAppleMusicUserToken() {
-      const thirdPartyInfo = JSON.stringify({
-        thirdPartyName: window.location.host || "utuimp",
-        thirdPartyToken: developerToken,
-      });
-      const params = new URLSearchParams({
-        a: btoa(thirdPartyInfo),
-        referrer: window.location.href,
-      });
-      const popupURL = `${authorizeOrigin}/woa?${params.toString()}`;
-      const width = 650, height = 650;
-      const left = Math.max(0, Math.round((window.screenX || 0) + ((window.outerWidth || width) - width) / 2));
-      const top = Math.max(0, Math.round((window.screenY || 0) + ((window.outerHeight || height) - height) / 2));
-      const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,resizable=no,scrollbars=no,status=no,toolbar=no`;
-
-      return new Promise((resolve, reject) => {
-        const win = window.open(popupURL, "apple-music-service-view", features);
-        if (!win) {
-          reject(new Error("popup blocked by browser - allow popups for localhost and try again"));
-          return;
+    const musicKitScript = document.querySelector('script[src*="musickit.js"]');
+    const musicKitReady = new Promise((resolve, reject) => {
+      let configuring = false;
+      const configureMusicKit = async () => {
+        if (configuring) return;
+        configuring = true;
+        try {
+          await MusicKit.configure({
+            developerToken,
+            app: { name: "utuimp", build: "1.0" },
+          });
+          resolve(MusicKit.getInstance());
+        } catch (err) {
+          reject(err);
         }
-        let settled = false;
-        const cleanup = () => {
-          window.removeEventListener("message", onMessage);
-          clearInterval(pollTimer);
-        };
-        const finish = (fn, val) => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          fn(val);
-        };
-        const pollTimer = setInterval(() => {
-          if (win.closed) {
-            finish(reject, new Error("authorization window closed"));
-          }
-        }, 500);
-
-        function onMessage(event) {
-          if (event.origin !== authorizeOrigin) return;
-          const data = event.data;
-          if (!data || data.jsonrpc !== "2.0" || !data.method) return;
-          const reply = (result) => {
-            try {
-              win.postMessage({ jsonrpc: "2.0", id: data.id, result }, authorizeOrigin);
-            } catch (_) {}
-          };
-          const paramsArr = Array.isArray(data.params) ? data.params : [];
-          switch (data.method) {
-            case "thirdPartyInfo":
-              reply(thirdPartyInfo);
-              break;
-            case "authorize": {
-              const token = paramsArr[0];
-              reply({});
-              if (typeof token === "string" && token.length > 0) {
-                finish(resolve, token);
-              } else {
-                finish(reject, new Error("authorization failed"));
-              }
-              break;
-            }
-            case "decline":
-              reply({});
-              finish(reject, new Error("authorization declined"));
-              break;
-            case "unavailable":
-              reply({});
-              finish(reject, new Error("Apple Music authorization unavailable"));
-              break;
-            case "close":
-            case "switchUserId":
-              reply({});
-              break;
-          }
-        }
-        window.addEventListener("message", onMessage);
-      });
-    }
+      };
+      document.addEventListener("musickitloaded", configureMusicKit, { once: true });
+      // The async CDN script can finish before this inline script runs.
+      if (window.MusicKit) configureMusicKit();
+      musicKitScript.addEventListener("error", () => {
+        reject(new Error("could not load Apple MusicKit; check your connection and try again"));
+      }, { once: true });
+    });
+    // The button handler reports the rejection; mark it handled until clicked.
+    musicKitReady.catch(() => {});
 
     async function connectAppleMusic() {
       const btn = document.getElementById("connectBtn");
@@ -124,7 +69,14 @@
       status.textContent = "Waiting for Apple Music authorization…";
 
       try {
-        const userToken = await requestAppleMusicUserToken();
+        // MusicKit owns Apple's popup, origin handshake and token exchange.
+        // The official API returns the user token when authorization succeeds.
+        const music = await musicKitReady;
+        const result = await music.authorize();
+        const userToken = typeof result === "string" ? result : music.musicUserToken;
+        if (typeof userToken !== "string" || userToken.length === 0) {
+          throw new Error("Apple Music did not return a user token. Check the developer token and try again.");
+        }
 
         status.textContent = "Sending token to utuimp…";
         const resp = await fetch("/callback", {

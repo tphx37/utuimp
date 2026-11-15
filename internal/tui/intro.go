@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/tphx37/utuimp/internal/config"
 	"github.com/tphx37/utuimp/internal/gfx"
 	"github.com/tphx37/utuimp/internal/tui/styles"
 )
@@ -94,11 +95,13 @@ func introRibbons() bool { return !styles.Console }
 func introPalette() [3]vcol {
 	var pal [3]vcol
 	for i, c := range []any{styles.ColorPrimary, styles.ColorAccent, styles.ColorLove} {
-		if bc, ok := c.(ansi.BasicColor); ok && styles.PaletteKnown {
-			rgb := styles.Palette[int(bc)&15]
-			h, s, v := hsv(vcol{float64(rgb[0]) / 255, float64(rgb[1]) / 255, float64(rgb[2]) / 255})
-			pal[i] = hsvColor(h, s, math.Max(0.6, v))
-			continue
+		if _, ok := c.(ansi.BasicColor); ok {
+			// BasicColor themes have no RGB value of their own. Sampling
+			// Kitty's palette here made the splash inherit its muted ANSI
+			// colors, which collapsed the ribbons into grey, low contrast
+			// patches when the UI was drawn with terminal cells. Keep the
+			// vivid ribbon palette used before the image path was added.
+			return defaultVizPalette
 		}
 		col, ok := c.(interface{ RGBA() (r, g, b, a uint32) })
 		if !ok || col == nil {
@@ -178,10 +181,14 @@ func (m *Model) introStepDance() tea.Cmd {
 	if d.leaving(now) >= 1 {
 		m.introStep = introDone
 		m.intro = nil
+		var cmds []tea.Cmd
 		if d.shown {
-			return tea.Raw(d.img.Delete())
+			cmds = append(cmds, tea.Raw(d.img.Delete()))
 		}
-		return nil
+		if ensure := m.linesEnsure(); ensure != nil {
+			cmds = append(cmds, ensure)
+		}
+		return tea.Batch(cmds...)
 	}
 	dt := min(0.1, now.Sub(d.last).Seconds())
 	d.last = now
@@ -257,7 +264,16 @@ func (m *Model) renderIntroDance(logo, status string, main func() string) string
 		return d.frame
 	}
 	defer func() { d.frameW, d.frameH, d.frameOf = w, h, of }()
+	// The intro stays pixel-based in either interface mode. When the UI's
+	// pictures are off, draw its pixels as terminal half-blocks instead.
 	pixels := m.linesOn()
+	if m.cfg != nil && (m.cfg.UIStyle == config.StyleSimple ||
+		m.cfg.UIStyle == "off" ||
+		m.cfg.UICover == config.PartCells &&
+			m.cfg.UILines == config.PartCells &&
+			m.cfg.UIButtons == config.PartCells) {
+		pixels = false
+	}
 	v.px = 1
 	if pixels {
 		v.px = introPxFor(w, h)
@@ -328,7 +344,7 @@ func (m *Model) renderIntroDance(logo, status string, main func() string) string
 	}
 	texts := []vizText{{row: logoRow, text: logo, fg: logoFg}}
 	if status != "" && logoRow+2 < h {
-		texts = append(texts, vizText{row: logoRow + 2, text: status, fg: [][3]uint8{blend3(fg, bg, 0.82)}})
+		texts = append(texts, vizText{row: logoRow + 2, text: status, fg: [][3]uint8{blend3(fg, bg, 0.25)}})
 	}
 	if pixels {
 		// The ribbons as a picture under the text: each pixel as solid
@@ -344,35 +360,18 @@ func (m *Model) renderIntroDance(logo, status string, main func() string) string
 				ey := smooth(0, 6*px, float64(min(y, H-1-y)))
 				for x := range W {
 					i := (y*W + x) * 4
-					d.pix[i+3] = 0
-					c := v.out[y*W+x]
-					// Too dark to cover anything (most of the screen): left
-					// clear at once. tone(0.08 / 0.75 of the way) needs this
-					// much light before alpha.
-					if max(c.r, c.g, c.b)*alpha < introDark {
-						continue
-					}
-					// The tone map the visualizer's own (see toByte3), but
-					// smooth: no steps of four, which, divided by the
-					// brightness below, showed as bands.
-					tr, tg, tb := introTone(c.r*alpha), introTone(c.g*alpha), introTone(c.b*alpha)
-					lum := max(tr, tg, tb)
-					if lum <= 0 {
-						continue
-					}
+					// Use the visualizer's normal tone map and keep its actual
+					// brightness in RGB. Alpha follows the ribbon's light, so
+					// its strokes remain clear over the terminal background.
+					rgb := toByte3(v.out[y*W+x].mul(alpha))
+					d.pix[i], d.pix[i+1], d.pix[i+2] = rgb[0], rgb[1], rgb[2]
+					lum := float64(max(rgb[0], rgb[1], rgb[2])) / 255
 					ex := smooth(0, 8*px, float64(min(x, W-1-x)))
-					cov := smooth(0.08, 0.7, lum) * ex * ey * introMaxCov
-					if cov < 0.004 {
-						continue
-					}
-					cov *= 1 - openAt((float64(x)+0.5)/px, (float64(y)+0.5)/(2*px))
-					if cov < 0.004 {
-						continue
-					}
-					d.pix[i] = byte(255*tr/lum + 0.5)
-					d.pix[i+1] = byte(255*tg/lum + 0.5)
-					d.pix[i+2] = byte(255*tb/lum + 0.5)
-					d.pix[i+3] = byte(255*cov + 0.5)
+					cov := smooth(0.04, 0.32, lum) * ex * ey
+					// Bright strokes cover most of the image beneath them,
+					// while their soft edges still blend into the background.
+					opened := openAt((float64(x)+0.5)/px, (float64(y)+0.5)/(2*px))
+					d.pix[i+3] = byte(255*cov*(1-opened) + 0.5)
 				}
 			}
 		})
@@ -542,6 +541,11 @@ func encodeIntro(v *visualizer, alpha float64, fg, bg [3]uint8, texts []vizText,
 			}
 			top, ct := pixel(col, row*2)
 			bot, cb := pixel(col, row*2+1)
+			// In Kitty with a transparent background, a very dim ANSI
+			// background color becomes a dark block over the wallpaper.
+			// Leave faint halo pixels empty; for a one-sided stroke use a
+			// half-block with foreground only, so its unused half stays clear.
+			const pixelFloor = 0.05
 			avg := blend3(top, bot, 0.5)
 			if k > 0 {
 				c := ui[row][col]
@@ -565,11 +569,18 @@ func encodeIntro(v *visualizer, alpha float64, fg, bg [3]uint8, texts []vizText,
 				}
 				continue
 			}
-			if ct < 0.02 && cb < 0.02 {
+			if ct < pixelFloor && cb < pixelFloor {
 				emit("0", " ")
 				continue
 			}
-			emit("0;"+rgbSGR(38, top)+";"+rgbSGR(48, bot), "▀")
+			switch {
+			case ct < pixelFloor:
+				emit("0;"+rgbSGR(38, bot), "▄")
+			case cb < pixelFloor:
+				emit("0;"+rgbSGR(38, top), "▀")
+			default:
+				emit("0;"+rgbSGR(38, top)+";"+rgbSGR(48, bot), "▀")
+			}
 		}
 		sb.WriteString("\x1b[0m")
 		last = "0"
@@ -581,37 +592,6 @@ func encodeIntro(v *visualizer, alpha float64, fg, bg [3]uint8, texts []vizText,
 }
 
 // toByte3Lin turns a colour in 0..1 into bytes as it is (no tone mapping).
-// introTone is toByte3's tone map without its steps, 0..1: 1-e^(-1.4x)
-// over 0.75, from a table.
-func introTone(x float64) float64 {
-	if x <= 0 {
-		return 0
-	}
-	f := x * introToneScale
-	if f >= introToneN-1 {
-		return 1
-	}
-	i := int(f)
-	k := f - float64(i)
-	return introToneLUT[i]*(1-k) + introToneLUT[i+1]*k
-}
-
-const (
-	introToneN     = 1024
-	introToneScale = (introToneN - 1) / 2.0 // the table goes to x = 2, where the map has long been 1
-	// introDark is the light a pixel needs before anything of it shows:
-	// below, its tone is under 0.08 (see the coverage in renderIntroDance).
-	introDark = 0.04
-)
-
-var introToneLUT = func() (t [introToneN]float64) {
-	for i := range t {
-		x := float64(i) / introToneScale
-		t[i] = math.Min(1, (1-math.Exp(-x*1.4))/0.75)
-	}
-	return t
-}()
-
 func toByte3Lin(c vcol) [3]uint8 {
 	f := func(x float64) uint8 { return uint8(math.Round(clamp01(x) * 255)) }
 	return [3]uint8{f(c.r), f(c.g), f(c.b)}

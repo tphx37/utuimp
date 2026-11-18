@@ -76,7 +76,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ github.sha }}
       - name: Download published archives and checksums
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

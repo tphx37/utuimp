@@ -31,7 +31,8 @@ class PackageManifestsTest(unittest.TestCase):
         module.generate("v4.1.0", self.assets, self.output)
         with zipfile.ZipFile(self.output / "packaging.zip") as archive:
             name = "winget/manifests/t/tphx37/utuimp/4.1.0/tphx37.utuimp.installer.yaml"
-            manifest = json.loads(archive.read(name))
+            content = archive.read(name).decode()
+            manifest = json.loads("\n".join(line for line in content.splitlines() if not line.startswith("#")))
             self.assertEqual(manifest["NestedInstallerType"], "portable")
             self.assertEqual(manifest["NestedInstallerFiles"][0]["RelativeFilePath"], "utuimp.exe")
             digest = hashlib.sha256((self.assets / "utuimp_windows_amd64.zip").read_bytes()).hexdigest().upper()

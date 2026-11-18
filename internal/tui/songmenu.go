@@ -346,3 +346,41 @@ func (m *Model) overlay(base, box string) string {
 		lipgloss.NewLayer(box).X(x).Y(y).Z(1),
 	).Render()
 }
+
+// songMenuBackdrop covers the pixel pictures underneath the menu. Terminal
+// cells alone cannot obscure graphics placed above the terminal background.
+func (m *Model) songMenuBackdrop() string {
+	l := m.lines
+	if m.songMenu == nil {
+		if l.menuShown {
+			l.menuShown = false
+			return l.menuImg.Delete()
+		}
+		return ""
+	}
+	box := m.renderSongMenu()
+	w, h := lipgloss.Width(box), lipgloss.Height(box)
+	x, y := max(0, (m.width-w)/2), max(0, (m.height-h)/2)
+	if w <= 2 || h <= 2 {
+		return ""
+	}
+	_, bg, _ := styles.ScreenColors()
+	key := [7]int{x + 1, y + 1 + m.hostRows, w - 2, h - 2, int(bg.R), int(bg.G), int(bg.B)}
+	if l.menuShown && key == l.menuKey {
+		return ""
+	}
+	pw, ph := key[2]*l.cellW, key[3]*l.cellH
+	if pw <= 0 || ph <= 0 {
+		return ""
+	}
+	pix := make([]byte, pw*ph*4)
+	for i := 0; i < len(pix); i += 4 {
+		pix[i], pix[i+1], pix[i+2], pix[i+3] = bg.R, bg.G, bg.B, 255
+	}
+	seq, err := l.menuImg.Frame(l.mode, pix, pw, ph, key[0], key[1], key[2], key[3])
+	if err != nil || seq == "" {
+		return ""
+	}
+	l.menuShown, l.menuKey = true, key
+	return seq
+}

@@ -106,7 +106,7 @@ func (m *Model) labelSized(kind int, text string, cells, align, rows int, scale 
 	l.labels = append(l.labels, lineLabel{
 		kind: kind, align: align, text: text, cells: cells,
 		rows: max(1, rows), scale: scale,
-		scroll:   kind == labelTitle && len([]rune(text)) > 24,
+		scroll:   kind == labelTitle,
 		scrollAt: m.trackChangedAt,
 		animate:  m.coverView && (kind == labelTitle || kind == labelArtist || kind == labelAlbum),
 		glide:    m.coverView || (kind != labelTitle && kind != labelArtist && kind != labelAlbum),
@@ -114,8 +114,27 @@ func (m *Model) labelSized(kind int, text string, cells, align, rows int, scale 
 	return string(rune(labelMark0+len(l.labels)-1)) + strings.Repeat(" ", cells-1), true //nolint:gosec // under labelMarkEnd, checked above
 }
 
-// scrollLabel returns a long title repeated with a small gap and its current
-// pixel offset. The first and last positions pause so the title is readable.
+// scrollOffset moves to the end and back, pausing at each end.
+func scrollOffset(overflow int, speed float64, at, now time.Time) int {
+	if overflow <= 0 {
+		return 0
+	}
+	const pause = 1200 * time.Millisecond
+	move := time.Duration(float64(overflow) / speed * float64(time.Second))
+	phase := max(now.Sub(at), 0) % (2 * (pause + move))
+	switch {
+	case phase < pause:
+		return 0
+	case phase < pause+move:
+		return int(float64(overflow) * float64(phase-pause) / float64(move))
+	case phase < 2*pause+move:
+		return overflow
+	default:
+		return overflow - int(float64(overflow)*float64(phase-2*pause-move)/float64(move))
+	}
+}
+
+// scrollLabel returns the title and its pixel offset within the available span.
 func scrollLabel(f *gfx.Font, text string, span int, at, now time.Time) (string, int) {
 	if f == nil || span <= 0 {
 		return text, 0
@@ -124,25 +143,7 @@ func scrollLabel(f *gfx.Font, text string, span int, at, now time.Time) (string,
 	if textW <= span {
 		return text, 0
 	}
-	const (
-		pause = 1200 * time.Millisecond
-		speed = 42.0 // pixels per second
-	)
-	overflow := textW - span
-	move := time.Duration(float64(overflow) / speed * float64(time.Second))
-	cycle := pause + move + pause
-	elapsed := now.Sub(at)
-	elapsed = max(elapsed, 0)
-	phase := elapsed % cycle
-	offset := 0
-	switch {
-	case phase <= pause:
-	case phase < pause+move:
-		offset = int(float64(overflow) * float64(phase-pause) / float64(move))
-	default:
-		offset = overflow
-	}
-	return text + "   " + text, offset
+	return text, scrollOffset(textW-span, 42, at, now)
 }
 
 // labelFont is the font of a kind of label.
@@ -290,10 +291,11 @@ func (l *uiLines) drawLabelSet(buf []byte, w, h int, ox, oy float64, labels []li
 		text := fitLabel(f, lb.kind, lb.text, int(g.span))
 		tw := f.Width(text)
 		x := int(math.Round(g.cx-ox)) - tw/2
-		if lb.scroll && !gone {
-			text, offset := scrollLabel(f, lb.text, int(g.span), lb.scrollAt, time.Now())
+		if lb.scroll && !gone && f.Width(lb.text) > int(g.span) {
+			var offset int
+			text, offset = scrollLabel(f, lb.text, int(g.span), lb.scrollAt, time.Now())
 			tw = f.Width(text)
-			x = int(math.Round(g.cx-ox)) - f.Width(lb.text)/2 - offset
+			x = int(math.Round(g.cx-ox-g.span/2)) - offset
 		}
 		base := int(math.Round(g.base - oy))
 		mask := l.labelMask(w * h)
@@ -392,13 +394,10 @@ func (l *uiLines) labelsSig() string {
 
 // Another song's words melt in as the last one's melt away: those go over
 // labelsOutFor, the new ones come up from labelsInAfter to labelsInFor.
-// labelsFadeFor is how long before another change starts it all again (a
-// held key goes on with the one under way).
 const (
 	labelsOutFor  = 500 * time.Millisecond
 	labelsInAfter = 0 * time.Millisecond
 	labelsInFor   = 500 * time.Millisecond
-	labelsFadeFor = 500 * time.Millisecond
 )
 
 // isSongWord reports whether a label gets the crossfade animation.

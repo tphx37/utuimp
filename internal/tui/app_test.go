@@ -8,7 +8,22 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/tphx37/utuimp/internal/player"
 	"github.com/tphx37/utuimp/internal/provider"
+	"github.com/tphx37/utuimp/internal/tui/styles"
 )
+
+func TestAppAMOLEDBackground(t *testing.T) {
+	app, services := testApp(t)
+	t.Cleanup(func() { styles.BlackBackground = false })
+	services[0].Model.cfg.AMOLED = true
+	styles.BlackBackground = true
+	if app.View().BackgroundColor == nil {
+		t.Fatal("the tabbed app should retain the model's black background")
+	}
+	app.active = 2
+	if app.View().BackgroundColor == nil {
+		t.Fatal("placeholder tabs should retain the black background")
+	}
+}
 
 func testApp(t *testing.T) (*App, []*Service) {
 	t.Helper()

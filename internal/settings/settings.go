@@ -318,6 +318,12 @@ func Sections() []Section {
 				Set: func(c *config.Config, v string) { c.Theme = v },
 			},
 			{
+				Key: "interface.amoled", Title: "AMOLED background", Kind: Toggle,
+				Help: "Use a pure black background behind the interface.",
+				Get:  func(c *config.Config) string { return onOff(c.AMOLED) },
+				Set:  func(c *config.Config, v string) { c.AMOLED = v == On },
+			},
+			{
 				Key: "interface.motion", Title: "Animation", Kind: Choice,
 				Help: "off: still, and the interface in plain cells (its pixel lines and pictures move, so they go too; for lines that stand still see Graphics, Frames and lines). calm: panels and new songs fade in.",
 				Options: func(*config.Config) []Option {

@@ -1,5 +1,19 @@
 # Changelog
 
+## 4.0.2
+
+- Added an optional pure black AMOLED background in Interface settings.
+- Smoothed word-by-word lyric highlighting, including slow passages.
+- Smoothed artwork, title, artist and album transitions when changing tracks,
+  including rapid changes and metadata that arrives too late.
+- Kept the progress and volume bars and playback buttons visible when tracks
+  change, without restarting their appearance animation.
+- Made the cover fade in when returning to a view that has room for it.
+- Fixed long titles scrolling unevenly or being cut off in narrow windows.
+- Added an opaque background to the song menu so player graphics underneath it
+  do not overlap its text.
+- Added [SECURITY.md](SECURITY.md).
+
 ## 4.0.1
 
 - The macOS and Windows audio outputs now share device-clock PCM with the

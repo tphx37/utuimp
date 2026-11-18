@@ -95,7 +95,7 @@ each service signs in the first time you open its tab. details - see [docs/servi
 | `v` | boxed view ↔ cover view |
 | `V` | fullscreen visualizer |
 | `,` | settings |
-| `H` | hide the key hints at the bottom (again: back) |
+| `H` | hide or show the key hints at the bottom |
 | `:` | commands (`:vol 50`, `:save name`, `:q`) |
 | `esc` | back |
 

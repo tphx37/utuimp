@@ -2,14 +2,36 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/tphx37/utuimp/internal/gfx"
 	"github.com/tphx37/utuimp/internal/player"
 	"github.com/tphx37/utuimp/internal/provider"
 )
+
+func TestSongMenuBackdropCoversGraphics(t *testing.T) {
+	m := coverModel(t, 100, 40)
+	m.coverView = true
+	m.lines.mode = gfx.File
+	m.lines.cellW, m.lines.cellH = 9, 18
+	m.songMenu = &songMenuState{track: *m.playerState.Track}
+	seq := m.songMenuBackdrop()
+	if seq == "" || !m.lines.menuShown || m.lines.menuImg.Z <= m.lines.strips[stripLabels].img.Z {
+		t.Fatal("menu needs an opaque layer above the player graphics")
+	}
+	w, h := m.lines.menuKey[2]*m.lines.cellW, m.lines.menuKey[3]*m.lines.cellH
+	if !strings.Contains(seq, fmt.Sprintf("s=%d,v=%d", w, h)) {
+		t.Fatalf("backdrop must have the menu's full pixel dimensions: %q", seq)
+	}
+	m.songMenu = nil
+	if m.songMenuBackdrop() == "" || m.lines.menuShown {
+		t.Fatal("closing the menu should remove its backdrop")
+	}
+}
 
 type detailProvider struct {
 	*mockProvider

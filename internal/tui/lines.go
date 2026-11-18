@@ -55,6 +55,7 @@ const (
 	// (this and the cover strip's own), so that the old one can stay under
 	// the new one as it comes up.
 	linesCoverAltID = 69
+	linesMenuID     = 68
 	linesQuietAfter = 30
 	linesImageID    = 72 // the first line's picture; the next ones follow
 	linesRows       = 3  // the picture's height in cells: the line's row and one each side
@@ -64,9 +65,6 @@ const (
 	// linesRuleSway is the same for a rule, which has one row to itself.
 	linesRuleSway = 0.14
 	linesMaxRules = 8
-	// linesWaveFor is how long the wave of a new song takes to cross the
-	// progress line.
-	linesWaveFor = 1.3
 	// linesBackScale: the ribbons behind the lyrics are drawn at this part
 	// of the screen's pixels (they are soft; the terminal smooths them out).
 	// linesWaveRows is the height of the waves over and under the lyrics.
@@ -213,6 +211,9 @@ type uiLines struct {
 	// (see keepOldCover).
 	coverOld   gfx.Image
 	coverOldOn bool
+	menuImg    gfx.Image
+	menuKey    [7]int
+	menuShown  bool
 	quiet      int  // frames in a row in which nothing moved (see linesWatch)
 	changed    bool // something on screen changed in the last frame drawn
 	views      int  // screens laid out (for UTUIMP_LINES_LOG)
@@ -231,12 +232,13 @@ type uiLines struct {
 	halo     haloShape
 	// The player's words as a picture: the labels of the screen being laid
 	// out, the fonts, and when the words last changed.
-	labels   []lineLabel
-	fonts    map[string]*gfx.Font
-	mask     []byte
-	labelsOf string
-	labelsAt time.Time
-	titleOf  string
+	labels      []lineLabel
+	fonts       map[string]*gfx.Font
+	mask        []byte
+	labelsOf    string
+	labelsAt    time.Time
+	titleOf     string
+	songWordsOf string
 	// The last song's words (title, artist, album) as they were last
 	// drawn, and those going while another song's come (since labelsAt).
 	songWords, goneWords []lineLabel
@@ -277,10 +279,9 @@ type uiLines struct {
 	palTo                  [3]vcol
 	palURL                 string
 	palStarted             bool
-	song                   string    // the song the progress line is of
-	waveAt                 time.Time // when it changed: a wave crosses the line
-	vol                    float64   // the volume last seen
-	volKick                float64   // a change of volume stirs its line for a moment
+	song                   string  // the song the progress line is of
+	vol                    float64 // the volume last seen
+	volKick                float64 // a change of volume stirs its line for a moment
 }
 
 func newUILines() *uiLines {
@@ -288,9 +289,10 @@ func newUILines() *uiLines {
 	l.strips[stripProgress] = lineStrip{re: regexp.MustCompile(`(?:\d+:\d\d(?::\d\d)?|[\x{e100}-\x{e1ff}] *)  ([━╸─]{4,})  (?:-?\d+:\d\d|[\x{e100}-\x{e1ff}])`), sway: true}
 	l.strips[stripVolume] = lineStrip{re: regexp.MustCompile(`(?:♪|[\x{e100}-\x{e1ff}] *)  ([━╸─]{4,})  (?:\d+%|[\x{e100}-\x{e1ff}])`)}
 	for i := range l.strips {
-		l.strips[i].img = gfx.Image{ID: linesImageID + i, Z: -1, Alpha: true}
+		l.strips[i].img = gfx.Image{ID: linesImageID + i, Z: -2, Alpha: true}
 	}
-	l.strips[stripHalo].img.Z = -3 // under the cover (and the one it replaces, see coverOld)
+	l.strips[stripHalo].img.Z = -4 // under the cover and the one it replaces
+	l.menuImg = gfx.Image{ID: linesMenuID, Z: -1, Alpha: true}
 	return l
 }
 
@@ -716,13 +718,13 @@ func (l *uiLines) keepOldCover(st *lineStrip) string {
 		return drop
 	}
 	old := st.img
-	old.Z = -2
+	old.Z = -3
 	l.coverOld, l.coverOldOn = old, true
 	id := linesCoverAltID
 	if st.img.ID == linesCoverAltID {
 		id = linesImageID + stripCover
 	}
-	st.img = gfx.Image{ID: id, Z: -1, Alpha: true}
+	st.img = gfx.Image{ID: id, Z: -2, Alpha: true}
 	st.shown, st.sentKey = false, [5]int{}
 	return drop + old.Place(st.col, st.row, st.cols, st.rows)
 }
@@ -784,6 +786,8 @@ func (m *Model) linesHideSeq() string {
 	l.coverOldOn = false
 	coverAlt := gfx.Image{ID: linesCoverAltID}
 	seq.WriteString(coverAlt.Delete())
+	seq.WriteString(l.menuImg.Delete())
+	l.menuShown = false
 	return seq.String()
 }
 
@@ -831,15 +835,11 @@ func (m *Model) linesDraw(dt float64, now time.Time) string {
 	l.t += dt * (0.35 + 0.9*l.amp)
 	l.bt += dt * l.amp * 0.6
 
-	// A new song sends a wave along its line; a loading one keeps them
-	// coming.
+	// The progress and controls keep their appearance across track changes.
 	var wave lineWave
 	if t := m.playerState.Track; t != nil {
 		if id := t.ID + "\x00" + t.Title; id != l.song {
 			if l.song != "" {
-				if now.Sub(l.waveAt).Seconds() > 0.6*linesWaveFor {
-					l.waveAt = now // one still crossing is left to cross (a held key)
-				}
 				fresh := false
 				for _, t := range l.touches {
 					fresh = fresh || (t.kind == touchSong && now.Sub(t.at).Seconds() < 2)
@@ -850,13 +850,6 @@ func (m *Model) linesDraw(dt float64, now time.Time) string {
 			}
 			l.song = id
 		}
-	}
-	if m.playerState.Loading && m.playerState.Track != nil {
-		p := math.Mod(float64(now.UnixMilli())/1000, linesWaveFor) / linesWaveFor
-		wave = lineWave{at: -0.1 + 1.2*p, amp: 0.22}
-	} else if age := now.Sub(l.waveAt).Seconds(); age < linesWaveFor {
-		p := age / linesWaveFor
-		wave = lineWave{at: -0.1 + 1.2*p, amp: 0.3 * (1 - p*p)}
 	}
 	// A change of volume stirs its line.
 	if v := m.playerState.Volume; v != l.vol {
@@ -973,6 +966,11 @@ func (m *Model) linesDraw(dt float64, now time.Time) string {
 			}
 			continue
 		}
+		if i == stripCover && (!st.shown || !st.goneAt.IsZero()) {
+			// The same artwork can return after a layout that had no cover.
+			// Its cached pixels are still valid, but its fade must start again.
+			l.coverAt = now
+		}
 		if !st.goneAt.IsZero() {
 			st.goneAt, st.sentKey = time.Time{}, [5]int{} // back before it had gone
 		}
@@ -1088,26 +1086,35 @@ func (m *Model) linesDraw(dt float64, now time.Time) string {
 			// Drawn anew when the words change; another song's come up
 			// softly.
 			title := ""
+			var words strings.Builder
 			for _, lb := range l.labels {
 				if lb.found && lb.kind == labelTitle {
 					title = lb.text
 				}
+				if lb.found && isSongWord(lb) {
+					fmt.Fprintf(&words, "%d:%d:%s;", lb.kind, len(lb.text), lb.text)
+				}
 			}
-			if title != l.titleOf {
-				if now.Sub(l.labelsAt) > labelsFadeFor {
-					// The last song's words melt away as the new ones
-					// come; words still coming go on coming (a held key).
-					l.labelsAt = now
-					l.goneWords = nil
-					if l.titleOf != "" {
-						l.goneWords = append(l.goneWords, l.songWords...)
-					}
+			if title != "" && words.String() != l.songWordsOf {
+				// The last song's words melt away as the new ones come.
+				l.labelsAt = now
+				l.goneWords = nil
+				if l.titleOf != "" {
+					l.goneWords = append(l.goneWords, l.songWords...)
 				}
 				l.titleOf = title
+				l.songWordsOf = words.String()
 			}
 			sig := l.labelsSig() + fmt.Sprintf("%d %v", int(m.playerState.Volume*100), m.preMuteVol >= 0)
 			moving = sig != l.labelsOf || now.Sub(l.labelsAt) < labelsInFor+50*time.Millisecond
-			slow = sig == l.labelsOf // only the words fading in or out
+			for _, lb := range l.labels {
+				if lb.found && lb.scroll {
+					if f := l.labelFont(lb.kind, lb.scale); f != nil && f.Width(lb.text) > lb.cells*l.cellW {
+						moving = true
+					}
+				}
+			}
+			slow = false // keep the crossfade at the screen's full frame rate
 			l.labelsOf = sig
 		case i == stripLyrics:
 			// Drawn anew when the lyrics change, while the text glides
@@ -1118,13 +1125,13 @@ func (m *Model) linesDraw(dt float64, now time.Time) string {
 			if n := len(sc.Lines); n > 0 {
 				sig += sc.Lines[0].Text + sc.Lines[n-1].Translation
 			}
-			moving = l.lyrMoving || sig != l.lyrSig
+			moving = l.lyrMoving || sig != l.lyrSig || (sc.Lit >= 0 && m.playerState.Playing)
 			l.lyrSig = sig
 		case i == stripCover:
 			// Still, once it has come up and got to its place; made anew
 			// for another cover or another size.
 			moving = now.Sub(l.coverAt).Seconds() < 0.6 || now.Sub(l.covAt).Seconds() < linesMoveFor
-			slow = now.Sub(l.covAt).Seconds() >= linesMoveFor // a new cover coming up: a fade
+			slow = now.Sub(l.coverAt).Seconds() >= 0.6 && now.Sub(l.covAt).Seconds() >= linesMoveFor
 		case i == stripSel:
 			amp = breath
 			if calm {
@@ -1216,10 +1223,8 @@ func (m *Model) linesDraw(dt float64, now time.Time) string {
 			key[4] = 0
 			if ck := fmt.Sprintf("%s %dx%d", m.artwork.url, w, h); ck != l.coverKey || len(st.rgba) != w*h*4 {
 				if !strings.HasPrefix(l.coverKey, m.artwork.url+" ") {
-					if now.Sub(l.coverAt).Seconds() > 0.5 {
-						l.coverAt = now // another cover, not another size; one still coming up goes on
-						seq.WriteString(l.keepOldCover(st))
-					}
+					l.coverAt = now // another cover, not another size
+					seq.WriteString(l.keepOldCover(st))
 				}
 				l.coverKey = ck
 				st.rgba = make([]byte, w*h*4)
@@ -1227,6 +1232,7 @@ func (m *Model) linesDraw(dt float64, now time.Time) string {
 				st.sentKey = [5]int{}
 			}
 		}
+
 		if moving || key != st.sentKey {
 			l.changed = true // (a picture only sent again, now and then, is not)
 		}
@@ -1332,6 +1338,7 @@ func (m *Model) linesDraw(dt float64, now time.Time) string {
 		}
 		pix := st.rgba
 		st.pw, st.ph = w, h
+
 		// What has just come comes softly (the frames, the rules and the
 		// waves draw themselves in instead).
 		if i == stripProgress || i == stripVolume || i == stripCtl || i == stripSel || i == stripLyrics || i == stripLabels {
@@ -1485,6 +1492,7 @@ func (m *Model) linesDraw(dt float64, now time.Time) string {
 		st.shown, st.sentAt, st.sentKey = true, now, key
 		seq.WriteString(one)
 	}
+	seq.WriteString(m.songMenuBackdrop())
 	return seq.String()
 }
 

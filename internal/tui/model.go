@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
 	"math"
 	"net/http"
 	"os"
@@ -180,6 +181,10 @@ func (m *Model) settingsChanged(msg views.SettingsChangedMsg) tea.Cmd {
 		m.lyricsP.m.SetTranslateLang(m.translateLang())
 	case "interface.frame_rate":
 		applyFrameRate(m.cfg.FrameRate)
+	case "interface.amoled":
+		styles.BlackBackground = m.cfg.AMOLED
+		m.viewHas = false
+		m.soft = nil
 	}
 	if m.onSetting != nil {
 		m.onSetting(msg.Key)
@@ -708,6 +713,7 @@ type Model struct {
 }
 
 func New(cfg *config.Config, prov provider.Provider, plyr player.Player, opts Options) *Model {
+	styles.BlackBackground = cfg.AMOLED
 	if prov == nil {
 		// The engine starts later (EngineReadyMsg); until then requests get
 		// a "still connecting" error rather than a nil provider.
@@ -2577,7 +2583,7 @@ func (m *Model) fastAnimating() bool {
 	if m.lyricsVisible() && m.playerState.Playing {
 		return true
 	}
-	if m.playerState.Track != nil && len([]rune(m.playerState.Track.Title)) > 24 {
+	if m.playerState.Track != nil && len([]rune(m.playerState.Track.Title)) > 12 {
 		return true
 	}
 	return !m.trackChangedAt.IsZero() && time.Since(m.trackChangedAt) < titleReveal
@@ -2608,31 +2614,13 @@ func (m *Model) revealLine(line string) string {
 // scrollTitle keeps a long title readable in a fixed-width terminal row.
 // It pauses at both ends, then moves the title through the row repeatedly.
 func (m *Model) scrollTitle(line string, width int) string {
-	if width <= 0 || ansi.StringWidth(ansi.Strip(line)) <= width ||
-		len([]rune(ansi.Strip(line))) <= 24 {
+	if width <= 0 || ansi.StringWidth(ansi.Strip(line)) <= width {
 		return line
 	}
-	const (
-		pause = 1200 * time.Millisecond
-		speed = 8.0 // cells per second
-	)
 	plain := ansi.Strip(line)
 	overflow := ansi.StringWidth(plain) - width
-	move := time.Duration(float64(overflow) / speed * float64(time.Second))
-	cycle := pause + move + pause
-	elapsed := time.Since(m.trackChangedAt)
-	elapsed = max(elapsed, 0)
-	phase := elapsed % cycle
-	offset := 0
-	switch {
-	case phase <= pause:
-	case phase < pause+move:
-		offset = int(float64(overflow) * float64(phase-pause) / float64(move))
-	default:
-		offset = overflow
-	}
-	repeated := line + "   " + line
-	return ansi.Cut(repeated, offset, offset+width)
+	offset := scrollOffset(overflow, 8, m.trackChangedAt, time.Now())
+	return ansi.Cut(line, offset, offset+width)
 }
 
 // lyricsVisible reports whether the lyrics panel is open with a track.
@@ -3975,6 +3963,9 @@ func (m *Model) viewNow() tea.View {
 	v := tea.NewView(content)
 	v.AltScreen = true
 	v.BackgroundColor = m.vizBackground()
+	if v.BackgroundColor == nil && m.cfg.AMOLED {
+		v.BackgroundColor = color.RGBA{A: 255}
+	}
 	if !styles.Console { // the console has no window to name
 		v.WindowTitle = m.windowTitle()
 	}

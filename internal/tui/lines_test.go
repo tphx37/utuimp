@@ -797,6 +797,26 @@ func TestLinesLabels(t *testing.T) {
 			t.Errorf("label kind %d not on the screen", k)
 		}
 	}
+	// A track reveal must leave every picture label available to the same
+	// crossfade, including its first frame.
+	m.fxState().trackAt = time.Now()
+	_ = m.View()
+	kinds = map[int]bool{}
+	for _, lb := range l.labels {
+		if lb.found && isSongWord(lb) {
+			kinds[lb.kind] = true
+		}
+	}
+	for _, k := range []int{labelTitle, labelArtist, labelAlbum} {
+		if !kinds[k] {
+			t.Errorf("song label kind %d missing during track reveal", k)
+		}
+	}
+	for _, i := range []int{stripProgress, stripVolume, stripCtl} {
+		if !l.strips[i].seen {
+			t.Errorf("player picture %d missing during track reveal", i)
+		}
+	}
 	m.linesDraw(0.033, time.Now())
 	st := l.strips[stripLabels]
 	solid := 0
@@ -975,6 +995,69 @@ func TestLinesParts(t *testing.T) {
 	}
 }
 
+func TestCoverFadesBackAfterHiddenLayout(t *testing.T) {
+	m := coverModel(t, 90, 30)
+	m.lines.mode = gfx.Shm
+	m.lines.cellW, m.lines.cellH = 9, 18
+	m.coverView = true
+	_ = m.View()
+	l := m.lines
+	st := &l.strips[stripCover]
+	if !st.seen {
+		t.Fatal("cover view should show the cover")
+	}
+	start := time.Now()
+	m.linesDraw(0.016, start)
+	m.linesDraw(0.016, start.Add(time.Second))
+	m.coverView = false
+	_ = m.View()
+	if st.seen {
+		t.Fatal("boxed view should hide the cover at this size")
+	}
+	m.linesDraw(0.016, start.Add(2*time.Second))
+	m.linesDraw(0.016, start.Add(3*time.Second))
+	m.coverView = true
+	_ = m.View()
+	if !st.seen {
+		t.Fatal("cover should return in cover view")
+	}
+	returned := start.Add(4 * time.Second)
+	m.linesDraw(0.016, returned)
+	if !l.coverAt.Equal(returned) {
+		t.Fatalf("cover fade started at %v, want %v", l.coverAt, returned)
+	}
+	if len(l.coverFade) == 0 {
+		t.Fatal("returning cover should start transparent")
+	}
+	m.linesDraw(0.016, returned.Add(250*time.Millisecond))
+	if len(l.coverFade) == 0 {
+		t.Fatal("returning cover should still be fading halfway through")
+	}
+	m.linesDraw(0.016, returned.Add(600*time.Millisecond))
+	if len(l.coverFade) != 0 {
+		t.Fatal("cover should finish fading")
+	}
+}
+
+func TestTitleScrollPausesAndReturnsSmoothly(t *testing.T) {
+	at := time.Now()
+	for _, tc := range []struct {
+		elapsed time.Duration
+		want    int
+	}{
+		{0, 0},
+		{1700 * time.Millisecond, 20},
+		{2200 * time.Millisecond, 40},
+		{3400 * time.Millisecond, 40},
+		{3900 * time.Millisecond, 20},
+		{4400 * time.Millisecond, 0},
+	} {
+		if got := scrollOffset(40, 40, at, at.Add(tc.elapsed)); got != tc.want {
+			t.Errorf("at %v: offset %d, want %d", tc.elapsed, got, tc.want)
+		}
+	}
+}
+
 // Still lines do not sway with the music nor bend to keys (the colours of
 // the frame in focus still run round it).
 func TestLinesCalm(t *testing.T) {
@@ -1048,6 +1131,17 @@ func TestLinesLabelsCrossfade(t *testing.T) {
 	if !found {
 		t.Fatalf("the last song's title should be going: %+v", l.goneWords)
 	}
+	tr.Title = "Third Tune"
+	m.playerState.Track = &tr
+	_ = m.View()
+	m.linesDraw(0.016, time.Now())
+	found = false
+	for _, lb := range l.goneWords {
+		found = found || lb.text == "Another Tune"
+	}
+	if l.titleOf != "Third Tune" || !found {
+		t.Fatalf("a rapid change should start a new transition: title %q, old labels %+v", l.titleOf, l.goneWords)
+	}
 	solid := func(look labelLook) int {
 		st := l.strips[stripLabels]
 		buf := make([]byte, len(st.rgba))
@@ -1067,6 +1161,19 @@ func TestLinesLabelsCrossfade(t *testing.T) {
 	both.fade = 1
 	if n0, n1, n2 := solid(none), solid(stay), solid(both); n0 == 0 || n1 <= n0 || n2 <= n1 {
 		t.Errorf("times and volume always (%d), the old words while they go (%d), and the new ones too (%d)", n0, n1, n2)
+	}
+	// Some players supply the artist after the title. It must also start
+	// the same transition, even when the title did not change.
+	tr.Artist = "Another Artist"
+	m.playerState.Track = &tr
+	_ = m.View()
+	m.linesDraw(0.016, time.Now())
+	found = false
+	for _, lb := range l.goneWords {
+		found = found || lb.kind == labelArtist && lb.text == "Someone"
+	}
+	if !found {
+		t.Fatalf("a late artist update should crossfade the previous artist: %+v", l.goneWords)
 	}
 }
 

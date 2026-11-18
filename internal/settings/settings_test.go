@@ -108,7 +108,7 @@ func findItem(t *testing.T, key string) Item {
 func TestSettingsConvenience(t *testing.T) {
 	c := &config.Config{}
 	want := map[string]string{
-		"interface.view": "", "interface.cover_lyrics": On, "interface.album_art": Off, "interface.hints": On,
+		"interface.view": "", "interface.cover_lyrics": On, "interface.album_art": Off, "interface.hints": On, "interface.amoled": Off,
 		"interface.frame_rate": "", "playback.seek_step": "10", "playback.volume_step": "5",
 		"playback.notify": "", "lyrics.size": "", "visualizer.scene": "", "visualizer.brightness": "100",
 	}
@@ -123,6 +123,7 @@ func TestSettingsConvenience(t *testing.T) {
 
 	set := func(key, v string) { findItem(t, key).Set(c, v) }
 	set("interface.view", "cover")
+	set("interface.amoled", On)
 	set("interface.cover_lyrics", Off)
 	set("interface.album_art", On)
 	set("interface.hints", Off)
@@ -133,7 +134,7 @@ func TestSettingsConvenience(t *testing.T) {
 	set("lyrics.size", config.LyricsLarge)
 	set("visualizer.scene", "nebula")
 	set("visualizer.brightness", "70")
-	if c.Layout != "cover" || !c.CoverHideLyrics || !c.AlbumArt || !c.HideHints || c.FrameRate != "30" ||
+	if c.Layout != "cover" || !c.AMOLED || !c.CoverHideLyrics || !c.AlbumArt || !c.HideHints || c.FrameRate != "30" ||
 		c.SeekStep != 15 || c.VolumeStep != 2 || c.Notify != config.NotifyAway || c.LyricsSize != config.LyricsLarge ||
 		c.VisualizerScene != "nebula" || c.VisualizerBrightness == nil || *c.VisualizerBrightness != 70 {
 		t.Errorf("not written: %+v", *c)

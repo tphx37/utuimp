@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -402,6 +403,15 @@ func boolS(b bool) string {
 // colour. So where the interface is drawn in pictures (they sit on such
 // backgrounds as well as on any) words arrive in a sweep, each letter whole.
 func fxReveal(c *uiCell, k float64, screen [3]uint8, whole bool) {
+	if whole {
+		// The pixel renderer locates its pictures by these marks and line
+		// characters. Hiding one makes the corresponding picture disappear
+		// and fade back in during a track change.
+		if r, _ := utf8.DecodeRuneInString(c.ch); r == linesCoverMark || r == linesCtlMark ||
+			r >= labelMark0 && r < labelMarkEnd || r == '─' || r == '━' || r == '╸' {
+			return
+		}
+	}
 	if !whole {
 		fxFade(c, k, screen)
 		return

@@ -13,8 +13,34 @@ import (
 	"github.com/tphx37/utuimp/internal/config"
 	"github.com/tphx37/utuimp/internal/player"
 	"github.com/tphx37/utuimp/internal/provider"
+	"github.com/tphx37/utuimp/internal/tui/styles"
 	"github.com/tphx37/utuimp/internal/tui/views"
 )
+
+func TestAMOLEDBackgroundSetting(t *testing.T) {
+	m := newModel(newMockPlayer())
+	t.Cleanup(func() { styles.BlackBackground = false })
+	m.width, m.height = 100, 30
+	m.cfg.AMOLED = true
+	m.settingsChanged(views.SettingsChangedMsg{Key: "interface.amoled"})
+	bg := m.View().BackgroundColor
+	if bg == nil {
+		t.Fatal("AMOLED should set the terminal background")
+	}
+	r, g, b, _ := bg.RGBA()
+	if r != 0 || g != 0 || b != 0 {
+		t.Fatalf("background should be black, got %v", bg)
+	}
+	_, screen, ok := styles.ScreenColors()
+	if !ok || screen.R != 0 || screen.G != 0 || screen.B != 0 {
+		t.Fatalf("drawing should use a black background, got %v", screen)
+	}
+	m.cfg.AMOLED = false
+	m.settingsChanged(views.SettingsChangedMsg{Key: "interface.amoled"})
+	if m.View().BackgroundColor != nil || styles.BlackBackground {
+		t.Fatal("turning AMOLED off should restore the terminal background")
+	}
+}
 
 // ← → and + - go as far as the settings say, and the hints say so too.
 func TestSeekAndVolumeSteps(t *testing.T) {

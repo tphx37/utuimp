@@ -190,8 +190,8 @@ merging it in.
 - Never paste tokens, cookies, client secrets or your `config.json` /
   `credentials.json` into issues or logs. `:debug-logs` output is safe to
   share once you have checked it for anything personal.
-- Report security problems privately to the maintainer, not in a public
-  issue.
+- Report security problems privately as described in the [security policy](SECURITY.md),
+  not in a public issue.
 
 ## License
 

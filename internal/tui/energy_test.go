@@ -134,7 +134,7 @@ func TestLinesWatch(t *testing.T) {
 	for i := range l.strips {
 		l.strips[i].born, l.strips[i].cameAt = long, long
 	}
-	l.coverAt, l.covAt, l.labelsAt, l.waveAt, m.soft = long, long, long, long, nil
+	l.coverAt, l.covAt, l.labelsAt, m.soft = long, long, long, nil
 	for range 200 {
 		m.linesFrameMsg(linesTickMsg{l.gen})
 	}

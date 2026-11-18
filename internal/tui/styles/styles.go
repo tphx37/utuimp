@@ -449,8 +449,9 @@ func hex2(v uint8) string {
 // the terminal (OSC 10/11). nil until known. ANSI themes need them to blend
 // colours, since palette indices carry no trustworthy RGB value.
 var (
-	TermFg color.Color
-	TermBg color.Color
+	TermFg          color.Color
+	TermBg          color.Color
+	BlackBackground bool
 )
 
 // Palette is the real colours of the terminal's 16 palette entries, once
@@ -481,6 +482,9 @@ func LyricColors() (sung, dim color.Color, ok bool) {
 	if ANSIMode {
 		fg, bg = TermFg, TermBg
 	}
+	if BlackBackground {
+		bg = color.RGBA{A: 255}
+	}
 	if fg == nil || bg == nil || !isRGB(fg) || !isRGB(bg) {
 		return nil, nil, false
 	}
@@ -506,6 +510,9 @@ func LyricFadeColors() (dim, bg color.Color, ok bool) {
 	if ANSIMode {
 		bg = TermBg
 	}
+	if BlackBackground {
+		bg = color.RGBA{A: 255}
+	}
 	return dim, bg, true
 }
 
@@ -526,6 +533,8 @@ func ScreenColors() (fg, bg color.RGBA, ok bool) {
 		fg = rgb(ColorFg)
 	}
 	switch {
+	case BlackBackground:
+		bg, ok = color.RGBA{A: 255}, true
 	case TermBg != nil:
 		bg, ok = rgb(TermBg), true
 	case !ANSIMode && isRGB(ColorBg):

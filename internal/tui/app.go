@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
 	"reflect"
 	"strings"
 	"time"
@@ -323,6 +324,9 @@ func (a *App) View() tea.View {
 		body := lipgloss.Place(a.width, a.bodyHeight(), lipgloss.Center, lipgloss.Center, box)
 		v := tea.NewView(a.tabBar() + "\n" + body)
 		v.AltScreen = true
+		if styles.BlackBackground {
+			v.BackgroundColor = color.RGBA{A: 255}
+		}
 		v.MouseMode = tea.MouseModeCellMotion
 		v.WindowTitle = "utuimp · " + s.Name
 		return v
@@ -339,5 +343,6 @@ func (a *App) View() tea.View {
 	v.AltScreen = true
 	v.WindowTitle = inner.WindowTitle
 	v.MouseMode = inner.MouseMode
+	v.BackgroundColor = inner.BackgroundColor
 	return v
 }

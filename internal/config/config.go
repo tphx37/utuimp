@@ -45,6 +45,7 @@ type Config struct {
 	AuthPort         int    `json:"auth_port"`
 	Provider         string `json:"provider"`
 	Theme            string `json:"theme"`
+	AMOLED           bool   `json:"amoled,omitempty"`
 	AudioQuality     string `json:"audio_quality,omitempty"`
 	// Volume is the last user-set playback volume (0.0–1.0). nil means
 	// "not yet saved" and the player default (1.0) is used on startup.

@@ -327,3 +327,20 @@ func TestTouchPlayEveryPress(t *testing.T) {
 		t.Errorf("a list run through is one touch, held: %d touches", len(l.touches))
 	}
 }
+func TestFxRevealKeepsPictureLabels(t *testing.T) {
+	for _, r := range []rune{labelMark0, labelMark0 + 1, labelMark0 + 2} {
+		mark := string(r)
+		cell := uiCell{ch: mark, bgDefault: true}
+		fxReveal(&cell, 0, [3]uint8{}, true)
+		if cell.ch != mark {
+			t.Errorf("label marker %q was lost during a reveal", r)
+		}
+	}
+	for _, mark := range []rune{linesCtlMark, linesCoverMark, '─', '━', '╸'} {
+		cell := uiCell{ch: string(mark), bgDefault: true}
+		fxReveal(&cell, 0, [3]uint8{}, true)
+		if cell.ch != string(mark) {
+			t.Errorf("picture marker %q disappeared during a reveal", mark)
+		}
+	}
+}

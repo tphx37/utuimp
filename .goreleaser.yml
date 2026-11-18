@@ -119,6 +119,7 @@ nfpms:
     ids: [utuimp-linux]
     file_name_template: "utuimp_{{ .Version }}_{{ .Arch }}"
     homepage: https://github.com/tphx37/utuimp
+    maintainer: tphx37 <121346185+tphx37@users.noreply.github.com>
     description: Universal terminal user interface media player
     license: GPL-3.0-or-later AND MIT
     formats: [archlinux]

@@ -66,7 +66,18 @@ sudo pacman -Syu utuimp
 pacman downloads the package and installs GStreamer and fontconfig dependencies.
 The repository supports releases starting with 4.0.1.
 
-### AUR
+### yay / paru and AUR
+
+After configuring the signed repository above, install the release by name:
+
+```bash
+yay -Syu utuimp
+# Or:
+paru -Syu utuimp
+```
+
+This downloads the signed package automatically.
+
 
 The AUR recipe is included in this repository. Build it now with:
 
@@ -107,8 +118,8 @@ $manifest = Get-ChildItem .\utuimp-packaging\winget\manifests\t\tphx37\utuimp -D
 winget install --manifest $manifest.FullName
 ```
 
-The manifests are generated starting with the next stable release. After
-catalog publication, use `winget install --id tphx37.utuimp --exact`.
+The [community catalog submission](https://github.com/microsoft/winget-pkgs/pull/483188)
+is pending. After acceptance, use `winget install --id tphx37.utuimp --exact`.
 
 
 
@@ -191,7 +202,9 @@ Use the package manager that installed utuimp:
 ```bash
 # Arch package / signed pacman repository
 sudo pacman -Rns utuimp
-# AUR: choose the installed package (paru accepts the same commands)
+# yay / paru with the signed repository
+yay -Rns utuimp
+# AUR recipes: choose the installed package (paru accepts the same commands)
 yay -Rns utuimp-git
 yay -Rns utuimp-bin
 # macOS or Linux / Homebrew

@@ -55,7 +55,7 @@ in `~/.local/bin`. then:
 utuimp
 ```
 
-pacman and Homebrew packages: [utuimp-repo](https://github.com/tphx37/utuimp-repo).
+pacman, yay and Homebrew packages: [utuimp-repo](https://github.com/tphx37/utuimp-repo).
 
 building from source, requirements, uninstalling - see [docs/install.md](docs/install.md)
 

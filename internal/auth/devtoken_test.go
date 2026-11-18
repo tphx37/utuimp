@@ -312,3 +312,25 @@ func TestBrokerToken_SingleAttemptWhenFallingBackToValidCache(t *testing.T) {
 		t.Errorf("missing fallback log in %v", logs)
 	}
 }
+
+func TestResolveWithoutBrokerRequiresOwnToken(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	if err := writeCache(cachePath(), cachedToken{Token: testAppleDeveloperToken, ExpiresAt: jwtExpiry(testAppleDeveloperToken).Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{"", "vibez"} {
+		cfg := &config.Config{AppleTokenSource: source, AppleDeveloperToken: testAppleDeveloperToken, AppleUserToken: "old-session"}
+		if err := resolveWithoutBroker(cfg, time.Now()); err != ErrDeveloperTokenRequired || cfg.AppleDeveloperToken != "" || cfg.AppleUserToken != "" {
+			t.Fatalf("legacy source %q: token retained or missing error: %v", source, err)
+		}
+	}
+	// Explicit own credentials remain usable, even if an old cache exists.
+	cfg := &config.Config{AppleTokenSource: config.AppleTokenOwn, AppleDeveloperToken: testAppleDeveloperToken, AppleUserToken: "own-session"}
+	if err := resolveWithoutBroker(cfg, time.Now()); err != nil || cfg.AppleDeveloperToken != testAppleDeveloperToken || cfg.AppleUserToken != "own-session" || DeveloperTokenInfo().Source != SourceOwn {
+		t.Fatalf("own credentials were changed: %v", err)
+	}
+	if cachePath() == brokerCachePath() {
+		t.Fatal("broker must not reuse the legacy shared-token cache")
+	}
+}

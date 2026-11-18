@@ -27,6 +27,7 @@ void utuimp_localsink_unload(utuimp_localsink_t handle);
 double utuimp_localsink_position(utuimp_localsink_t handle);
 double utuimp_localsink_duration(utuimp_localsink_t handle);
 int utuimp_localsink_is_playing(utuimp_localsink_t handle);
+int utuimp_localsink_read_tap(utuimp_localsink_t handle, float* dst, int n, double* ahead, int64_t* end);
 void utuimp_localsink_destroy(utuimp_localsink_t handle);
 
 #ifdef __cplusplus

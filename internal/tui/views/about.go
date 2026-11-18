@@ -37,8 +37,6 @@ func appleTokenLine(now time.Time) string {
 	info := auth.DeveloperTokenInfo()
 	var who string
 	switch info.Source {
-	case auth.SourceVibez:
-		who = i18n.T("Apple Music runs on the developer token of vibez")
 	case auth.SourceOwn, auth.SourceBuild:
 		who = i18n.T("Apple Music runs on your own developer token")
 	case auth.SourceBroker:

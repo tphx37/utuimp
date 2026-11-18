@@ -1423,7 +1423,7 @@ func (m *Model) linesDraw(dt float64, now time.Time) string {
 				seq.WriteString(l.sendBands(pix, w, h, st, now, !moving))
 			} else {
 				seq.WriteString(l.bandsDelete())
-				seq.WriteString(l.sendLyricLines(st, w, h, now, !moving))
+				seq.WriteString(l.sendLyricLines(st, w, h, now, false))
 			}
 			st.shown, st.sentAt, st.sentKey = true, now, key
 			continue

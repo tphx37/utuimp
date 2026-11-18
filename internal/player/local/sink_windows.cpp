@@ -1,6 +1,7 @@
 // Native Windows local audio sink using Media Foundation and waveOut.
 
 #include "sink_windows.h"
+#include "../tap/pcm.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -110,6 +111,10 @@ struct Biquad {
 };
 
 struct Session {
+    utuimp_pcm_tap tap;
+    Session() { utuimp_pcm_init(&tap); }
+    ~Session() { utuimp_pcm_destroy(&tap); }
+
     uint64_t gen = 0;
     std::atomic<bool> cancel{false};
     std::atomic<bool> paused{false};
@@ -317,6 +322,7 @@ void playLoop(const MfApi& mf, const std::shared_ptr<Sink>& sink, const std::sha
                     }
                 }
                 snapshotWaveOutBase(*ses, hwo);
+                utuimp_pcm_reset(&ses->tap, utuimp_pcm_wave_position(hwo, rate, ses->bytesPerSec.load()));
                 ses->baseSec = seekSec;
                 if (ses->paused) waveOutPause(hwo);
             }
@@ -415,6 +421,9 @@ void playLoop(const MfApi& mf, const std::shared_ptr<Sink>& sink, const std::sha
                 }
             }
         }
+
+        if (pcm16) utuimp_pcm_write(&ses->tap, b.data.data(),
+            b.data.size() / (sizeof(int16_t) * (size_t)channels), channels, (int)rate, 0);
 
         b.hdr.lpData = b.data.data();
         b.hdr.dwBufferLength = static_cast<DWORD>(b.data.size());
@@ -659,6 +668,20 @@ int utuimp_localsink_is_playing(utuimp_localsink_t handle) {
         ses = sink->cur;
     }
     return (ses && !ses->cancel && !ses->paused) ? 1 : 0;
+}
+
+
+int utuimp_localsink_read_tap(utuimp_localsink_t handle, float* dst, int n, double* ahead, int64_t* end) {
+    Sink* sink = sinkOf(handle);
+    if (!sink || sink->closed.load()) return 0;
+    std::shared_ptr<Session> ses;
+    { std::lock_guard<std::mutex> lk(sink->mu); ses = sink->cur; }
+    if (!ses || ses->cancel || ses->paused) return 0;
+    std::lock_guard<std::mutex> lk(ses->mu);
+    if (!ses->hwo) return 0;
+    double played = utuimp_pcm_wave_position(ses->hwo, ses->sampleRate.load(), ses->bytesPerSec.load());
+    if (played < 0) return 0;
+    return utuimp_pcm_read(&ses->tap, played, dst, n, ahead, end);
 }
 
 void utuimp_localsink_destroy(utuimp_localsink_t handle) {

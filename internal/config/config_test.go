@@ -489,3 +489,26 @@ func TestSave_PreservesSymlink(t *testing.T) {
 		t.Errorf("target StoreFront = %q, want it", loaded.StoreFront)
 	}
 }
+
+func TestRetireSharedAppleCredentials(t *testing.T) {
+	for _, source := range []string{"vibez", "own", ""} {
+		path := writeCfg(t, map[string]any{
+			"apple_token_source": source, "apple_developer_token": "developer",
+			"apple_user_token": "session", "music_dir": "/Music/Music/Media", "services": []string{"local", "apple"},
+		})
+		cfg, err := config.Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if source == "vibez" {
+			if cfg.AppleDeveloperToken != "" || cfg.AppleUserToken != "" || cfg.AppleTokenSource != "" {
+				t.Fatal("legacy shared credentials retained")
+			}
+		} else if cfg.AppleDeveloperToken != "developer" || cfg.AppleUserToken != "session" {
+			t.Fatal("own credentials were changed")
+		}
+		if cfg.MusicDir != "/Music/Music/Media" || len(cfg.Services) != 2 {
+			t.Fatal("local library configuration changed")
+		}
+	}
+}

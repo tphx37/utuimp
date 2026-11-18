@@ -95,9 +95,18 @@ and mixes them with `░▒▓`. The palette comes back on `esc`.
 
 ## The sound it sees
 
-On Linux it reacts to the real sound of every service (spectrum and
-waveform). It shows the sound being heard, not the sound being decoded. The
+On Linux, macOS and Windows it reacts to the real sound of every service
+(spectrum and waveform). It shows the sound being heard, not the sound being decoded. The
 player hands it the sound a little ahead of time, so a hit is found early
 and shown at the moment it sounds.
 
-On macOS and Windows it follows a beat of its own.
+macOS uses the Core Audio playback clock; Windows uses the waveOut device
+position. Native outputs keep a PCM ring with up to 180 ms of lookahead,
+feeding the same beat tracker used on Linux. Pausing, seeking and changing
+tracks stop or reset the input. Spotify also uses native output and shares
+its PCM with that tracker.
+
+If you explicitly set `UTUIMP_SPOTIFY_OUTPUT=librespot`, librespot plays the
+audio itself. Without a monitor capture backend, the visualizer then uses
+fallback animation on macOS and Windows. The same applies if native output
+cannot open and playback falls back to librespot.

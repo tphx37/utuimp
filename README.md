@@ -25,12 +25,11 @@
 </p>
 
 <p align="center">
-  <img src="assets/readme/cover.png" alt="the cover view: the album art, synced lyrics in large letters, the progress line in the cover's colours" width="49%">
+  <img src="assets/readme/boxed.png" alt="the boxed view: the player on top, search results below" width="49%">
   <img src="assets/readme/viz.png" alt="the fullscreen visualizer: glowing ribbons that move with the music" width="49%">
 </p>
 <p align="center">
-  <img src="assets/readme/boxed.png" alt="the boxed view: the player on top, search results below" width="49%">
-  <img src="assets/readme/mono.png" alt="the mono theme: a grey interface that keeps the song's colours" width="49%">
+  <img src="assets/readme/lyrics.png" alt="word-by-word lyrics: the highlight follows each sung word" width="49%">
 </p>
 
 
@@ -56,7 +55,16 @@ in `~/.local/bin`. then:
 utuimp
 ```
 
+pacman and Homebrew packages: [utuimp-repo](https://github.com/tphx37/utuimp-repo).
+
 building from source, requirements, uninstalling - see [docs/install.md](docs/install.md)
+
+
+Script installations on Linux/macOS can be removed with
+`rm -f "$HOME/.local/bin/utuimp"`, source installs with `make uninstall`.
+For Windows script removal and desktop entries, see
+[uninstalling](docs/install.md#uninstalling).
+
 
 ## first start
 
@@ -127,8 +135,8 @@ utuimp started as a fork of [vibez](https://github.com/simonepelosi/vibez) by
 simonepelosi. for credits see
 [docs/credits.md](docs/credits.md)
 
-apple music runs on the developer token of vibez, not on one of utuimp's
-own. see [docs/apple-music-tokens.md](docs/apple-music-tokens.md).
+apple music requires your own MusicKit developer token. local files on
+macos work without one. see [docs/apple-music-tokens.md](docs/apple-music-tokens.md).
 
 not affiliated with yandex, apple, spotify, google or soundcloud.
 

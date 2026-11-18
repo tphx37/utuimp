@@ -57,9 +57,7 @@ var authStatusCmd = &cobra.Command{
 		switch {
 		case auth.BuiltIn():
 			fmt.Println("Developer token: built into this build")
-		case cfg.AppleTokenSource == config.AppleTokenVibez:
-			fmt.Println("Developer token: borrowed from vibez (github.com/simonepelosi/vibez)")
-		case cfg.AppleTokenSource == config.AppleTokenOwn:
+		case cfg.AppleDeveloperToken != "":
 			fmt.Println("Developer token: your own (apple_developer_token)")
 		default:
 			fmt.Println("Developer token: not chosen yet, run `utuimp setup services`")

@@ -113,6 +113,32 @@ archives:
       - README*
       - CHANGELOG*
 
+nfpms:
+  - id: arch
+    package_name: utuimp
+    ids: [utuimp-linux]
+    file_name_template: "utuimp_{{ .Version }}_{{ .Arch }}"
+    homepage: https://github.com/tphx37/utuimp
+    description: Universal terminal user interface media player
+    license: GPL-3.0-or-later AND MIT
+    formats: [archlinux]
+    dependencies:
+      - glibc
+      - gstreamer
+      - gst-plugins-base
+      - gst-plugins-good
+      - gst-libav
+      - fontconfig
+    contents:
+      - src: flatpak/io.github.tphx37.utuimp.desktop
+        dst: /usr/share/applications/io.github.tphx37.utuimp.desktop
+      - src: assets/logo.png
+        dst: /usr/share/icons/hicolor/256x256/apps/io.github.tphx37.utuimp.png
+      - src: LICENSE
+        dst: /usr/share/licenses/utuimp/LICENSE
+      - src: NOTICE
+        dst: /usr/share/licenses/utuimp/NOTICE
+
 checksum:
   name_template: "checksums.txt"
   algorithm: sha256

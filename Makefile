@@ -112,7 +112,7 @@ install:
 		$(MAKE) --no-print-directory build-with-token; \
 	else \
 		echo "No Apple key in the environment/.env: building without an embedded token"; \
-		echo "(utuimp uses apple_developer_token from config, refreshed automatically)."; \
+		echo "(Apple Music requires your own apple_developer_token in config)."; \
 		$(MAKE) --no-print-directory build; \
 	fi; \
 	install -d "$(BINDIR)"; \

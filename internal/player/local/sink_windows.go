@@ -23,6 +23,8 @@ import (
 	"sync"
 	"time"
 	"unsafe"
+
+	"github.com/tphx37/utuimp/internal/player/tap"
 )
 
 type nativeEngine struct {
@@ -51,6 +53,7 @@ func openNativeEngine(p *Player) (engine, error) {
 		return nil, errors.New("failed to create Windows local audio sink")
 	}
 	e.handle = handle
+	tap.Add(e.readTap)
 	go e.pollLoop()
 	return e, nil
 }
@@ -259,4 +262,19 @@ func (e *nativeEngine) close() {
 		C.utuimp_localsink_destroy(handle)
 		e.cgoH.Delete()
 	}
+}
+
+func (e *nativeEngine) readTap(dst []float32) (int, float64, int64) {
+	if len(dst) == 0 {
+		return 0, 0, 0
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.handle == nil {
+		return 0, 0, 0
+	}
+	var ahead C.double
+	var end C.int64_t
+	rate := C.utuimp_localsink_read_tap(e.handle, (*C.float)(unsafe.Pointer(&dst[0])), C.int(len(dst)), &ahead, &end)
+	return int(rate), float64(ahead), int64(end)
 }

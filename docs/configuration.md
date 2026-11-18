@@ -72,7 +72,7 @@ the volume, the visualizer scene), so edit it while utuimp is closed.
 | `youtube_cookies` | where yt-dlp takes YouTube cookies from: a browser name (`"firefox"`, `"chrome"`…) or the path of a `cookies.txt` |
 | `spotify_client_id` | your own Spotify app, see [Services](services.md#spotify) |
 | `soundcloud_client_id`, `soundcloud_client_secret` | your SoundCloud API app, see [Services](services.md#soundcloud) |
-| `apple_token_source` | whose Apple Music developer token is used: `"vibez"` (borrowed) or `"own"`. See [Apple Music tokens](apple-music-tokens.md) |
+| `apple_token_source` | `"own"` for your own MusicKit developer token. See [Apple Music tokens](apple-music-tokens.md) |
 | `storefront` | Apple Music country (e.g. `"us"`) |
 | `audio_quality` | Apple Music bitrate (`:quality` sets it) |
 

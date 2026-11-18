@@ -44,7 +44,7 @@ func TestSettingsAppleNeedsTokenChoice(t *testing.T) {
 		t.Errorf("the reason should be shown:\n%s", m.View())
 	}
 	cmd := settingsKey(m, "down", "right")
-	if cfg.AppleTokenSource != config.AppleTokenVibez || cmd == nil {
+	if cfg.AppleTokenSource != config.AppleTokenOwn || cmd == nil {
 		t.Fatalf("token source = %q", cfg.AppleTokenSource)
 	}
 	if msg, ok := cmd().(SettingsChangedMsg); !ok || !msg.Restart || msg.Key != "services.apple_token" {

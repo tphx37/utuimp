@@ -1312,3 +1312,20 @@ func TestCoverSpan(t *testing.T) {
 		t.Errorf("shown up to %.2f pixels off the size it should be", worst)
 	}
 }
+
+func BenchmarkLyricWordHighlight(b *testing.B) {
+	row := lyricRow{w: 1000, h: 50, mask: make([]byte, 1000*50)}
+	for i := range row.mask {
+		if i%7 != 0 {
+			row.mask[i] = byte(50 + i%205)
+		}
+	}
+	item := lyricItem{puts: []lyricPut{{row: &row, c: vcol{0.7, 0.8, 0.9}, c2: vcol{1, 1, 1}, a: 0.5, a2: 1, litEdge: 15}}}
+	buf := make([]byte, row.w*row.h*4)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		item.puts[0].litX = float64(i % row.w)
+		item.paint(buf, row.w, row.h, 0, 100, 400)
+	}
+}

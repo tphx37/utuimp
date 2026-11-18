@@ -30,6 +30,7 @@ void utuimp_winsink_set_volume(utuimp_winsink_t handle, double volume);
 void utuimp_winsink_set_eq(utuimp_winsink_t handle, const double* gains_db, int count);
 // utuimp_winsink_position returns seconds of audio played since the last play_uri.
 double utuimp_winsink_position(utuimp_winsink_t handle);
+int utuimp_winsink_read_tap(utuimp_winsink_t handle, float* dst, int n, double* ahead, int64_t* end);
 void utuimp_winsink_destroy(utuimp_winsink_t handle);
 
 #ifdef __cplusplus

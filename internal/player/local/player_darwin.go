@@ -12,6 +12,7 @@ package local
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../tap/pcm.h"
 
 // the buffers in the queue
 #define kNumBuffers 3
@@ -56,6 +57,7 @@ static double utuimp_biquad_run(utuimp_biquad *bq, double x, int ch) {
 
 typedef struct {
 	AudioQueueRef queue;
+ utuimp_pcm_tap tap;
 	ExtAudioFileRef file;
 	AudioStreamBasicDescription format;
 	AudioQueueBufferRef bufs[kNumBuffers];
@@ -115,6 +117,7 @@ static int utuimp_fill_buffer(utuimp_audio_state *s, AudioQueueBufferRef buf) {
 			}
 		}
 	}
+	utuimp_pcm_write(&s->tap, buf->mAudioData, numFrames, (int)s->format.mChannelsPerFrame, (int)s->format.mSampleRate, 1);
 	return numFrames == 0;
 }
 
@@ -178,6 +181,7 @@ static utuimp_audio_state* utuimp_open(const char *uri){
 		free(s);
 		return NULL;
 	}
+	utuimp_pcm_init(&s->tap);
 	return s;
 }
 
@@ -232,6 +236,9 @@ static double utuimp_get_playback_time(utuimp_audio_state *s) {
 
 static void utuimp_seek(utuimp_audio_state *s, SInt64 frame){
 	AudioQueueStop(s->queue, true);
+    AudioTimeStamp stamp = {0};
+    AudioQueueGetCurrentTime(s->queue, NULL, &stamp, NULL);
+    utuimp_pcm_reset(&s->tap, stamp.mSampleTime);
 	ExtAudioFileSeek(s->file, frame);
 	s->done = 0;
 	for (int i=0; i< kNumBuffers; i++) {
@@ -260,10 +267,17 @@ static double utuimp_get_sample_rate(utuimp_audio_state *s) {
 		return fileFormat.mSampleRate;
 }
 
+static int utuimp_local_read_tap(utuimp_audio_state *s, float *dst, int n, double *ahead, int64_t *end) {
+    AudioTimeStamp ts = {0};
+    if (AudioQueueGetCurrentTime(s->queue, NULL, &ts, NULL) != noErr || !(ts.mFlags & kAudioTimeStampSampleTimeValid)) return 0;
+    return utuimp_pcm_read(&s->tap, ts.mSampleTime, dst, n, ahead, end);
+}
+
 static void utuimp_destroy(utuimp_audio_state *s){
 	if(!s) return;
 	AudioQueueDispose(s->queue, true);
 	ExtAudioFileDispose(s->file);
+ utuimp_pcm_destroy(&s->tap);
 	free(s);
 }
 */
@@ -279,6 +293,7 @@ import (
 
 	"github.com/tphx37/utuimp/internal/audioquality"
 	"github.com/tphx37/utuimp/internal/player"
+	"github.com/tphx37/utuimp/internal/player/tap"
 	"github.com/tphx37/utuimp/internal/provider"
 )
 
@@ -346,6 +361,7 @@ func New(_ func(string)) (*Player, error) {
 		done:  make(chan struct{}),
 		eosCh: make(chan struct{}, 1),
 	}
+	tap.Add(p.readTap)
 	go p.pollState()
 	p.audioWg.Add(1)
 	go p.eosLoop()
@@ -846,4 +862,23 @@ func tracksForIDs(tracks []provider.Track, ids []string) []provider.Track {
 		}
 	}
 	return out
+}
+
+func (p *Player) readTap(dst []float32) (int, float64, int64) {
+	if len(dst) == 0 {
+		return 0, 0, 0
+	}
+	p.mu.RLock()
+	ref := p.audio
+	playing := p.state.Playing
+	if !playing || ref == nil || !ref.acquire() {
+		p.mu.RUnlock()
+		return 0, 0, 0
+	}
+	p.mu.RUnlock()
+	defer ref.release()
+	var ahead C.double
+	var end C.int64_t
+	rate := C.utuimp_local_read_tap(ref.s, (*C.float)(unsafe.Pointer(&dst[0])), C.int(len(dst)), &ahead, &end)
+	return int(rate), float64(ahead), int64(end)
 }

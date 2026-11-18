@@ -24,6 +24,8 @@ import (
 	"sync"
 	"time"
 	"unsafe"
+
+	"github.com/tphx37/utuimp/internal/player/tap"
 )
 
 type darwinAudioSink struct {
@@ -46,6 +48,7 @@ func newAudioSink() (audioSink, error) {
 		return nil, errors.New("failed to create Darwin audio sink")
 	}
 	s.handle = playerHandle
+	tap.Add(s.readTap)
 	return s, nil
 }
 
@@ -215,4 +218,19 @@ func (s *darwinAudioSink) Destroy() {
 		C.utuimp_darwinsink_destroy(handle)
 		s.cgoH.Delete()
 	}
+}
+
+func (s *darwinAudioSink) readTap(dst []float32) (int, float64, int64) {
+	if len(dst) == 0 {
+		return 0, 0, 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.handle == nil {
+		return 0, 0, 0
+	}
+	var ahead C.double
+	var end C.int64_t
+	rate := C.utuimp_darwinsink_read_tap(s.handle, (*C.float)(unsafe.Pointer(&dst[0])), C.int(len(dst)), &ahead, &end)
+	return int(rate), float64(ahead), int64(end)
 }

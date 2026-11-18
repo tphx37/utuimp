@@ -7,6 +7,7 @@
 // compressed audio, running on internal CoreAudio threads with zero RunLoop dependency.
 
 #include "sink_darwin.h"
+#include "../tap/pcm.h"
 
 #include <AudioToolbox/AudioToolbox.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -99,6 +100,9 @@ static void audioQueueCallback(
     AudioQueueBufferRef inBuffer);
 
 struct Session : public std::enable_shared_from_this<Session> {
+    utuimp_pcm_tap tap;
+    Session() { utuimp_pcm_init(&tap); }
+
     static constexpr int kNumBuffers = 6;
     // 8192 stereo float32 frames, about 186 ms at 44.1 kHz per buffer.
     static constexpr UInt32 kBufferSize = 65536;
@@ -145,6 +149,7 @@ struct Session : public std::enable_shared_from_this<Session> {
     ~Session() {
         cancel();
         cleanup();
+        utuimp_pcm_destroy(&tap);
     }
 
     void cancel() {
@@ -208,6 +213,9 @@ struct Session : public std::enable_shared_from_this<Session> {
             enqueuedCount++;
         }
 
+        utuimp_pcm_write(&tap, curBuf->mAudioData,
+            curBufBytes / pcmAsbd.mBytesPerFrame, (int)pcmAsbd.mChannelsPerFrame,
+            (int)pcmAsbd.mSampleRate, 1);
         OSStatus err = AudioQueueEnqueueBuffer(queue, curBuf, 0, nullptr);
 
         curBuf = nullptr;
@@ -886,6 +894,17 @@ double utuimp_darwinsink_position(utuimp_darwinsink_t handle) {
         }
     }
     return ses->lastPosition.load();
+}
+
+
+int utuimp_darwinsink_read_tap(utuimp_darwinsink_t handle, float* dst, int n, double* ahead, int64_t* end) {
+    Sink* sink = sinkOf(handle);
+    if (!sink || sink->closed.load()) return 0;
+    auto ses = sink->currentSession();
+    if (!ses || ses->cancelled || ses->paused || !ses->started || ses->nullOut || !ses->queue) return 0;
+    AudioTimeStamp ts{};
+    if (AudioQueueGetCurrentTime(ses->queue, NULL, &ts, NULL) != noErr || !(ts.mFlags & kAudioTimeStampSampleTimeValid)) return 0;
+    return utuimp_pcm_read(&ses->tap, ts.mSampleTime, dst, n, ahead, end);
 }
 
 void utuimp_darwinsink_destroy(utuimp_darwinsink_t handle) {

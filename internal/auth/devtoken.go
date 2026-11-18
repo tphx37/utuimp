@@ -111,7 +111,7 @@ func ResolveDeveloperToken(cfg *config.Config) error {
 	if tokenURL == "" {
 		return resolveWithoutBroker(cfg, time.Now())
 	}
-	tok, err := brokerToken(tokenURL, clientKey, cachePath(), time.Now())
+	tok, err := brokerToken(tokenURL, clientKey, brokerCachePath(), time.Now())
 	if err != nil {
 		if cfg.AppleDeveloperToken != "" {
 			logBroker(fmt.Sprintf("[broker] falling back to configured apple_developer_token after broker error: %v", err))
@@ -402,17 +402,12 @@ const (
 	SourceBuild  = "build"  // built into the binary from the builder's own key
 	SourceBroker = "broker" // utuimp's own token service
 	SourceOwn    = "own"    // apple_developer_token the user put in the config
-	SourceVibez  = "vibez"  // borrowed from the vibez project (see vibez.go)
 )
 
-// ErrVibezNotAllowed is returned when the only way to a developer token is
-// borrowing one from vibez and the user hasn't agreed to that yet
-// (config.AppleTokenSource).
-var ErrVibezNotAllowed = errors.New("utuimp has no Apple Music developer token of its own. " +
-	"It can borrow the one of another project, vibez: run `utuimp setup services` to allow that or to use your own MusicKit key")
+// ErrDeveloperTokenRequired means the user must supply a MusicKit token.
+var ErrDeveloperTokenRequired = errors.New("apple music requires your own developer token: set apple_developer_token in the config (see docs/apple-music-tokens.md). Local files on macOS work without a token")
 
-// BuiltIn reports whether this build has a developer token source of its own
-// (a token or a token service built in), so nothing has to be borrowed.
+// BuiltIn reports whether the builder supplied a developer token or broker.
 func BuiltIn() bool { return devToken != "" || tokenURL != "" }
 
 // TokenInfo says whose developer token is in use.
@@ -440,95 +435,50 @@ func DeveloperTokenInfo() TokenInfo {
 	return tokenInfo
 }
 
-// resolveWithoutBroker serves builds with no token broker of their own: the
-// configured token while it has more than refreshBefore left, then a token
-// cached by an earlier refresh, then, when the user allowed it
-// (config.AppleTokenSource), a fresh one borrowed through the vibez release
-// binary (see vibez.go). A failed refresh keeps whatever token there is, so
-// being offline never makes things worse.
-func resolveWithoutBroker(cfg *config.Config, now time.Time) error {
-	cache := cachePath()
-	cached, cacheErr := readCache(cache)
-	// A cached token whose exp claim looked fresh may still be unusable by
-	// Apple (for example, a JWT containing only exp). When vibez is selected,
-	// discard that cache entry and fetch a properly formed token.
-	if cacheErr == nil && appleDeveloperTokenProblem(cached.Token) != "" {
-		cached, cacheErr = cachedToken{}, errors.New("cached developer token is not a valid Apple Music token")
+// resolveWithoutBroker only accepts the user's configured token. The old
+// shared cache is never a token source; a matching token is an old import.
+func resolveWithoutBroker(cfg *config.Config, _ time.Time) error {
+	cached, err := readCache(cachePath())
+	if cfg.AppleTokenSource == "vibez" || (cfg.AppleTokenSource != config.AppleTokenOwn && err == nil && cached.Token != "" && cached.Token == cfg.AppleDeveloperToken) {
+		cfg.AppleDeveloperToken, cfg.AppleUserToken, cfg.AppleTokenSource = "", "", ""
 	}
-	// Without a broker the cache is only ever written from vibez, and the
-	// token is saved to the config along with everything else.
-	sourceOf := func(tok string) string {
-		if cacheErr == nil && tok == cached.Token {
-			return SourceVibez
-		}
-		return SourceOwn
+	if cfg.AppleDeveloperToken == "" {
+		setTokenInfo("", "")
+		return ErrDeveloperTokenRequired
 	}
-	tok := cfg.AppleDeveloperToken
-	if tok != "" {
-		preferredToken := cfg.AppleTokenSource != config.AppleTokenVibez || sourceOf(tok) == SourceVibez
-		if preferredToken && appleDeveloperTokenProblem(tok) == "" {
-			if exp := jwtExpiry(tok); exp.IsZero() || exp.After(now.Add(refreshBefore)) {
-				logBroker("[token] using developer token from config file (" + sourceOf(tok) + ")")
-				setTokenInfo(sourceOf(tok), tok)
-				return nil
-			}
-		}
+	if problem := appleDeveloperTokenProblem(cfg.AppleDeveloperToken); problem != "" {
+		setTokenInfo("", "")
+		cfg.AppleDeveloperToken = ""
+		return fmt.Errorf("invalid Apple Music developer token: %s", problem)
 	}
-	if cacheErr == nil && cached.validFor(now, refreshBefore) {
-		logBroker("[token] using cached developer token (from vibez)")
-		cfg.AppleDeveloperToken = cached.Token
-		setTokenInfo(SourceVibez, cached.Token)
-		return nil
-	}
-	// Nothing fresh. Whatever is left is used when a new one can't be had.
-	keep := func() bool {
-		if appleDeveloperTokenProblem(cfg.AppleDeveloperToken) != "" {
-			cfg.AppleDeveloperToken = ""
-		}
-		if cfg.AppleDeveloperToken == "" && cacheErr == nil && cached.validFor(now, 0) {
-			cfg.AppleDeveloperToken = cached.Token
-		}
-		if cfg.AppleDeveloperToken == "" {
-			setTokenInfo("", "")
-			return false
-		}
-		setTokenInfo(sourceOf(cfg.AppleDeveloperToken), cfg.AppleDeveloperToken)
-		return true
-	}
-	if cfg.AppleTokenSource != config.AppleTokenVibez {
-		if keep() {
-			return nil
-		}
-		if cfg.AppleTokenSource == config.AppleTokenOwn {
-			return errors.New("no Apple Music developer token: set apple_developer_token in the config " +
-				"(make refresh-token writes one from your MusicKit key), or allow the vibez token in `utuimp setup services`")
-		}
-		return ErrVibezNotAllowed
-	}
-	if vibezRefresh == nil {
-		keep()
-		return nil
-	}
-	fmt.Fprintln(os.Stderr, "Getting an Apple Music developer token from vibez…")
-	c, err := vibezRefresh(context.Background(), filepath.Dir(cache))
-	if err != nil {
-		logBroker(fmt.Sprintf("[token] vibez refresh failed: %v", err))
-		if !keep() {
-			return fmt.Errorf("couldn't get the Apple Music developer token (%w). "+
-				"utuimp borrows it from the vibez project's release on GitHub, so this depends on GitHub and on vibez; "+
-				"check the connection and restart utuimp", err)
-		}
-		return nil
-	}
-	if cache != "" {
-		_ = writeCache(cache, c)
-		// The folder the binary was kept in before it was named after vibez.
-		_ = os.RemoveAll(filepath.Join(filepath.Dir(cache), "upstream"))
-	}
-	cfg.AppleDeveloperToken = c.Token
-	setTokenInfo(SourceVibez, c.Token)
+	logBroker("[token] using your configured developer token")
+	setTokenInfo(SourceOwn, cfg.AppleDeveloperToken)
 	return nil
 }
 
-// vibezRefresh is refreshFromVibez; tests replace it.
-var vibezRefresh = refreshFromVibez //nolint:gochecknoglobals // swapped in tests
+// jwtExpiry reads the public expiry claim; zero when unavailable.
+func jwtExpiry(tok string) time.Time {
+	parts := strings.Split(tok, ".")
+	if len(parts) != 3 {
+		return time.Time{}
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return time.Time{}
+	}
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if json.Unmarshal(raw, &claims) != nil || claims.Exp == 0 {
+		return time.Time{}
+	}
+	return time.Unix(claims.Exp, 0)
+}
+
+// A separate cache prevents reusing tokens imported by older versions.
+func brokerCachePath() string {
+	if p := cachePath(); p != "" {
+		return filepath.Join(filepath.Dir(p), "broker-devtoken.json")
+	}
+	return ""
+}

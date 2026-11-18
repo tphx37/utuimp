@@ -23,6 +23,7 @@ void utuimp_darwinsink_seek(utuimp_darwinsink_t handle, double seconds);
 void utuimp_darwinsink_set_volume(utuimp_darwinsink_t handle, float volume);
 void utuimp_darwinsink_set_eq(utuimp_darwinsink_t handle, const double* gains_db, int count);
 double utuimp_darwinsink_position(utuimp_darwinsink_t handle);
+int utuimp_darwinsink_read_tap(utuimp_darwinsink_t handle, float* dst, int n, double* ahead, int64_t* end);
 void utuimp_darwinsink_destroy(utuimp_darwinsink_t handle);
 
 #ifdef __cplusplus

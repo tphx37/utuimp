@@ -2,59 +2,43 @@
 
 [← docs](README.md)
 
-**utuimp has no Apple Music developer token of its own.** Making one takes
-a paid Apple Developer account, which this project doesn't have. Apple Music
-in utuimp runs on the developer token of another project,
-[vibez](https://github.com/simonepelosi/vibez) (the one utuimp started
-from), or on your own key if you have one. If vibez stops handing out
-tokens, Apple Music stops working in utuimp until you use your own key.
+The online Apple Music catalog requires your own MusicKit developer token
+and an Apple Music subscription. utuimp does not obtain tokens from other
+projects. A developer token identifies your MusicKit app; signing in in the
+browser gives it a separate user token, saved as `apple_user_token`.
 
-Apple Music needs two tokens:
+Set these fields in the utuimp config (see [configuration](configuration.md)):
 
-- a **developer token**, which identifies the app to Apple. It is the same
-  for everyone and is valid for a few days or weeks. This is the borrowed
-  one.
-- a **user token**, which is your Apple ID's permission for that app. You
-  get it by signing in in the browser window utuimp opens the first time.
-  It is saved as `apple_user_token` in the config.
+```json
+{
+  "apple_token_source": "own",
+  "apple_developer_token": "YOUR_MUSICKIT_DEVELOPER_JWT"
+}
+```
 
-## Whose developer token is used
+Then enable Apple Music in `utuimp setup services` and run `utuimp --apple`.
+An existing user-supplied token also works without `apple_token_source`.
+The About panel and `utuimp auth status` report the token source.
 
-The settings (`,`, or `utuimp setup services`) ask before Apple Music can
-be turned on, and save the answer as `apple_token_source` in the config:
+Previously selected shared credentials are cleared when the config loads.
+The old `devtoken.json` cache cannot supply a token. If you switch from a
+shared token to your own key, sign in again to authorize your MusicKit app.
 
-| `apple_token_source` | meaning |
-|---|---|
-| `"vibez"` | borrow the token from vibez (below) |
-| `"own"` | only use `apple_developer_token`, made from your own MusicKit key |
-| not set | not asked yet: a token that is already saved keeps working, but no new one is fetched |
+## Local Music library on macOS
 
-The About panel and `utuimp auth status` say which one is in use and how
-long it has left.
+Your local library remains available without a developer token or sign-in:
 
-## How the vibez token is fetched
+```bash
+utuimp --local
+# Or select the Music app's media folder explicitly:
+utuimp --local --music-dir "$HOME/Music/Music/Media"
+```
 
-Only with `apple_token_source: "vibez"`, and only when the saved token has
-less than three days left:
-
-1. utuimp downloads the latest vibez release for your system from GitHub
-   (once a week at most), checks it against the release's `checksums.txt`,
-   and keeps only the executable, in `~/.cache/utuimp/vibez/`.
-2. It runs it in a throwaway home directory with no access to your config,
-   your browser or other programs.
-3. As soon as vibez saves its token, utuimp stops it, takes the token and
-   saves it in `~/.cache/utuimp/devtoken.json`.
-
-If this fails, the Apple Music tab says why. Usually it is the network or
-GitHub, and restarting utuimp later helps. It can also mean vibez changed
-or stopped its token service; then only your own key works.
-
-## utuimp's own token service (not in use)
-
-The repository has a small Cloudflare Worker that signs short-lived tokens
-([worker/README.md](../worker/README.md)), and release builds can be pointed
-at it. It needs an Apple Developer key to sign with, so it is not deployed
-and release builds are made without it.
+Local files scans `~/Music` recursively by default, including Music and old
+iTunes media folders. You can choose another folder with Music folder in
+settings or `music_dir` in the config. Supported local files include MP3,
+FLAC, M4A, WAV and AIFF. Protected subscription downloads and cloud-only
+tracks cannot be played as local files; the online catalog needs MusicKit.
 
 ## Using your own MusicKit key
 

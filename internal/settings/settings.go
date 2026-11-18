@@ -71,12 +71,8 @@ var serviceNames = map[string]string{ //nolint:gochecknoglobals // a constant ta
 	"youtube": "YouTube Music", "soundcloud": "SoundCloud", "local": "Local files",
 }
 
-// VibezNotice is what the user is told before Apple Music may run on the
-// developer token of vibez.
-const VibezNotice = "utuimp has no Apple Music developer token of its own (that takes a paid Apple Developer account). " +
-	"\"vibez\" borrows the token of another project, github.com/simonepelosi/vibez: utuimp downloads its release from GitHub " +
-	"and runs it in an empty folder to get the token. If vibez stops handing out tokens, Apple Music stops working here. " +
-	"\"own\" only uses apple_developer_token, made from your own MusicKit key."
+// AppleMusicNotice explains the credentials needed for the online catalog.
+const AppleMusicNotice = "Apple Music requires your own MusicKit developer token in apple_developer_token. Local files, including the Music media folder on macOS, work without a token."
 
 func enabled(cfg *config.Config, key string) bool {
 	return len(cfg.Services) == 0 || slices.Contains(cfg.Services, key)
@@ -228,12 +224,11 @@ func text(key, title, help string, field func(*config.Config) *string) Item {
 func Sections() []Section {
 	services := []Item{serviceItem("yandex"), serviceItem("apple"), {
 		Key: "services.apple_token", Title: "Apple Music developer token", Kind: Choice, Restart: true,
-		Help:   VibezNotice,
+		Help:   AppleMusicNotice,
 		Hidden: func(*config.Config) bool { return auth.BuiltIn() },
 		Options: func(*config.Config) []Option {
 			return []Option{
 				{Value: "", Label: "not chosen"},
-				{Value: config.AppleTokenVibez, Label: "vibez (borrowed)"},
 				{Value: config.AppleTokenOwn, Label: "own (my MusicKit key)"},
 			}
 		},

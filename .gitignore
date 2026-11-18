@@ -37,3 +37,8 @@ Thumbs.db
 # Cloudflare Wrangler
 .wrangler/
 worker/.wrangler/
+
+# Generated package metadata and Python cache
+/packaging-out/
+/release-assets/
+__pycache__/

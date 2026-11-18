@@ -177,11 +177,22 @@ def cover(cols, seed, path):
     os.remove(ppm)
 
 
-def lrc(lines, start, step):
+def lrc(lines, start, step, word_sync=False):
+    def stamp(t):
+        return "%02d:%05.2f" % (int(t // 60), t % 60)
+
     out = []
     t = start
-    for l in lines:
-        out.append("[%02d:%05.2f]%s" % (int(t // 60), t % 60, l))
+    for line in lines:
+        text = line
+        if word_sync:
+            words = line.split(" ")
+            duration = step * 0.86
+            text = "".join("<%s>%s%s" % (stamp(t + i * duration / len(words)), word,
+                                       " " if i + 1 < len(words) else "")
+                           for i, word in enumerate(words))
+            text += "<%s>" % stamp(t + duration)
+        out.append("[%s]%s" % (stamp(t), text))
         t += step
     return "\n".join(out) + "\n"
 
@@ -215,7 +226,7 @@ for no, (title, ai, bpm, root, prog) in enumerate(SONGS, 1):
     if title in LYRICS:
         beat = 60 / bpm
         with open(base + ".lrc", "w") as f:
-            f.write(lrc(LYRICS[title] * 6, 4 * beat * 2, 4 * beat * 2))
+            f.write(lrc(LYRICS[title] * 6, 4 * beat * 2, 4 * beat * 2, word_sync=title == "Glass Harbor"))
 for p in covers.values():
     os.remove(p)
 print("ok")

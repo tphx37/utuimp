@@ -47,13 +47,17 @@ func (l *LyricsModel) CoverScene() CoverScene {
 		s.Hint = i18n.T("c") + i18n.T(" choose another source")
 		return s
 	}
-	s.Lines = make([]CoverSceneLine, len(l.lines))
-	for i, line := range l.lines {
-		s.Lines[i].Text = lineText(line)
-		if tr := l.translationFor(i); tr != "" && strings.TrimSpace(s.Lines[i].Text) != "" {
-			s.Lines[i].Translation = tr
+	if l.sceneLines == nil || l.sceneTranslation != l.showTranslation {
+		l.sceneLines = make([]CoverSceneLine, len(l.lines))
+		l.sceneTranslation = l.showTranslation
+		for i, line := range l.lines {
+			l.sceneLines[i].Text = lineText(line)
+			if tr := l.translationFor(i); tr != "" && strings.TrimSpace(l.sceneLines[i].Text) != "" {
+				l.sceneLines[i].Translation = tr
+			}
 		}
 	}
+	s.Lines = l.sceneLines
 	focus := l.scroll
 	switch {
 	case !l.follow && l.cursor >= 0:

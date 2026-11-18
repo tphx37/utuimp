@@ -23,9 +23,6 @@ func TestMain(m *testing.M) {
 		}
 	}
 
-	// Never download or run the vibez binary from unit tests.
-	vibezRefresh = nil
-
 	code := m.Run()
 
 	_ = os.RemoveAll(tmp)

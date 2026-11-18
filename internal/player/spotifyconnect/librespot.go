@@ -118,7 +118,7 @@ func (l *Librespot) readLog(r io.ReadCloser, log io.WriteCloser) {
 }
 
 // audioOut plays the sound librespot writes to its pipe. utuimp plays it
-// itself where it can (Linux, through GStreamer): the sound then goes the
+// itself through GStreamer on Linux or native audio on macOS/Windows: the sound then goes the
 // same way as every other service's, the visualizer hears it ahead of time
 // like theirs, and pause is instant. Play and Pause are for the commands
 // given in utuimp; Flush drops what has been read but not played yet, after

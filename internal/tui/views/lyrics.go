@@ -86,6 +86,8 @@ type LyricsTranslateRequestMsg struct{}
 // Call SetLoading when a fetch starts, SetLyrics when it completes, and
 // SetPosition on every player-state update so the current line is highlighted.
 type LyricsModel struct {
+	sceneLines       []CoverSceneLine
+	sceneTranslation bool
 	// bare drops the "Lyrics · source" header (the cover view shows the
 	// words alone).
 	bare bool
@@ -140,6 +142,7 @@ func NewLyrics() *LyricsModel {
 
 // SetLoading transitions the panel into a fetching state.
 func (l *LyricsModel) SetLoading() {
+	l.sceneLines = nil
 	l.loading = true
 	l.lines = nil
 	l.errMsg = ""
@@ -189,6 +192,7 @@ func (l *LyricsModel) SetTranslating(lang string) {
 // SetTranslation stores a fetched translation (one entry per line) or the
 // error that prevented it.
 func (l *LyricsModel) SetTranslation(tr []string, err error) {
+	l.sceneLines = nil
 	l.translating = false
 	if err != nil {
 		l.translateErr = err.Error()
@@ -217,6 +221,7 @@ func (l *LyricsModel) PickerOpen() bool { return l.picker }
 
 // SetLyrics transitions the panel to the loaded (or error) state.
 func (l *LyricsModel) SetLyrics(res *lyrics.Result, err error) {
+	l.sceneLines = nil
 	l.loading = false
 	if err != nil {
 		l.errMsg = err.Error()
@@ -582,6 +587,7 @@ func (l *LyricsModel) pick(i int) tea.Cmd {
 		code := TranslateLangs[i].Code
 		l.translateLang = code
 		l.showTranslation = true
+		l.sceneLines = nil
 		l.translations = nil
 		l.translateErr = ""
 		return func() tea.Msg { return LyricsLangSelectedMsg{Code: code} }

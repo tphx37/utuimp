@@ -75,7 +75,7 @@ To get one:
   5. Set apple_developer_token in the utuimp config file (see utuimp --help for its platform path)`)
 	}
 	if problem := appleDeveloperTokenProblem(cfg.AppleDeveloperToken); problem != "" {
-		return fmt.Errorf("invalid Apple Music developer token: %s. Set apple_developer_token to a valid MusicKit token, or choose the vibez token in `utuimp setup services`", problem)
+		return fmt.Errorf("invalid Apple Music developer token: %s. Set apple_developer_token to a valid MusicKit token", problem)
 	}
 
 	tokenCh := make(chan string, 1)

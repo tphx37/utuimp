@@ -37,10 +37,7 @@ type Config struct {
 
 	AppleDeveloperToken string `json:"apple_developer_token"`
 	AppleUserToken      string `json:"apple_user_token"`
-	// AppleTokenSource is whose developer token Apple Music may run on:
-	// AppleTokenVibez (borrow the one of the vibez project), AppleTokenOwn
-	// (only apple_developer_token, from the user's own MusicKit key) or
-	// empty, when the user hasn't been asked yet.
+	// AppleTokenSource is "own" for the user's MusicKit key.
 	AppleTokenSource string `json:"apple_token_source,omitempty"`
 	AppleKeyID       string `json:"apple_key_id"`
 	AppleTeamID      string `json:"apple_team_id"`
@@ -240,8 +237,7 @@ const (
 
 // Values of Config.AppleTokenSource.
 const (
-	AppleTokenVibez = "vibez"
-	AppleTokenOwn   = "own"
+	AppleTokenOwn = "own"
 )
 
 type EQBand struct {
@@ -422,6 +418,11 @@ func Load(override string) (*Config, error) {
 // normalize replaces zero values with defaults so that an existing config file
 // with missing or empty fields still behaves correctly.
 func (c *Config) normalize() {
+	// Retire previously imported credentials without affecting local media.
+	if c.AppleTokenSource == "vibez" {
+		c.AppleDeveloperToken, c.AppleUserToken, c.AppleTokenSource = "", "", ""
+	}
+
 	if c.AuthPort == 0 {
 		c.AuthPort = 7777
 	}

@@ -33,13 +33,20 @@ const (
 	lyricClear = 0.15
 )
 
+// lyricColumn holds the highlight color shared by every pixel in a column.
+type lyricColumn struct {
+	r, g, b byte
+	alpha   float64
+}
+
 // lyricRow is one row of drawn words: how solid each pixel is, and where
 // each letter ends.
 type lyricRow struct {
-	mask []byte
-	w, h int
-	ends []int
-	from int // the row's first letter, counted in the line
+	columns []lyricColumn // reusable scratch, painted on the UI goroutine
+	mask    []byte
+	w, h    int
+	ends    []int
+	from    int // the row's first letter, counted in the line
 }
 
 // lyricBlock is a line of the lyrics drawn: its rows, its translation's.
@@ -252,6 +259,19 @@ func lyricFade(y, h int) float64 {
 func (it *lyricItem) paint(dst []byte, dw, dh, dy, y0, h int) {
 	for _, pt := range it.puts {
 		row := pt.row
+		width := min(row.w, dw)
+		if cap(row.columns) < width {
+			row.columns = make([]lyricColumn, width)
+		}
+		columns := row.columns[:width]
+		for px := range columns {
+			k := 0.0
+			if pt.litX > -1e8 {
+				k = clamp01((pt.litX-float64(px))/pt.litEdge + 0.5)
+			}
+			col := pt.c.mix(pt.c2, k)
+			columns[px] = lyricColumn{byte(255 * clamp01(col.r)), byte(255 * clamp01(col.g)), byte(255 * clamp01(col.b)), (pt.a + (pt.a2-pt.a)*k)}
+		}
 		for py := range row.h {
 			Y := dy + pt.y + py // in dst
 			if Y < 0 || Y >= dh {
@@ -268,15 +288,10 @@ func (it *lyricItem) paint(dst []byte, dw, dh, dy, y0, h int) {
 				if m == 0 || px >= dw {
 					continue
 				}
-				k := 0.0
-				if pt.litX > -1e8 {
-					k = clamp01((pt.litX-float64(px))/pt.litEdge + 0.5)
-				}
-				col := pt.c.mix(pt.c2, k)
-				a := (pt.a + (pt.a2-pt.a)*k) * ef * float64(m) / 255
+				col := columns[px]
 				i := (Y*dw + px) * 4
-				dst[i], dst[i+1], dst[i+2] = byte(255*clamp01(col.r)), byte(255*clamp01(col.g)), byte(255*clamp01(col.b))
-				dst[i+3] = byte(255 * clamp01(a))
+				dst[i], dst[i+1], dst[i+2] = col.r, col.g, col.b
+				dst[i+3] = byte(255 * clamp01(col.alpha*ef*float64(m)/255))
 			}
 		}
 	}

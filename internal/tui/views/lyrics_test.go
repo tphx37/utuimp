@@ -313,3 +313,29 @@ func TestLyricsModel_LongTranslationWrapsBelowRightAligned(t *testing.T) {
 		t.Errorf("lineRows = %d,%d want 2,1", m.lineRows(0), m.lineRows(1))
 	}
 }
+
+func TestCoverSceneRefreshesAfterTranslationAndTrackChanges(t *testing.T) {
+	m := NewLyrics()
+	m.SetLyrics(&lyrics.Result{Lines: []lyrics.Line{{Text: "first"}}}, nil)
+	m.showTranslation = true
+	m.SetTranslation([]string{"первый"}, nil)
+	if got := m.CoverScene().Lines[0]; got.Text != "first" || got.Translation != "первый" {
+		t.Fatalf("initial scene: %+v", got)
+	}
+	m.SetTranslation([]string{"первое"}, nil)
+	if got := m.CoverScene().Lines[0].Translation; got != "первое" {
+		t.Fatalf("stale translation: %q", got)
+	}
+	m.showTranslation = false
+	if got := m.CoverScene().Lines[0].Translation; got != "" {
+		t.Fatalf("hidden translation: %q", got)
+	}
+	m.SetLyrics(&lyrics.Result{Lines: []lyrics.Line{{Text: "second"}}}, nil)
+	if got := m.CoverScene().Lines[0]; got.Text != "second" || got.Translation != "" {
+		t.Fatalf("stale song: %+v", got)
+	}
+	m.SetLoading()
+	if sc := m.CoverScene(); len(sc.Lines) != 0 || sc.Message == "" {
+		t.Fatal("old song displayed while loading")
+	}
+}

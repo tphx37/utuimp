@@ -1,5 +1,23 @@
 # Changelog
 
+## 4.0.1
+
+- The macOS and Windows audio outputs now share device-clock PCM with the
+  visualizer. Spotify also uses native PCM output on those systems, so
+  beats, spectrum and waveform follow the sound rather than a generated rhythm.
+- Replaced the black-and-white README card with word-by-word lyrics.
+- Added a signed pacman package repository and uninstall
+  commands for each platform and package manager.
+
+- Removed downloading/running another project's release to obtain Apple
+  Music credentials, including the settings option and cache fallback.
+  Own MusicKit tokens and local Music media on macOS remain supported.
+- Added Arch release packages, AUR recipes, a Homebrew tap and generated
+  winget manifests, with installation and removal instructions.
+- Reduced pixel lyric rendering work during word sync: reuse static scene
+  text, calculate highlight colors once per column, and avoid resending
+  unchanged lyric lines when playback is between updates.
+
 ## 4.0
 
 Follow-up fixes

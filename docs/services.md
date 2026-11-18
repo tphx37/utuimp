@@ -20,7 +20,7 @@ happens once.
 | Service | Account | Subscription | Extra programs |
 |---|---|---|---|
 | Yandex Music | Yandex | Yandex Plus | none |
-| Apple Music | Apple ID | Apple Music | none (runs on [vibez's token](apple-music-tokens.md)) |
+| Apple Music | Apple ID | Apple Music | your own [MusicKit token](apple-music-tokens.md) |
 | Spotify | Spotify | Premium | [librespot](https://github.com/librespot-org/librespot) |
 | YouTube Music | none | none | [yt-dlp](https://github.com/yt-dlp/yt-dlp), [FFmpeg](https://ffmpeg.org) |
 | SoundCloud | none / API app | none / Artist Pro with API | [yt-dlp](https://github.com/yt-dlp/yt-dlp), [FFmpeg](https://ffmpeg.org) |
@@ -44,11 +44,11 @@ Music first when it has them.
 
 The first time, sign in in the browser window that opens.
 
-utuimp has no Apple Music developer token of its own: it borrows the one of
-another project, [vibez](https://github.com/simonepelosi/vibez), or uses
-your own MusicKit key. `utuimp setup services` asks which. If vibez stops
-handing out tokens, Apple Music stops working here. See
-[Apple Music tokens](apple-music-tokens.md).
+The online catalog requires your own MusicKit developer token. Configure
+`apple_developer_token` and select `own` in `utuimp setup services`.
+See [Apple Music tokens](apple-music-tokens.md). On macOS, the local Music
+media folder works through Local files without any token:
+`utuimp --local --music-dir "$HOME/Music/Music/Media"`.
 
 `:quality high|standard|256|64` sets the bitrate, `:quality` alone shows
 the current format. `utuimp --apple` starts on the Apple Music tab.

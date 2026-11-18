@@ -23,6 +23,8 @@ import (
 	"sync"
 	"time"
 	"unsafe"
+
+	"github.com/tphx37/utuimp/internal/player/tap"
 )
 
 // windowsAudioSink plays the loopback AAC stream with Media Foundation and
@@ -47,6 +49,7 @@ func newAudioSink() (audioSink, error) {
 		return nil, errors.New("failed to create Windows audio sink")
 	}
 	s.handle = handle
+	tap.Add(s.readTap)
 	return s, nil
 }
 
@@ -212,4 +215,19 @@ func (s *windowsAudioSink) Destroy() {
 		C.utuimp_winsink_destroy(handle)
 		s.cgoH.Delete()
 	}
+}
+
+func (s *windowsAudioSink) readTap(dst []float32) (int, float64, int64) {
+	if len(dst) == 0 {
+		return 0, 0, 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.handle == nil {
+		return 0, 0, 0
+	}
+	var ahead C.double
+	var end C.int64_t
+	rate := C.utuimp_winsink_read_tap(s.handle, (*C.float)(unsafe.Pointer(&dst[0])), C.int(len(dst)), &ahead, &end)
+	return int(rate), float64(ahead), int64(end)
 }

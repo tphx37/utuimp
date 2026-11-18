@@ -9,6 +9,7 @@
 - [Updates](#updates)
 - [Uninstalling](#uninstalling)
 
+
 ## The install script
 
 **Linux and macOS:**
@@ -50,6 +51,66 @@ Then start it in any terminal:
 ```bash
 utuimp
 ```
+
+## Package managers
+
+### pacman (Arch Linux, x86_64)
+
+Configure the signing key and repository using the
+[package repository instructions](https://github.com/tphx37/utuimp-repo#arch-linux-x86_64), then:
+
+```bash
+sudo pacman -Syu utuimp
+```
+
+pacman downloads the package and installs GStreamer and fontconfig dependencies.
+The repository supports releases starting with 4.0.1.
+
+### AUR
+
+The AUR recipe is included in this repository. Build it now with:
+
+```bash
+sudo pacman -S --needed base-devel git
+git clone https://github.com/tphx37/utuimp.git
+cd utuimp/packaging/aur/utuimp-git
+makepkg -si
+```
+
+After the recipe is published to AUR, `yay -S utuimp-git` or
+`paru -S utuimp-git` installs it directly. It is not yet registered there.
+
+### Homebrew (macOS and Linux)
+
+```bash
+brew tap --custom-remote tphx37/utuimp-repo https://github.com/tphx37/utuimp-repo.git
+brew install tphx37/utuimp-repo/utuimp
+# Update:
+brew upgrade tphx37/utuimp-repo/utuimp
+```
+
+This installs a release binary on macOS (Intel or Apple Silicon) or Linux x86_64.
+For YouTube Music / SoundCloud, also run `brew install yt-dlp ffmpeg`;
+for Spotify Premium, `brew install librespot`.
+
+### winget (Windows x64)
+
+Release builds provide `packaging.zip` with winget manifests. Until the
+package is accepted into the winget community catalog, use a local manifest
+in PowerShell (run the settings command in an administrator terminal):
+
+```powershell
+winget settings --enable LocalManifestFiles
+Invoke-WebRequest https://github.com/tphx37/utuimp/releases/latest/download/packaging.zip -OutFile packaging.zip
+Expand-Archive .\packaging.zip -DestinationPath .\utuimp-packaging -Force
+$manifest = Get-ChildItem .\utuimp-packaging\winget\manifests\t\tphx37\utuimp -Directory | Select-Object -First 1
+winget install --manifest $manifest.FullName
+```
+
+The manifests are generated starting with the next stable release. After
+catalog publication, use `winget install --id tphx37.utuimp --exact`.
+
+
 
 ## Building from source
 
@@ -125,16 +186,58 @@ utuimp --no-update
 
 ## Uninstalling
 
-If you built with `make`:
+Use the package manager that installed utuimp:
 
 ```bash
+# Arch package / signed pacman repository
+sudo pacman -Rns utuimp
+# AUR: choose the installed package (paru accepts the same commands)
+yay -Rns utuimp-git
+yay -Rns utuimp-bin
+# macOS or Linux / Homebrew
+brew uninstall utuimp
+brew untap tphx37/utuimp-repo
+# Built with make, from the source directory
 make uninstall
+# For a custom prefix, repeat the one used for installation:
+make uninstall PREFIX=/usr/local
 ```
 
-Otherwise remove `~/.local/bin/utuimp`, and on Linux
-`~/.local/share/applications/io.github.tphx37.utuimp.desktop` and
-`~/.local/share/icons/hicolor/scalable/apps/io.github.tphx37.utuimp.svg`.
+Windows / winget:
 
-Your settings and sign-ins are in `~/.config/utuimp/` (Windows:
-`%APPDATA%\utuimp\`) and the cache in `~/.cache/utuimp/`. Delete them too if
-you want nothing left.
+```powershell
+winget uninstall --id tphx37.utuimp --exact
+```
+
+Linux / macOS / install script, with the default directory:
+
+```bash
+rm -f "$HOME/.local/bin/utuimp"
+# Linux desktop entries, if installed:
+rm -f "$HOME/.local/share/applications/io.github.tphx37.utuimp.desktop"
+rm -f "$HOME/.local/share/icons/hicolor/scalable/apps/io.github.tphx37.utuimp.svg"
+```
+
+If `UTUIMP_INSTALL_DIR` was set, remove the binary from that directory.
+Windows / PowerShell install script (also removes its user PATH entry):
+
+```powershell
+$dir = Join-Path $env:LOCALAPPDATA "Programs\utuimp"
+# If installed with UTUIMP_INSTALL_DIR, use that directory instead.
+Remove-Item (Join-Path $dir "utuimp.exe") -ErrorAction SilentlyContinue
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+[Environment]::SetEnvironmentVariable("Path", (($userPath -split ";" | Where-Object { $_.TrimEnd("\") -ne $dir.TrimEnd("\") }) -join ";"), "User")
+```
+
+Close utuimp first. Removal keeps your settings and sign-ins. For a full
+reset, optionally delete these directories too:
+
+| Platform | Configuration | Cache |
+|---|---|---|
+| Linux | `~/.config/utuimp` | `~/.cache/utuimp` |
+| macOS | `~/.config/utuimp` | `~/Library/Caches/utuimp` |
+| Windows | `%APPDATA%\utuimp` | `%LOCALAPPDATA%\utuimp` |
+
+`XDG_CONFIG_HOME` overrides the configuration root on Linux/macOS;
+`XDG_CACHE_HOME` overrides the Linux cache root. Local music is stored
+separately.

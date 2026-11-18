@@ -7,6 +7,7 @@
 // no codec, GStreamer or browser has to be installed.
 
 #include "sink_windows.h"
+#include "../tap/pcm.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -122,6 +123,10 @@ struct Biquad {
 };
 
 struct Session {
+    utuimp_pcm_tap tap;
+    Session() { utuimp_pcm_init(&tap); }
+    ~Session() { utuimp_pcm_destroy(&tap); }
+
     std::atomic<bool> cancel{false};
     std::atomic<bool> paused{false};
     std::mutex mu;  // guards hwo
@@ -408,6 +413,9 @@ void playLoop(const MfApi& mf, const std::shared_ptr<Sink>& sink, const std::sha
             }
         }
 
+        if (pcm16) utuimp_pcm_write(&ses->tap, b.data.data(),
+            b.data.size() / (sizeof(int16_t) * (size_t)channels), channels, (int)rate, 0);
+
         if (nullOut) {
             const size_t frameSize = sizeof(int16_t) * static_cast<size_t>(channels > 0 ? channels : 2);
             const uint64_t frames = frameSize > 0 ? b.data.size() / frameSize : 0;
@@ -608,6 +616,20 @@ double utuimp_winsink_position(utuimp_winsink_t handle) {
         return 0.0;
     }
     return devicePosition(*ses);
+}
+
+
+int utuimp_winsink_read_tap(utuimp_winsink_t handle, float* dst, int n, double* ahead, int64_t* end) {
+    Sink* sink = sinkOf(handle);
+    if (!sink || sink->closed.load()) return 0;
+    std::shared_ptr<Session> ses;
+    { std::lock_guard<std::mutex> lk(sink->mu); ses = sink->cur; }
+    if (!ses || ses->cancel || ses->paused) return 0;
+    std::lock_guard<std::mutex> lk(ses->mu);
+    if (!ses->hwo) return 0;
+    double played = utuimp_pcm_wave_position(ses->hwo, ses->sampleRate.load(), ses->bytesPerSec.load());
+    if (played < 0) return 0;
+    return utuimp_pcm_read(&ses->tap, played, dst, n, ahead, end);
 }
 
 void utuimp_winsink_destroy(utuimp_winsink_t handle) {

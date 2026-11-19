@@ -314,6 +314,13 @@ func (m *Model) confirmTwice(what, ask string) bool {
 // (take the song out). ok is false for other keys and places.
 func (m *Model) libraryPlaylistKey(k string) (tea.Cmd, bool) {
 	lib := m.library.m
+	if m.serviceKey == "radio" && k == "r" {
+		track := lib.SelectedTrack()
+		pl, _, _ := lib.OpenPlaylist()
+		if track != nil && (lib.InAllSongs() || pl != nil && provider.IsFavoritesPlaylist(*pl)) {
+			return m.promptRenameStation(*track), true
+		}
+	}
 	if (k == "d" || k == "delete") && !m.canDelete() &&
 		(lib.SelectedSavedAlbum() != nil || lib.SelectedSavedArtist() != nil || lib.SelectedPlaylist() != nil) {
 		m.refuse("Deleting")
@@ -418,6 +425,12 @@ func (m *Model) libraryHints() []string {
 			parts = append(parts, key("d d", " delete"))
 		}
 	case lib.SelectedTrack() != nil:
+		if m.serviceKey == "radio" {
+			pl, _, _ := lib.OpenPlaylist()
+			if lib.InAllSongs() || pl != nil && provider.IsFavoritesPlaylist(*pl) {
+				parts = append(parts, key("r", " rename station"))
+			}
+		}
 		parts = append(parts, key("Tab", " song next"), key("Shift+Tab", " song to end"), key("Ctrl+Q", " all next"), key("P", " add to playlist"))
 		if pl, _, _ := lib.OpenPlaylist(); pl != nil && editable && m.canDelete() {
 			parts = append(parts, key("d d", " remove"))
@@ -425,6 +438,9 @@ func (m *Model) libraryHints() []string {
 		parts = append(parts, key("i", " song menu"))
 	default:
 		parts = append(parts, key("Tab", " next"), key("Shift+Tab", " queue"))
+	}
+	if m.serviceKey == "local" {
+		parts = append(parts, key("Ctrl+R", " refresh"))
 	}
 	return append(parts, key("esc", " back/close"))
 }
@@ -480,4 +496,27 @@ func (m *Model) canEdit() bool   { return m.cfg != nil && m.cfg.LibraryEdit }
 // refuse says that what was asked is switched off, and where to turn it on.
 func (m *Model) refuse(what string) {
 	m.note(fmt.Sprintf(i18n.T("%s is off — turn it on in utuimp setup (Library)"), i18n.T(what)))
+}
+
+type stationRenamedMsg struct {
+	id, name string
+	err      error
+}
+
+func (m *Model) promptRenameStation(t provider.Track) tea.Cmd {
+	renamer, ok := m.provider.(interface {
+		RenameStation(context.Context, string, string) error
+	})
+	if !ok {
+		m.note(i18n.T("Station cannot be renamed"))
+		return nil
+	}
+	m.openPrompt(i18n.T("Rename station"), t.Title, func(name string) tea.Cmd {
+		return func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			return stationRenamedMsg{id: t.ID, name: name, err: renamer.RenameStation(ctx, t.ID, name)}
+		}
+	})
+	return nil
 }

@@ -180,6 +180,7 @@ func (a *App) switchTo(idx int) tea.Cmd {
 		// Leaving it while the start screen is up ends the start screen:
 		// its picture must not stay over the tab opened.
 		drop = wrap(a.active, old.introDrop())
+		old.lines.releasePixels()
 	}
 	a.active = idx
 	if m := a.services[idx].Model; m != nil {

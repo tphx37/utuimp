@@ -284,3 +284,66 @@ func TestTrackLyrics(t *testing.T) {
 		t.Error("a song not in the library has no lyrics here")
 	}
 }
+
+func TestMultipleRootsRefreshAndFailurePreservesLibrary(t *testing.T) {
+	ctx := context.Background()
+	first, second := t.TempDir(), t.TempDir()
+	nested := filepath.Join(first, "nested")
+	if err := os.MkdirAll(nested, 0700); err != nil {
+		t.Fatal(err)
+	}
+	write := func(dir, name string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(nested, "one.mp3")
+	write(second, "two.mp3")
+	p, err := local.NewMulti([]string{first, nested, second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracks, _ := p.GetLibraryTracks(ctx)
+	if len(tracks) != 2 {
+		t.Fatalf("overlapping roots yielded %d tracks", len(tracks))
+	}
+	write(second, "three.mp3")
+	tracks, err = p.Refresh(ctx, []string{first, second})
+	if err != nil || len(tracks) != 3 {
+		t.Fatalf("refresh: %d, %v", len(tracks), err)
+	}
+	if _, err = p.Refresh(ctx, []string{first, filepath.Join(second, "missing")}); err == nil {
+		t.Fatal("missing root should fail")
+	}
+	tracks, _ = p.GetLibraryTracks(ctx)
+	if len(tracks) != 3 {
+		t.Fatalf("failed scan replaced index: %d", len(tracks))
+	}
+}
+
+func TestRefreshCanRunWhileLibraryIsRead(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "song.mp3"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := local.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 20 {
+			_, _ = p.Search(context.Background(), "song")
+			_, _ = p.GetLibraryTracks(context.Background())
+			_ = p.ScanNotice()
+		}
+	}()
+	for range 10 {
+		if _, err = p.Refresh(context.Background(), []string{dir}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	<-done
+}

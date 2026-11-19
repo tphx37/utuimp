@@ -44,11 +44,12 @@ that is playing, and the playback keys always control it.
 | `R` | radio from the current song (Yandex Music: My Wave by this song) |
 | `v` | switch between the boxed view and the cover view |
 | `V` | fullscreen [visualizer](visualizer.md) |
-| `/` | search |
+| `/` | search; on Radio, search stations or enter a stream link |
 | `l` | your library (`L` jumps back to its top) |
 | `h` | recently played |
 | `y` | lyrics |
-| `F` | recommendations (Yandex Music: My Wave) |
+| `F` | feed (Yandex: My Wave; Radio: recent links) |
+| `q` | open the queue in cover view |
 | `e` | equalizer |
 | `i` | song menu: go to the album or an artist, copy the link |
 | `P` | add the selected (or playing) song to a playlist |
@@ -152,15 +153,19 @@ artists and playlists.
 | `tab` / `ctrl+q` | play next |
 | `shift+tab` | add to the end of the queue |
 | `ctrl+p` | add to a playlist |
+| `ctrl+f` | save the selected station on the Radio tab |
 | `ctrl+r` | radio from the song |
 | `ctrl+w` / `ctrl+u` | delete a word / everything before the cursor |
 | `esc` | back (out of an artist, then out of search) |
 
 **Links.** Paste a Spotify, Apple Music, Yandex Music, YouTube or SoundCloud
 link into search (or `:link <url>`) to play it or add it to the queue. A
-link to another service opens on that service's tab.
+link to another service opens on that service's tab. On the Radio tab,
+enter an HTTP(S) stream or supported station-page URL in `/` or `:link`.
 
 ## Library and playlists
+
+On the Local files tab, press `Ctrl+R` in the library to rescan the configured music folders without stopping playback.
 
 `l` opens your library: liked songs, playlists, and on services that have
 them, saved albums and followed artists. `enter` opens a playlist or album
@@ -173,6 +178,7 @@ In the list of playlists:
 |-----|--------|
 | `c` | new playlist |
 | `r` | rename (needs `library_edit`) |
+| `ctrl+r` | rescan folders on the Local files tab |
 | `d` `d` | delete (needs `library_delete`) |
 
 In an open playlist, `d` `d` takes the song out of it (also needs
@@ -230,6 +236,15 @@ Spotify's recommendations aren't open to new apps.
 
 On **YouTube Music** the feed has a mix for each favorite.
 
+The separate **Radio** tab plays internet stations. `/` searches Radio Browser
+or accepts a stream URL; `Enter` plays it, `f` saves the playing station, and
+`Ctrl+P` in search adds the selected station to a playlist. `F` shows recent
+played links, newest first and without duplicates; `Enter` replays one. The
+history is retained between runs; `f` saves the selected link. In the Radio
+library, open Songs or the Favorites playlist, select a saved station and press
+`r` to rename it. For supported stream and HTML formats and
+metadata limitations, see [Internet radio](services.md#internet-radio).
+
 ## Song menu
 
 `i` opens a menu for the selected or playing song: go to its album or one
@@ -265,7 +280,8 @@ suggestions.
 | `:mute` | mute / unmute |
 | `:seek <seconds>` | jump to a position in the song |
 | `:save <name>` | save the queue as a playlist |
-| `:link <url>` | open a song, album or playlist link |
+| `:link <url>` | open a song, album, playlist or radio stream link |
+| `:refresh` | rescan the configured music folders on the Local files tab |
 | `:quality [high\|standard\|256\|64]` | show the audio format, or set the Apple Music bitrate |
 | `:art` | album art in the boxed view |
 | `:viz` | fullscreen visualizer |

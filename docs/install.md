@@ -29,8 +29,9 @@ The script:
 1. looks for what utuimp needs and offers to install anything missing with
    your package manager (pacman, apt, dnf, zypper, Homebrew or winget). It
    asks before installing anything.
-2. installs utuimp to `~/.local/bin`. It takes a published release when
-   there is one for your system, otherwise it builds from source.
+2. downloads and verifies a published release when available, otherwise
+   builds from source. It installs to `~/.local/bin` on Linux and macOS,
+   or `%LOCALAPPDATA%\Programs\utuimp` on Windows.
 
 Options for `install.sh` (when piped from curl, pass them after `sh -s --`):
 

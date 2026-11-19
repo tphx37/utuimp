@@ -507,6 +507,7 @@ func (m *Model) vizRelease() tea.Cmd {
 	v := m.viz
 	v.closing = false
 	v.frame, v.fb, v.prev, v.out, v.glowA, v.glowB, v.rgb, v.lead, v.alpha = "", nil, nil, nil, nil, nil, nil, nil, nil // the picture is big: let it go
+	v.closeOut, v.fade = nil, nil                                                                                       // closing and scene transitions retain full-size copies too
 	v.over, v.under = false, ""
 	v.rawSeq = ""
 	if v.px > 1 {

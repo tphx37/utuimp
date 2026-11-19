@@ -1738,3 +1738,19 @@ func TestPopupKeepsCoveredPanelFrame(t *testing.T) {
 		t.Fatal("popup frame should close all the way to its centre")
 	}
 }
+
+// An overlay can leave a row shorter than the underlying panel frame.
+func TestLinesPlaceBoxesShortOverlayRow(t *testing.T) {
+	m := coverModel(t, 40, 10)
+	m.lines.mode = gfx.File
+	m.lines.cellW, m.lines.cellH = 9, 18
+	base := []string{"╭──────────╮", "│          │", "│          │", "╰──────────╯"}
+	m.lines.baseFrames = strings.Join(base, "\n")
+	m.lines.overlayRect = fxRect{2, 1, 5, 2}
+	rows := []string{base[0], "│   ", base[2], base[3]}
+	grid := make([][]rune, len(rows))
+	for i, row := range rows {
+		grid[i] = cellGrid(row)
+	}
+	m.linesPlaceBoxes(rows, grid, time.Now())
+}

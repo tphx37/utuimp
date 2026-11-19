@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/tphx37/utuimp/internal/auth"
 	"github.com/tphx37/utuimp/internal/config"
@@ -64,11 +65,11 @@ type Section struct {
 }
 
 // ServiceKeys are the services in tab order.
-var ServiceKeys = []string{"yandex", "apple", "spotify", "youtube", "soundcloud", "local"} //nolint:gochecknoglobals // a constant list
+var ServiceKeys = []string{"yandex", "apple", "spotify", "youtube", "soundcloud", "radio", "local"} //nolint:gochecknoglobals // a constant list
 
 var serviceNames = map[string]string{ //nolint:gochecknoglobals // a constant table
 	"yandex": "Yandex Music", "apple": "Apple Music", "spotify": "Spotify (Premium)",
-	"youtube": "YouTube Music", "soundcloud": "SoundCloud", "local": "Local files",
+	"youtube": "YouTube Music", "soundcloud": "SoundCloud", "radio": "Radio", "local": "Local files",
 }
 
 // AppleMusicNotice explains the credentials needed for the online catalog.
@@ -274,9 +275,23 @@ func Sections() []Section {
 		text("services.youtube_cookies", "YouTube cookies",
 			"If YouTube asks to confirm you're not a bot: a browser to take cookies from (firefox, chrome…) or a cookies.txt path. Empty = none.",
 			func(c *config.Config) *string { return &c.YouTubeCookies }),
-		serviceItem("soundcloud"), scID, scSecret, serviceItem("local"),
-		text("services.music_dir", "Music folder", "Where local files are. Empty = ~/Music.",
-			func(c *config.Config) *string { return &c.MusicDir }))
+		serviceItem("soundcloud"), scID, scSecret, serviceItem("radio"), serviceItem("local"),
+		Item{Key: "services.music_dirs", Title: "Music folders", Help: "Folders to scan, separated by semicolons. Empty = ~/Music.", Kind: Text,
+			Get: func(c *config.Config) string {
+				if len(c.MusicDirs) > 0 {
+					return strings.Join(c.MusicDirs, "; ")
+				}
+				return c.MusicDir
+			},
+			Set: func(c *config.Config, v string) {
+				c.MusicDirs = nil
+				c.MusicDir = ""
+				for dir := range strings.SplitSeq(v, ";") {
+					if dir = strings.TrimSpace(dir); dir != "" {
+						c.MusicDirs = append(c.MusicDirs, dir)
+					}
+				}
+			}})
 
 	return []Section{
 		{Key: "services", Title: "Services", Items: services},

@@ -2,9 +2,11 @@ package tui
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/tphx37/utuimp/internal/i18n"
 	"github.com/tphx37/utuimp/internal/provider"
 )
 
@@ -163,5 +165,36 @@ func TestApp_RoutesLinkToItsTab(t *testing.T) {
 	app.Update(sessionMsg{idx: 1, msg: linkRouteMsg{link: l}})
 	if app.Active() != 1 || services[1].Model.errMsg == "" {
 		t.Errorf("missing service: active=%d note=%q", app.Active(), services[1].Model.errMsg)
+	}
+}
+
+func TestRadioStreamLinkOpensOffer(t *testing.T) {
+	m := newModel(newMockPlayer())
+	m.serviceKey = "radio"
+	cmd := m.linkCommand("https://example.org/live.mp3")
+	if cmd == nil || m.linkOffer == nil || m.linkOffer.link.Service != "radio" || m.linkOffer.link.URL != "https://example.org/live.mp3" {
+		t.Fatalf("radio link offer = %+v", m.linkOffer)
+	}
+}
+
+func TestRadioLinkPrompt(t *testing.T) {
+	m := newModel(newMockPlayer())
+	m.serviceKey = "radio"
+	m.mode = modeSearch
+	if got := strings.Join(m.searchLines(100, 10), "\n"); !strings.Contains(got, i18n.T("Paste a direct stream URL or enter a station name")) {
+		t.Fatalf("radio prompt missing: %s", got)
+	}
+	if got := strings.Join(m.statusNavLines(100), "\n"); !strings.Contains(got, i18n.T("LINK")) {
+		t.Fatalf("radio input label missing: %s", got)
+	}
+}
+
+func TestRadioHomeHintsUseLink(t *testing.T) {
+	m := newModel(newMockPlayer())
+	m.serviceKey = "radio"
+	for _, screen := range []string{strings.Join(m.coverIdleRight(80, 10), "\n"), strings.Join(m.coverHomeHints(), " "), strings.Join(m.statusNavLines(1000), " ")} {
+		if !strings.Contains(screen, i18n.T(" link")) {
+			t.Errorf("radio home does not show link: %s", screen)
+		}
 	}
 }

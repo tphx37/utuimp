@@ -66,7 +66,8 @@ the volume, the visualizer scene), so edit it while utuimp is closed.
 | `services` | the tabs, in order: `"yandex"`, `"apple"`, `"spotify"`, `"youtube"`, `"soundcloud"`, `"local"`. Empty means all |
 | `service` | the tab shown on start |
 | `service_keys` | keys for tabs, e.g. `{"1": "yandex", "`": "local"}`. A service bound here loses its default number |
-| `music_dir` | the local music folder (default `~/Music`) |
+| `music_dir` | legacy single local music folder (default `~/Music`); used when `music_dirs` is empty |
+| `music_dirs` | array of local music folders; takes precedence over `music_dir` |
 | `librespot_path` | librespot, if not on `PATH` |
 | `ytdlp_path`, `ffmpeg_path` | yt-dlp and ffmpeg, if not on `PATH` |
 | `youtube_cookies` | where yt-dlp takes YouTube cookies from: a browser name (`"firefox"`, `"chrome"`…) or the path of a `cookies.txt` |
@@ -128,7 +129,7 @@ by utuimp. Don't edit them by hand. Use `--relogin` instead
   "layout": "cover",
   "services": ["yandex", "spotify", "local"],
   "service_keys": { "`": "local" },
-  "music_dir": "~/Music",
+  "music_dirs": ["~/Music", "~/Other Music"],
   "translate_lang": "en",
   "visualizer_strength": 50,
   "visualizer_background": "stars",
@@ -205,7 +206,7 @@ utuimp version
 | `--no-update` | don't check for updates this run |
 | `--window` | open in a terminal window of its own |
 | `--demo` | fake player and fake songs, no accounts or network |
-| `--debug` | more detailed logs |
+| `--debug` | save diagnostics and crash reports to the user cache (`utuimp/debug.log`) |
 
 ## Environment variables
 

@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/dhowden/tag"
 	"github.com/tphx37/utuimp/internal/provider"
@@ -24,6 +25,8 @@ import (
 
 // Provider scans a local directory and exposes tracks via the provider interface.
 type Provider struct {
+	mu     sync.RWMutex
+	dirs   []string
 	dir    string
 	tracks []provider.Track
 
@@ -41,48 +44,73 @@ type Provider struct {
 func (p *Provider) SetStore(st *localstore.Store) { p.store = st }
 
 // New creates a Provider and performs the initial directory scan.
-func New(dir string) (*Provider, error) {
-	p := &Provider{dir: dir}
-	if err := p.scan(); err != nil {
+func New(dir string) (*Provider, error) { return NewMulti([]string{dir}) }
+
+// NewMulti scans all configured roots, ignoring duplicate files in overlapping roots.
+func NewMulti(dirs []string) (*Provider, error) {
+	p := &Provider{}
+	if _, err := p.Refresh(context.Background(), dirs); err != nil {
 		return nil, err
 	}
 	return p, nil
 }
-
 func (p *Provider) Name() string          { return "Local" }
 func (p *Provider) IsAuthenticated() bool { return true }
 
-// scan walks dir recursively and indexes all supported audio files.
-func (p *Provider) scan() error {
-	p.tracks = nil
-	p.skipped = map[string]int{}
-	p.unreadable = 0
-	return filepath.Walk(p.dir, func(path string, info os.FileInfo, err error) error {
+// Refresh builds a replacement index off-thread and publishes it only after all roots succeed.
+func (p *Provider) Refresh(ctx context.Context, dirs []string) ([]provider.Track, error) {
+	next := &Provider{dirs: append([]string(nil), dirs...), skipped: map[string]int{}}
+	if len(dirs) == 0 {
+		return nil, errors.New("no music folders configured")
+	}
+	next.dir = strings.Join(dirs, ", ")
+	seen := map[string]bool{}
+	for _, root := range dirs {
+		abs, err := filepath.Abs(root)
 		if err != nil {
-			if os.IsPermission(err) {
-				return filepath.SkipDir
+			return nil, err
+		}
+		err = filepath.Walk(abs, func(path string, info os.FileInfo, err error) error {
+			if err := ctx.Err(); err != nil {
+				return err
 			}
-			return err
-		}
-		if info.IsDir() {
+			if err != nil {
+				if os.IsPermission(err) && path != abs {
+					return nil
+				}
+				return err
+			}
+			if info.IsDir() {
+				return nil
+			}
+			if seen[path] {
+				return nil
+			}
+			seen[path] = true
+			ext := strings.ToLower(filepath.Ext(path))
+			if lyricsExts[ext] {
+				return nil
+			}
+			if !supportedExts[ext] {
+				next.skipped[ext]++
+				return nil
+			}
+			t, err := trackFromFile(path)
+			if err != nil {
+				next.unreadable++
+				return nil
+			}
+			next.tracks = append(next.tracks, t)
 			return nil
-		}
-		ext := strings.ToLower(filepath.Ext(path))
-		if lyricsExts[ext] {
-			return nil // a song's lyrics, beside it: not a song
-		}
-		if !supportedExts[ext] {
-			p.skipped[ext]++
-			return nil
-		}
-		t, err := trackFromFile(path)
+		})
 		if err != nil {
-			p.unreadable++
-			return nil // skipping files that have unreadable metadata
+			return nil, fmt.Errorf("%s: %w", root, err)
 		}
-		p.tracks = append(p.tracks, t)
-		return nil
-	})
+	}
+	p.mu.Lock()
+	p.dirs, p.dir, p.tracks, p.skipped, p.unreadable = next.dirs, next.dir, next.tracks, next.skipped, next.unreadable
+	p.mu.Unlock()
+	return append([]provider.Track(nil), next.tracks...), nil
 }
 
 // ScanNotice reports what the last scan left out, or "" when every file in the
@@ -92,6 +120,8 @@ func (p *Provider) scan() error {
 // remedy the user can act on. The supported set is not documented anywhere
 // else a user would look, so the message names it.
 func (p *Provider) ScanNotice() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	skipped := 0
 	for _, n := range p.skipped {
 		skipped += n
@@ -227,12 +257,16 @@ func trackFromFile(path string) (provider.Track, error) {
 }
 
 func (p *Provider) GetLibraryTracks(_ context.Context) ([]provider.Track, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	out := make([]provider.Track, len(p.tracks))
 	copy(out, p.tracks)
 	return out, nil
 }
 
 func (p *Provider) Search(_ context.Context, query string) (*provider.SearchResult, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	q := strings.ToLower(query)
 	var tracks []provider.Track
 	var albums []provider.Album
@@ -280,6 +314,8 @@ func (p *Provider) GetPlaylistTracks(_ context.Context, id string) ([]provider.T
 
 // track finds a scanned file by ID.
 func (p *Provider) track(id string) (provider.Track, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	i := slices.IndexFunc(p.tracks, func(t provider.Track) bool { return t.ID == id })
 	if i < 0 {
 		return provider.Track{}, false
@@ -313,6 +349,8 @@ func (p *Provider) TrackLyrics(_ context.Context, trackID string, synced bool) (
 }
 
 func (p *Provider) GetAlbumTracks(_ context.Context, albumID string) ([]provider.Track, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	albumID = strings.TrimPrefix(albumID, "local-album:")
 	var out []provider.Track
 	for _, t := range p.tracks {
@@ -388,6 +426,8 @@ func (p *Provider) DeletePlaylist(_ context.Context, playlistID string) error {
 var _ provider.PlaylistEditor = (*Provider)(nil)
 
 func (p *Provider) GetRecommendations(_ context.Context) ([]provider.RecommendationGroup, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	// Group tracks by genre using their metadata tags.
 	// Tracks with no genre tag are skipped.
 	byGenre := map[string][]provider.Track{}

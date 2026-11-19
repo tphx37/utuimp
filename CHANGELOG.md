@@ -2,13 +2,28 @@
 
 ## 4.0.3
 
+### Added
+
+- Local files can scan multiple folders and refresh with `:refresh` or `Ctrl+R` in the library, keeping playback and the queue.
+- Added an Internet radio tab with Radio Browser search, stream and supported HTML links, favorites, playlists and a recent-links feed. On Linux, stream metadata can update the song, artist and album. Save a selected radio station with `Ctrl+F` in search or `f` in the feed, and rename saved stations in the library without changing their URLs.
+- `--debug` writes a diagnostic log including crash reports to the user cache.
+
+### Changed and fixed
+
+- Queue navigation moves directly to the next or previous track on the first arrow key.
+- The Windows installer downloads and verifies the latest release before falling back to a source build.
+- Spotify playback reports when a 403 may need a librespot update - [documented](docs/troubleshooting.md#spotify) a tested upstream fix for the librespot 0.8.0 Web API playback failure.
+- Keep Spotify playback commands on utuimp's local device and skip devices Spotify marks as restricted.
+- Fixed a crash while drawing feed borders, including the Yandex Music feed.
+- Released cached pixel buffers when switching tabs to reduce retained memory.
+- Release visualizer frame copies on close, and pixel interface buffers and cached lyric images when the pixel interface is turned off.
 - Improved mini menus (such as `i` menu) animations.
 - Read YouTube Music cover thumbnails and decode WebP artwork.
 - Show Spotify playlists after recently played items, in the order returned by Spotify.
 - Give yt-dlp a temporary cookies copy to keep the exported file intact.
 - Read YouTube Music liked songs and playlists directly with exported cookies instead of the YouTube video library.
-- Show errors when Spotify feed cannot load saved albums or followed artists.
 - Accept cookies.txt paths including ~/ in YouTube cookies settings.
+- Show errors when Spotify feed cannot load saved albums or followed artists.
 - Retry loading the feed after a service finishes connecting.
 - Include the playback command in Spotify error messages to make restrictions easier to diagnose.
 - In cover view now q opens the queue, Esc returns to the lyrics, h opens history.

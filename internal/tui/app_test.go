@@ -225,3 +225,20 @@ func TestApp_VisualizerOpeningKeepsTheTabs(t *testing.T) {
 		t.Error("the first row moved as the visualizer began to open")
 	}
 }
+
+func TestSwitchTabReleasesBackgroundPixels(t *testing.T) {
+	app, services := testApp(t)
+	l := services[0].Model.lines
+	l.scratch = make([]byte, 1024)
+	l.strips[stripCover].rgba = make([]byte, 2048)
+	l.strips[stripCover].framePixels = make([]byte, 4096)
+	app.switchTo(1)
+	if l.scratch != nil || l.strips[stripCover].rgba != nil || l.strips[stripCover].framePixels != nil {
+		t.Fatal("background graphics buffers were retained")
+	}
+	if l.strips[stripCover].sentKey != [5]int{-1, -1, -1, -1, -1} {
+		t.Fatal("returning to the tab must redraw its pixels")
+	}
+	app.switchTo(0)
+	_ = app.View()
+}

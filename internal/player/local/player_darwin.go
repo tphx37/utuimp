@@ -693,7 +693,9 @@ func (p *Player) SetPlaylist(_ string, startIdx int) error {
 }
 
 func (p *Player) AppendQueue(ids []string) error {
+	p.mu.RLock()
 	extra := tracksForIDs(p.allTracks, ids)
+	p.mu.RUnlock()
 	p.mu.Lock()
 	p.queue = append(p.queue, extra...)
 	p.mu.Unlock()
@@ -840,6 +842,13 @@ func (p *Player) Close() error {
 		}
 	})
 	return nil
+}
+
+// RefreshLibrary replaces the searchable index without changing playback or the queue.
+func (p *Player) RefreshLibrary(tracks []provider.Track) {
+	p.mu.Lock()
+	p.allTracks = append([]provider.Track(nil), tracks...)
+	p.mu.Unlock()
 }
 
 func (p *Player) LoadTracks(tracks []provider.Track) {

@@ -7,6 +7,7 @@
 - [Spotify](#spotify)
 - [YouTube Music](#youtube-music)
 - [SoundCloud](#soundcloud)
+- [Internet radio](#internet-radio)
 - [Local files](#local-files)
 - [Switching accounts and signing out](#switching-accounts-and-signing-out)
 - [Last.fm](#lastfm)
@@ -24,6 +25,7 @@ happens once.
 | Spotify | Spotify | Premium | [librespot](https://github.com/librespot-org/librespot) |
 | YouTube Music | none | none | [yt-dlp](https://github.com/yt-dlp/yt-dlp), [FFmpeg](https://ffmpeg.org) |
 | SoundCloud | none / API app | none / Artist Pro with API | [yt-dlp](https://github.com/yt-dlp/yt-dlp), [FFmpeg](https://ffmpeg.org) |
+| Internet radio | none | none | none |
 | Local files | none | none | none |
 
 ## Yandex Music
@@ -55,10 +57,11 @@ the current format. `utuimp --apple` starts on the Apple Music tab.
 
 ## Spotify
 
-Needs **Spotify Premium** and
+Needs **Spotify Premium** and a separately installed
 [librespot](https://github.com/librespot-org/librespot), which plays the
-sound. The first time, approve access on the Spotify page that opens. The
-Spotify app doesn't need to be open.
+sound. utuimp's builds do not include librespot, and the installer may
+offer your package manager's version. The first time, approve access on the
+Spotify page that opens. The Spotify app doesn't need to be open.
 
 On Linux utuimp takes the sound from librespot and plays it through its own
 player, so pause is instant and the [visualizer](visualizer.md) sees the
@@ -70,6 +73,9 @@ devices.
 
 If librespot isn't on your `PATH`, set `librespot_path` in the
 [config](configuration.md#config-file).
+librespot 0.8.0 can reject track and playlist playback with HTTP 403.
+Until an upstream release contains the fix, see the tested build and
+workaround in [Spotify troubleshooting](troubleshooting.md#spotify).
 
 **Your own Spotify app.** Spotify sometimes limits the app utuimp signs in
 with by default. If it says it is blocking the shared sign-in, create your
@@ -87,8 +93,11 @@ Needs [yt-dlp](https://github.com/yt-dlp/yt-dlp) and
 playlists are kept by utuimp in `~/.config/utuimp/library-youtube.json`, and
 the feed (`F`) has a mix for each favorite.
 
-Search results show only the title until the song plays, because yt-dlp lists them
-that way. Albums and mixes show everything at once.
+Search reads songs, artists and albums from YouTube Music, including available
+artist names, album names and durations. Playback still uses yt-dlp and
+FFmpeg. Exported cookies can also show account likes and playlists in the
+library; account items are read-only, while utuimp's favorites and playlists
+are saved locally.
 
 If YouTube asks to confirm you're not a bot, give yt-dlp your browser's
 cookies, see [Troubleshooting](troubleshooting.md#youtube-music-confirm-youre-not-a-bot).
@@ -113,11 +122,29 @@ SoundCloud API instead, with your own likes and playlists:
 3. open the settings (`,`) and paste its
    Client ID and Client Secret.
 
+## Internet radio
+
+The Radio tab searches Radio Browser by station name. Paste a direct stream
+or supported station page into `/` or use `:link <url>`. Press `f` while a
+station plays, or `Ctrl+F` on a search result, to save it.
+The library's Songs and Favorites contain saved stations: select one and press
+`r` to rename it without changing its stream URL. In the feed, `f` saves the
+selected recent link. `F` shows recently played links. An HTML page must expose a direct stream in its player or metadata; Apple Music
+station pages do not currently work here. The feed keeps recent played links
+across restarts. On Linux, the player
+updates the displayed title, artist and album when the stream supplies them;
+not every station sends those fields.
+
 ## Local files
 
 Plays the music in your `Music` folder, scanned with all its subfolders.
-Pick another folder in `utuimp setup`, or once from the command line (it is
-saved):
+Set one or more folders in Settings → Services → Music folders, separated
+by semicolons. Changing them triggers a rescan. `music_dirs` in the config
+also accepts an array; the older `music_dir` remains supported. Run
+`:refresh` from the Local files tab or press `Ctrl+R` in its library after
+adding files. Playback and the current queue continue during the rescan.
+
+To replace the folder list with one folder from the command line (saved):
 
 ```bash
 utuimp --music-dir ~/some/folder

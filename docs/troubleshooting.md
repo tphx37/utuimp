@@ -3,7 +3,10 @@
 [← docs](README.md)
 
 First, type `:debug-logs` inside utuimp. It shows what utuimp has been
-doing, and the error is usually there. `utuimp --debug` logs in more detail.
+doing, and the error is usually there. Run `utuimp --debug` to also save
+diagnostics and crash reports to `~/.cache/utuimp/debug.log` (on Windows,
+`utuimp/debug.log` under the user cache directory). Review the log for private
+information before sharing it.
 
 - [Playback](#playback)
 - [Spotify](#spotify)
@@ -21,7 +24,15 @@ doing, and the error is usually there. `utuimp --debug` logs in more detail.
 
 **A local file isn't listed.** Check the format is supported on your system,
 see [Local files](services.md#local-files). Windows plays MP3, FLAC and
-M4A only.
+M4A only. Check all configured paths under Settings → Services → Music
+folders; press `Ctrl+R` in the Local files library or run `:refresh` on
+that tab after adding files.
+
+**A radio link doesn't play.** Use a direct stream URL, an M3U/PLS playlist,
+or a page that exposes the stream in its audio player or metadata. Some pages,
+including Apple Music station pages, don't provide a direct playable URL.
+Available codecs and HLS support depend on the audio backend and installed
+plugins. The station may not supply song metadata.
 
 ## Spotify
 
@@ -40,6 +51,31 @@ ticked, then run `utuimp setup` and paste its Client ID.
 
 **Feed or playlists say "Forbidden (HTTP 403)".** Update utuimp: Spotify
 changed its API in 2026 and older versions use the retired paths.
+
+**Playing a search result or playlist fails with "Restriction violated" (HTTP 403).**
+If Spotify's app can play on the utuimp device but utuimp cannot start a
+track, librespot 0.8.0 may be affected by a change in Spotify's playback
+requests. Its log is `~/.cache/utuimp/librespot.log` on Linux; the errors
+`Client specified an invalid argument` and `context is not available`
+at the same time as the 403 match this problem. Other restrictions can
+also produce a 403.
+
+An [upstream fix](https://github.com/librespot-org/librespot/pull/1870)
+is available but has not yet been released. Until a release containing it
+is available, a Linux user can build the tested revision (requires Git,
+Rust, Cargo, a C compiler, pkg-config and ALSA development headers):
+
+```sh
+git clone https://github.com/stefanbd/librespot.git
+cd librespot
+git checkout afb2e6aa6ead6206089141b46e7b88134657e87d
+cargo build --release --locked --no-default-features --features rustls-tls-native-roots,rodio-backend
+```
+
+Set `librespot_path` in the [config](configuration.md#config-file) to the
+absolute path of `target/release/librespot`, then restart utuimp. This is
+an unreleased build; replace it with a released version containing the fix
+when available. The patch does not resolve every possible Spotify 403.
 
 **Radio (`R`) plays only the same artist.** That's expected. Spotify's
 recommendations aren't open to new apps, so the radio is built from songs

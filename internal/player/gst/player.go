@@ -1539,6 +1539,21 @@ static gint utuimp_gst_pop_bus(GstElement* p, gchar** strOut) {
         } else {
             t = -1;
         }
+    } else if (t == (gint)GST_MESSAGE_TAG && strOut) {
+        GstTagList* tags = NULL;
+        gchar *title = NULL, *artist = NULL, *album = NULL, *station = NULL;
+        gst_message_parse_tag(msg, &tags);
+        if (tags) {
+            gst_tag_list_get_string(tags, GST_TAG_TITLE, &title);
+            gst_tag_list_get_string(tags, GST_TAG_ARTIST, &artist);
+            gst_tag_list_get_string(tags, GST_TAG_ALBUM, &album);
+            gst_tag_list_get_string(tags, GST_TAG_ORGANIZATION, &station);
+            if (title || artist || album || station) {
+                *strOut = g_strdup_printf("%s\x1f%s\x1f%s\x1f%s", title ? title : "", artist ? artist : "", album ? album : "", station ? station : "");
+            }
+            g_free(title); g_free(artist); g_free(album); g_free(station);
+            gst_tag_list_unref(tags);
+        }
     } else if (t == (gint)GST_MESSAGE_ERROR && strOut) {
         GError* e = NULL;
         gchar* dbg = NULL;
@@ -1636,6 +1651,7 @@ type Player struct {
 	onEOS         func()
 	onError       func(error)
 	onStreamStart func(string)
+	onTags        func(title, artist, album, station string)
 	stop          chan struct{}
 	destroyOnce   sync.Once
 	wg            sync.WaitGroup
@@ -1700,6 +1716,13 @@ func (p *Player) OnEOS(fn func()) {
 func (p *Player) OnError(fn func(error)) {
 	p.mu.Lock()
 	p.onError = fn
+	p.mu.Unlock()
+}
+
+// OnTags registers a callback for metadata carried by the current stream.
+func (p *Player) OnTags(fn func(title, artist, album, station string)) {
+	p.mu.Lock()
+	p.onTags = fn
 	p.mu.Unlock()
 }
 
@@ -1916,6 +1939,22 @@ func (p *Player) drainBus() {
 			p.mu.Unlock()
 			if cb != nil {
 				go cb(uri)
+			}
+		case C.GST_MESSAGE_TAG:
+			if strOut == nil {
+				continue
+			}
+			value := C.GoString((*C.char)(unsafe.Pointer(strOut)))
+			C.utuimp_gst_free(strOut)
+			parts := strings.SplitN(value, "\x1f", 4)
+			if len(parts) != 4 {
+				continue
+			}
+			p.mu.Lock()
+			cb := p.onTags
+			p.mu.Unlock()
+			if cb != nil {
+				cb(parts[0], parts[1], parts[2], parts[3])
 			}
 		case C.GST_MESSAGE_EOS:
 			p.mu.Lock()

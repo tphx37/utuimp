@@ -879,6 +879,21 @@ func (m *LibraryModel) OpenPlaylist() (pl *provider.Playlist, t *provider.Track,
 	return &p, &tr, idx
 }
 
+// RenameTrack updates a station's display name in the current list and cached library.
+func (m *LibraryModel) RenameTrack(id, name string) {
+	for i := range m.libraryTracks {
+		if m.libraryTracks[i].ID == id {
+			m.libraryTracks[i].Title = name
+		}
+	}
+	for i := range m.drillTracks {
+		if m.drillTracks[i].ID == id {
+			m.drillTracks[i].Title = name
+			m.drillList.SetItem(i, trackListItem{m.drillTracks[i]})
+		}
+	}
+}
+
 // RemovedFromPlaylist drops the song at idx from the open playlist's list,
 // after it was removed from the playlist itself.
 func (m *LibraryModel) RemovedFromPlaylist(playlistID string, idx int, trackID string) {

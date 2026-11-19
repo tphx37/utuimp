@@ -324,6 +324,25 @@ func (l *uiLines) seen() bool {
 	return false
 }
 
+// releasePixels discards redraw buffers when pixels are no longer needed.
+// They are rebuilt when the pixel interface is shown again.
+func (l *uiLines) releasePixels() {
+	if l == nil {
+		return
+	}
+	l.scratch, l.scaled, l.coverFade, l.lyrBuf, l.colBuf, l.mask = nil, nil, nil, nil, nil, nil
+	l.lyr, l.lyrItems = lyricsPic{}, nil
+	l.coverKey = ""
+	for i := range l.strips {
+		st := &l.strips[i]
+		st.rgba, st.framePixels = nil, nil
+		st.sentKey = [5]int{-1, -1, -1, -1, -1}
+	}
+	for i := range l.lyrBands {
+		l.lyrBands[i].prev = nil
+	}
+}
+
 // unsee forgets where the lines were: the screen shown has none.
 func (l *uiLines) unsee() {
 	for i := range l.strips {

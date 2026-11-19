@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,6 +19,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/tphx37/utuimp/internal/debuglog"
 	"github.com/tphx37/utuimp/internal/i18n"
 	"github.com/tphx37/utuimp/internal/lastfm"
 	"github.com/tphx37/utuimp/internal/openurl"
@@ -196,6 +198,13 @@ func (m *Model) settingsChanged(msg views.SettingsChangedMsg) tea.Cmd {
 		if m.lines != nil {
 			m.lines.palURL = "\x00" // taken anew on the next frame
 		}
+	}
+	if (msg.Key == "graphics.style" || msg.Key == "interface.motion") && !m.linesOn() && m.lines != nil {
+		m.lines.ticking = false
+		m.lines.gen++
+		cmd := m.linesHide()
+		m.lines.releasePixels()
+		return cmd
 	}
 	return nil
 }
@@ -638,7 +647,9 @@ type Model struct {
 	pendingLink *provider.Link
 	// busyLabel names a background load in progress (an album or playlist
 	// being fetched from search or the feed); shown with a spinner.
-	busyLabel string
+	busyLabel         string
+	localRefreshing   bool
+	localRefreshAgain bool
 	// trackChangedAt starts the title reveal animation on a new track.
 	trackChangedAt time.Time
 	noAnim         bool  // render final frames only (tests)
@@ -1201,7 +1212,7 @@ func (m *Model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 		// track before the player starts it, so a "track changed" check
 		// alone misses songs started from the library).
 		if s.Track != nil && s.Playing && !s.Loading {
-			if key := s.Track.Title + "\x00" + s.Track.Artist; key != m.historyLastKey {
+			if key := s.Track.ID + "\x00" + s.Track.Title + "\x00" + s.Track.Artist; key != m.historyLastKey {
 				m.historyLastKey = key
 				m.recordHistory(*s.Track)
 			}
@@ -1459,6 +1470,14 @@ func (m *Model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 			cmds = append(cmds, m.runRadioSearch())
 		}
 
+	case stationRenamedMsg:
+		if msg.err != nil {
+			m.note(fmt.Sprintf(i18n.T("✗ %v"), msg.err))
+			m.appendLog(fmt.Sprintf("[radio] rename: %v", msg.err))
+		} else {
+			m.library.m.RenameTrack(msg.id, msg.name)
+			m.note(fmt.Sprintf(i18n.T("✓ Station renamed to %s"), msg.name))
+		}
 	case loveSongMsg:
 		if msg.err != nil {
 			// Revert optimistic toggle on failure.
@@ -1483,7 +1502,10 @@ func (m *Model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 			if msg.loved {
 				state = "♥"
 			}
-			m.appendLog(fmt.Sprintf("[fav] %s %s synced to Apple Music", state, msg.title))
+			m.appendLog(fmt.Sprintf("[fav] %s %s synced to provider", state, msg.title))
+			if m.serviceKey == "radio" && msg.loved {
+				m.note(i18n.T("✓ Station saved"))
+			}
 		}
 	case searchDebounceMsg:
 		// Drop stale debounce ticks — only the latest keystroke wins.
@@ -1648,9 +1670,38 @@ func (m *Model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 	case InitStatusMsg:
 		m.initStatus = string(msg)
 
+	case RefreshLocalMsg:
+		if m.serviceKey == "local" {
+			cmds = append(cmds, m.refreshLocalCmd())
+		}
+	case localRefreshMsg:
+		m.localRefreshing = false
+		m.busyLabel = ""
+		if msg.err != nil {
+			m.note(fmt.Sprintf(i18n.T("Local refresh failed: %v"), msg.err))
+			m.appendLog("[local] refresh: " + msg.err.Error())
+		} else {
+			m.library.m.InvalidateTracksCache()
+			m.library.m.ResetTopLevel()
+			m.feedP.m.SetRecommendations(nil)
+			if m.searchQuery != "" {
+				cmds = append(cmds, m.scheduleSearch(m.searchQuery))
+			}
+			m.note(fmt.Sprintf(i18n.T("Local library refreshed: %d tracks"), len(msg.tracks)))
+			m.appendLog(fmt.Sprintf("[local] refreshed %d tracks", len(msg.tracks)))
+		}
+		if m.localRefreshAgain {
+			m.localRefreshAgain = false
+			cmds = append(cmds, m.refreshLocalCmd())
+		}
+
 	case EngineReadyMsg:
 		m.player = msg.Player
 		m.provider = msg.Provider
+		if m.serviceKey == "local" && m.localRefreshAgain {
+			m.localRefreshAgain = false
+			cmds = append(cmds, m.refreshLocalCmd())
+		}
 		m.engineErr = ""
 		m.useServiceLyrics(msg.Provider)
 		m.stateCh = msg.Player.Subscribe()
@@ -2129,6 +2180,14 @@ func (m *Model) handleSearchKey(k string, msg tea.KeyPressMsg) tea.Cmd {
 		m.searchQuery = string(runes[m.searchCursor:])
 		m.searchCursor = 0
 		return m.scheduleSearch(m.searchQuery)
+	case "ctrl+f":
+		if m.serviceKey == "radio" {
+			if t := m.search.SelectedTrack(); t != nil {
+				m.setTrackFavorite(t, true)
+				return m.loveSongCmd(t, true)
+			}
+		}
+		return nil
 	case "ctrl+p":
 		// Open playlist picker for the currently selected search result.
 		if t := m.search.SelectedTrack(); t != nil {
@@ -2219,6 +2278,7 @@ var allCommands = []cmdEntry{
 	{"mute", "mute", "Toggle mute"},
 	{"about", "about", "Show information about utuimp"},
 	{"debug-logs", "debug-logs", "Toggle debug log panel"},
+	{"refresh", "refresh", "Rescan local music folders"},
 	{"q", "q", "Quit utuimp"},
 	{"quit", "quit", "Quit utuimp"},
 }
@@ -2318,6 +2378,8 @@ func (m *Model) executeCommand(cmd string) tea.Cmd {
 		return m.openVisualizer()
 	case cmd == "link" || strings.HasPrefix(cmd, "link "):
 		return m.linkCommand(strings.TrimPrefix(cmd, "link"))
+	case cmd == "refresh":
+		return m.refreshLocalCmd()
 	case cmd == "settings":
 		for i, p := range m.panels {
 			if p == m.settingsP {
@@ -2743,6 +2805,36 @@ func (m *Model) lyricsPosition() time.Duration {
 // fetchFeedCmd fetches personalised recommendations from the provider asynchronously.
 func (m *Model) fetchFeedCmd() tea.Cmd {
 	prov := m.provider
+	if m.serviceKey == "radio" {
+		history := append([]provider.Track(nil), m.history...)
+		return func() tea.Msg {
+			if _, pending := prov.(provider.NotReady); pending {
+				return feedResultMsg{err: provider.ErrNotReady}
+			}
+			items := make([]provider.RecommendationItem, 0, len(history))
+			seen := make(map[string]bool)
+			for _, t := range history {
+				id := views.PlaybackID(t)
+				u, err := url.Parse(id)
+				if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || seen[id] {
+					continue
+				}
+				seen[id] = true
+				if remember, ok := prov.(interface{ RememberTrack(provider.Track) }); ok {
+					remember.RememberTrack(t)
+				}
+				title := t.Title
+				if title == "" {
+					title = id
+				}
+				items = append(items, provider.RecommendationItem{ID: id, Kind: "track", Title: title, Subtitle: t.Artist})
+			}
+			if len(items) == 0 {
+				return feedResultMsg{}
+			}
+			return feedResultMsg{groups: []provider.RecommendationGroup{{Title: i18n.T("Recent links"), Items: items}}}
+		}
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
@@ -3165,7 +3257,7 @@ func (m *Model) handleNormalKey(msg tea.KeyPressMsg, k string) tea.Cmd {
 			} else {
 				m.activePanel = i
 				// Trigger a feed load when opening the feed panel for the first time.
-				if p == m.feedP && m.feedP.m.NeedsLoad() {
+				if p == m.feedP && (m.serviceKey == "radio" || m.feedP.m.NeedsLoad()) {
 					m.feedP.m.SetLoading()
 					m.lastKey = ""
 					return m.fetchFeedCmd()
@@ -3261,6 +3353,16 @@ func (m *Model) handleNormalKey(msg tea.KeyPressMsg, k string) tea.Cmd {
 		}
 	}
 
+	if m.serviceKey == "local" && k == "ctrl+r" && m.activePanel >= 0 && m.panels[m.activePanel] == m.library {
+		return m.refreshLocalCmd()
+	}
+	if m.serviceKey == "radio" && k == "f" && m.activePanel >= 0 && m.panels[m.activePanel] == m.feedP {
+		if item := m.feedP.m.SelectedItem(); item != nil && item.Kind == "track" {
+			t := provider.Track{ID: item.ID, CatalogID: item.ID, Title: item.Title, Artist: item.Subtitle}
+			m.setTrackFavorite(&t, true)
+			return m.loveSongCmd(&t, true)
+		}
+	}
 	// The library's playlist keys (c, r, d) come before the player's.
 	if m.activePanel >= 0 && m.panels[m.activePanel] == m.library {
 		if cmd, ok := m.libraryPlaylistKey(k); ok {
@@ -3689,14 +3791,18 @@ func (m *Model) playQueueFrom(idx int) tea.Cmd {
 }
 
 // moveQueueMiniCursor moves the main-screen queue selection by delta,
-// starting from the playing track, and scrolls to keep it visible.
+// starting one step from the playing track, and scrolls to keep it visible.
 func (m *Model) moveQueueMiniCursor(delta int) {
 	n := len(m.queueTracks)
 	if n == 0 {
 		return
 	}
 	if m.queueMiniCursor < 0 {
-		m.queueMiniCursor = max(playingQueueIdx(m.queueTracks, m.playerState.Track), 0)
+		if playing := playingQueueIdx(m.queueTracks, m.playerState.Track); playing >= 0 {
+			m.queueMiniCursor = playing + delta
+		} else {
+			m.queueMiniCursor = 0
+		}
 	} else {
 		m.queueMiniCursor += delta
 	}
@@ -4967,6 +5073,9 @@ func (m *Model) searchLines(contentW, h int) []string {
 	listH := max(1, h-4)
 	m.search.SetSize(contentW, listH)
 	listView := m.search.View()
+	if m.serviceKey == "radio" && m.searchQuery == "" {
+		listView = "  " + muted.Render(i18n.T("Paste a direct stream URL or enter a station name"))
+	}
 	if listView == "" && !m.search.Loading() && m.searchQuery != "" {
 		listView = "  " + muted.Render(i18n.T("no results"))
 	}
@@ -4994,6 +5103,12 @@ func (m *Model) searchLines(contentW, h int) []string {
 		"  ·  " + accent.Render(i18n.T("Shift+Tab")) + muted.Render(i18n.T(" add to queue")) +
 		"  ·  " + accent.Render(i18n.T("ctrl+p")) + muted.Render(i18n.T(" add to playlist")) +
 		"  ·  " + accent.Render(i18n.T("Esc")) + muted.Render(esc)
+	if m.serviceKey == "radio" && m.search.SelectedTrack() != nil {
+		footer = "  " + accent.Render("Enter") + muted.Render(i18n.T(" play track")) +
+			"  ·  " + accent.Render("Ctrl+F") + muted.Render(i18n.T(" save station")) +
+			"  ·  " + accent.Render("Ctrl+P") + muted.Render(i18n.T(" add to playlist")) +
+			"  ·  " + accent.Render("Esc") + muted.Render(i18n.T(esc))
+	}
 	if m.search.SelectedArtist() != nil {
 		footer = "  " + accent.Render(i18n.T("Enter")) + muted.Render(i18n.T(" open artist")) +
 			"  ·  " + accent.Render(i18n.T("Esc")) + muted.Render(esc)
@@ -5020,8 +5135,12 @@ func (m *Model) statusNavLines(w int) []string {
 		cur := min(max(m.searchCursor, 0), len(runes))
 		before := styles.Header.Render(string(runes[:cur]))
 		after := styles.Header.Render(string(runes[cur:]))
+		label := "SEARCH"
+		if m.serviceKey == "radio" {
+			label = "LINK"
+		}
 		parts := []string{
-			styles.ModeSearch.Render(i18n.T("SEARCH")) + "  " +
+			styles.ModeSearch.Render(i18n.T(label)) + "  " +
 				accent.Render("/") + before + accent.Render("█") + after,
 			accent.Render(i18n.T("Ctrl+U")) + muted.Render(i18n.T(" clear")),
 		}
@@ -5102,6 +5221,9 @@ func (m *Model) statusNavLines(w int) []string {
 				accent.Render(i18n.T("r")) + muted.Render(i18n.T(" refresh")),
 				accent.Render(i18n.T("esc")) + muted.Render(i18n.T(" close")),
 			}
+			if m.serviceKey == "radio" {
+				parts = append(parts, accent.Render("f")+muted.Render(i18n.T(" save station")))
+			}
 		case m.activePanel >= 0 && m.panels[m.activePanel] == m.eqP:
 			parts = []string{
 				styles.ModeNormal.Render(i18n.T("EQUALIZER")),
@@ -5125,10 +5247,14 @@ func (m *Model) statusNavLines(w int) []string {
 				accent.Render(i18n.T("esc/?")) + muted.Render(i18n.T(" close")),
 			}
 		default:
+			searchHint := " search"
+			if m.serviceKey == "radio" {
+				searchHint = " link"
+			}
 			parts = []string{
 				styles.ModeNormal.Render(i18n.T("NORMAL")),
 				accent.Render(":") + muted.Render(i18n.T(" command")),
-				accent.Render("/") + muted.Render(i18n.T(" search")),
+				accent.Render("/") + muted.Render(i18n.T(searchHint)),
 				accent.Render(i18n.T("l")) + muted.Render(i18n.T(" library")),
 				accent.Render(i18n.T("h")) + muted.Render(i18n.T(" history")),
 				accent.Render("↑/↓") + muted.Render(i18n.T(" pick song")),
@@ -5431,6 +5557,7 @@ func truncateStr(s string, maxW int) string {
 // appendLog adds a timestamped entry to the debug log, capped at 500 lines.
 func (m *Model) appendLog(line string) {
 	const maxLines = 500
+	debuglog.Print(line)
 	ts := time.Now().Format("15:04:05")
 	m.debugLog = append(m.debugLog, ts+"  "+line)
 	if len(m.debugLog) > maxLines {
@@ -5707,4 +5834,46 @@ func shortcutKey(k string) string {
 		}
 	}
 	return k
+}
+
+type localRefreshMsg struct {
+	tracks []provider.Track
+	err    error
+}
+
+// refreshLocalCmd rescans configured folders without touching the playing queue.
+func (m *Model) refreshLocalCmd() tea.Cmd {
+	if m.serviceKey != "local" {
+		m.note(i18n.T("Switch to Local files to refresh"))
+		return nil
+	}
+	if m.localRefreshing {
+		m.localRefreshAgain = true
+		return nil
+	}
+	scanner, ok := m.provider.(interface {
+		Refresh(context.Context, []string) ([]provider.Track, error)
+	})
+	if !ok || m.player == nil {
+		if m.engineStarting() {
+			m.localRefreshAgain = true
+		}
+		m.note(i18n.T("Local player is still connecting"))
+		return nil
+	}
+	index, ok := m.player.(interface{ RefreshLibrary([]provider.Track) })
+	if !ok {
+		m.note(i18n.T("Local refresh is unavailable"))
+		return nil
+	}
+	dirs := append([]string(nil), m.cfg.LocalMusicDirs()...)
+	m.localRefreshing = true
+	m.setBusy(i18n.T("Scanning music folders…"))
+	return func() tea.Msg {
+		tracks, err := scanner.Refresh(context.Background(), dirs)
+		if err == nil {
+			index.RefreshLibrary(tracks)
+		}
+		return localRefreshMsg{tracks: tracks, err: err}
+	}
 }

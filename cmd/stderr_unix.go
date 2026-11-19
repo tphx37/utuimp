@@ -25,9 +25,13 @@ func captureStderr() (restore func()) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return noop
 	}
-	path := filepath.Join(dir, "stderr.log")
+	name := "stderr.log"
+	if debug {
+		name = "debug.log"
+	}
+	path := filepath.Join(dir, name)
 	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND
-	if st, err := os.Stat(path); err == nil && st.Size() > 1<<20 {
+	if st, err := os.Stat(path); !debug && err == nil && st.Size() > 1<<20 {
 		flags |= os.O_TRUNC // keep the log small
 	}
 	f, err := os.OpenFile(path, flags, 0o600) //nolint:gosec // our own cache file

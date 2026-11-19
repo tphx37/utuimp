@@ -43,6 +43,9 @@ type Options struct {
 	Welcome bool
 }
 
+// RefreshLocalMsg requests a rescan after changing local music folders.
+type RefreshLocalMsg struct{}
+
 // ServiceOffMsg tells a service's Model its tab was turned off in the
 // settings: it goes quiet.
 type ServiceOffMsg struct{}

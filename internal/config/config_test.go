@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -509,6 +510,26 @@ func TestRetireSharedAppleCredentials(t *testing.T) {
 		}
 		if cfg.MusicDir != "/Music/Music/Media" || len(cfg.Services) != 2 {
 			t.Fatal("local library configuration changed")
+		}
+	}
+}
+
+func TestLocalMusicDirsCompatibility(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	cases := []struct {
+		cfg  config.Config
+		want []string
+	}{
+		{config.Config{}, []string{filepath.Join(home, "Music")}},
+		{config.Config{MusicDir: "~/old"}, []string{filepath.Join(home, "old")}},
+		{config.Config{MusicDir: "/old", MusicDirs: []string{"~/one", "/two"}}, []string{filepath.Join(home, "one"), filepath.Clean("/two")}},
+	}
+	for _, tc := range cases {
+		got := tc.cfg.LocalMusicDirs()
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("dirs = %v, want %v", got, tc.want)
 		}
 	}
 }

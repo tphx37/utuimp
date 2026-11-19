@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -92,7 +93,8 @@ type Config struct {
 	Language string `json:"language,omitempty"`
 	// Services lists the enabled service tabs ("yandex", "apple", "spotify",
 	// "youtube", "soundcloud", "local") in order; empty means all.
-	Services []string `json:"services,omitempty"`
+	Services            []string `json:"services,omitempty"`
+	RadioTabInitialized bool     `json:"radio_tab_initialized,omitempty"`
 	// SetupDone is set once `utuimp setup` has run.
 	SetupDone bool `json:"setup_done,omitempty"`
 
@@ -184,7 +186,8 @@ type Config struct {
 	LibraryEdit bool `json:"library_edit,omitempty"`
 	// MusicDir is the local directory to scan for audio files
 	// Supports MP3, FLAC, M4A. Scanned recursively.
-	MusicDir string `json:"music_dir,omitempty"`
+	MusicDir  string   `json:"music_dir,omitempty"`
+	MusicDirs []string `json:"music_dirs,omitempty"`
 	// DiscordRPC enables Discord Rich Presence (defaults to true).
 	DiscordRPC *bool `json:"discord_rpc,omitempty"`
 	// Intro shows the start screen (the logo over dancing ribbons) while
@@ -509,4 +512,37 @@ func (c *Config) save(path string) error {
 		}
 	}
 	return nil
+}
+
+// LocalMusicDirs resolves configured roots; music_dirs takes precedence over music_dir.
+func (c *Config) LocalMusicDirs() []string {
+	dirs := c.MusicDirs
+	if len(dirs) == 0 && strings.TrimSpace(c.MusicDir) != "" {
+		dirs = []string{c.MusicDir}
+	}
+	if len(dirs) == 0 {
+		if home, e := os.UserHomeDir(); e == nil {
+			dirs = []string{filepath.Join(home, "Music")}
+		} else {
+			dirs = []string{"Music"}
+		}
+	}
+	var out []string
+	for _, dir := range dirs {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			continue
+		}
+		if dir == "~" || strings.HasPrefix(dir, "~/") || strings.HasPrefix(dir, `~\`) {
+			if home, e := os.UserHomeDir(); e == nil {
+				if len(dir) == 1 {
+					dir = home
+				} else {
+					dir = filepath.Join(home, dir[2:])
+				}
+			}
+		}
+		out = append(out, filepath.Clean(dir))
+	}
+	return out
 }

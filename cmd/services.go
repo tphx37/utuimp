@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/tphx37/utuimp/internal/debuglog"
 	"github.com/tphx37/utuimp/internal/i18n"
 	"github.com/tphx37/utuimp/internal/tui/styles"
 
@@ -21,8 +22,10 @@ import (
 	"github.com/tphx37/utuimp/internal/lastfm"
 	localPlayer "github.com/tphx37/utuimp/internal/player/local"
 	"github.com/tphx37/utuimp/internal/player/mux"
+	radioPlayer "github.com/tphx37/utuimp/internal/player/radio"
 	localProvider "github.com/tphx37/utuimp/internal/provider/local"
 	"github.com/tphx37/utuimp/internal/provider/localstore"
+	radioProvider "github.com/tphx37/utuimp/internal/provider/radio"
 	"github.com/tphx37/utuimp/internal/tui"
 )
 
@@ -77,6 +80,7 @@ func serviceDefs(audioBitrateKbps int) []serviceDef {
 		{key: "spotify", name: i18n.T("Spotify"), history: "history-spotify", start: startSpotifyEngine},
 		{key: "youtube", name: i18n.T("YouTube Music"), history: "history-youtube", start: startYouTubeEngine},
 		{key: "soundcloud", name: i18n.T("SoundCloud"), history: "history-soundcloud", start: startSoundCloudEngine},
+		{key: "radio", name: i18n.T("Radio"), history: "history-radio", start: startRadioEngine},
 		{key: "local", name: i18n.T("Local files"), history: "history-local", start: startLocalEngine},
 	}
 }
@@ -253,6 +257,13 @@ func runServices(cfg *config.Config, opts tui.Options, audioBitrateKbps int, ini
 					go app.Sender(i)(tui.ServiceOffMsg{})
 				}
 			}
+		case key == "services.music_dirs":
+			for i, d := range defs {
+				if d.key == "local" && services[i].Started() {
+					go app.Sender(i)(tui.RefreshLocalMsg{})
+					break
+				}
+			}
 		case key == "integrations.discord":
 			stopDiscord()
 			stopDiscord = startDiscordRPC(cfg, env.mux, asyncLog)
@@ -273,6 +284,9 @@ func runServices(cfg *config.Config, opts tui.Options, audioBitrateKbps int, ini
 
 	restoreStderr := captureStderr()
 	_, err := prog.Run()
+	if err != nil {
+		debuglog.Print(fmt.Sprintf("[app] program stopped: %v", err))
+	}
 	restoreStderr()
 	env.close()
 
@@ -285,23 +299,14 @@ func runServices(cfg *config.Config, opts tui.Options, audioBitrateKbps int, ini
 }
 
 // localMusicDir is music_dir from the config, else ~/Music.
-func localMusicDir(cfg *config.Config) string {
-	if cfg.MusicDir != "" {
-		return cfg.MusicDir
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "Music"
-	}
-	return filepath.Join(home, "Music")
-}
+func localMusicDir(cfg *config.Config) string { return strings.Join(cfg.LocalMusicDirs(), ", ") }
 
 // startLocalEngine scans the music directory (config music_dir, default
 // ~/Music) and plays files from it.
 func startLocalEngine(cfg *config.Config, send func(tea.Msg), env *engineEnv, idx int) {
 	dir := localMusicDir(cfg)
 	send(tui.InitStatusMsg(i18n.T("Scanning ") + dir + "…"))
-	prov, err := localProvider.New(dir)
+	prov, err := localProvider.NewMulti(cfg.LocalMusicDirs())
 	if err != nil {
 		send(tui.InitErrMsg{Err: fmt.Errorf("local files: %w", err)})
 		return
@@ -331,4 +336,21 @@ func startLocalEngine(cfg *config.Config, send func(tea.Msg), env *engineEnv, id
 		Backend: "Local files · " + dir,
 		Tracks:  tracks, Notice: notice,
 	})
+}
+
+func startRadioEngine(_ *config.Config, send func(tea.Msg), env *engineEnv, idx int) {
+	store, err := localstore.Open(localstore.DefaultPath("library-radio"))
+	if err != nil {
+		send(tui.InitErrMsg{Err: fmt.Errorf("radio library: %w", err)})
+		return
+	}
+	prov := radioProvider.New(store)
+	plyr, err := radioPlayer.New(prov)
+	if err != nil {
+		send(tui.InitErrMsg{Err: fmt.Errorf("radio audio: %w", err)})
+		return
+	}
+	env.addCleanup(func() { _ = plyr.Close() })
+	env.mux.Set(idx, plyr)
+	send(tui.EngineReadyMsg{Player: plyr, Provider: prov, Backend: "Internet radio · Radio Browser"})
 }

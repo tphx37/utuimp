@@ -12,6 +12,7 @@
   <img src="assets/services/spotify.svg" alt="Spotify" title="Spotify" width="44" height="44">&nbsp;
   <img src="assets/services/youtube-music.svg" alt="YouTube Music" title="YouTube Music" width="44" height="44">&nbsp;
   <img src="assets/services/soundcloud.svg" alt="SoundCloud" title="SoundCloud" width="44" height="44">&nbsp;
+  <img src="assets/services/radio.svg" alt="Radio" title="Radio" width="44" height="44">&nbsp;
   <img src="assets/services/local-files.svg" alt="Local files" title="Local files" width="44" height="44">
 </p>
 
@@ -60,9 +61,9 @@ pacman, yay and Homebrew packages: [utuimp-repo](https://github.com/tphx37/utuim
 building from source, requirements, uninstalling - see [docs/install.md](docs/install.md)
 
 
-Script installations on Linux/macOS can be removed with
+script installations on Linux/macOS can be removed with
 `rm -f "$HOME/.local/bin/utuimp"`, source installs with `make uninstall`.
-For Windows script removal and desktop entries, see
+for Windows script removal and desktop entries, see
 [uninstalling](docs/install.md#uninstalling).
 
 
@@ -74,36 +75,44 @@ with `utuimp setup`).
 
 each service signs in the first time you open its tab. details - see [docs/services.md](docs/services.md)
 
+spotify playback needs a separate librespot installation. librespot 0.8.0
+can fail to start tracks with a 403, and until its fix is released, see the
+[tested workaround](docs/troubleshooting.md#spotify).
+
 utuimp checks for a new release on each launch and asks before installing it.
 use `--no-update` to skip the check. package-managed or non-writable installs
 may need to be updated through their package manager instead.
 
 ## keys
 
-| | |
+| key | action |
 |---|---|
+| `1`, `2`, … | switch service tabs in the order shown |
 | `space` | play / pause |
-| `n` `p` | next / previous |
-| `←` `→` | 10 seconds back / forward (the step is in the settings) |
-| `+` `-` | volume |
-| `f` | favorite |
-| `s` `r` | shuffle, repeat |
-| `R` | radio from this song |
-| `/` | search |
-| `l` | library |
+| `n` / `p` | next / previous |
+| `←` / `→` | seek by the configured step (10 seconds by default) |
+| `+` / `-` | volume |
+| `f` | add to favorites; press twice to remove |
+| `s` / `r` | shuffle / repeat |
+| `R` | start radio from the current song where supported |
+| `/` | search; on Radio, find a station or enter a stream link |
+| `l` / `L` | open the library / return to its top |
+| `Ctrl+R` | rescan folders while the Local files library is open |
 | `h` | recently played |
-| `y` | lyrics |
-| `F` | recommendations |
+| `F` | feed; on Radio, recent station links |
+| `q` | open the queue in cover view |
+| `y` | lyrics / show or hide cover-view lyrics |
 | `i` | song menu |
+| `P` | add the selected or playing song to a playlist |
 | `e` | equalizer |
-| `v` | boxed view ↔ cover view |
-| `V` | fullscreen visualizer |
+| `v` / `V` | switch boxed and cover views / open the visualizer |
 | `,` | settings |
-| `H` | hide or show the key hints at the bottom |
-| `:` | commands (`:vol 50`, `:save name`, `:q`) |
-| `esc` | back |
+| `H` | hide or show key hints |
+| `?` | about |
+| `:` | commands, e.g. `:refresh`, `:link URL`, `:save name`, `:q` |
+| `esc` | back / close |
 
-the rest - queue, playlists, lyrics, commands - see [docs/usage.md](docs/usage.md)
+see [usage](docs/usage.md) for queue keys, playlist keys and more.
 
 ## looks
 
@@ -131,6 +140,8 @@ colours follow your terminal by default (`system` theme), or pick `dracula`,
 `gruvbox`, `nord`, `classic`, or `mono` (black and white). see [docs/configuration.md](docs/configuration.md)
 
 ## something's off
+
+run `utuimp --debug` to save diagnostics and crash reports to `~/.cache/utuimp/debug.log` (on Windows, the utuimp folder in the user cache directory). The log can contain private information, so review it before sharing.
 
 type `:debug-logs` inside utuimp to see what happened, and check
 [docs/troubleshooting.md](docs/troubleshooting.md).

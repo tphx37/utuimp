@@ -32,12 +32,13 @@ type Player struct {
 	prov *spotify.Provider
 	log  func(string)
 
-	mu       sync.Mutex
-	state    player.State
-	subs     []chan player.State
-	queue    []string
-	idx      int
-	deviceID string
+	mu        sync.Mutex
+	state     player.State
+	subs      []chan player.State
+	queue     []string
+	idx       int
+	deviceID  string
+	ownDevice bool // SetDevice selected the local librespot device
 	// out plays librespot's sound when utuimp does that itself (see
 	// Librespot.Output); nil otherwise.
 	out Output
@@ -114,10 +115,11 @@ func (p *Player) fail(err error) error {
 }
 
 type device struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	IsActive bool   `json:"is_active"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Type         string `json:"type"`
+	IsActive     bool   `json:"is_active"`
+	IsRestricted bool   `json:"is_restricted"`
 }
 
 // SetOutput tells the player what plays librespot's sound, so that pause,
@@ -279,6 +281,7 @@ func (p *Player) release(gen int, play bool, skip int) {
 func (p *Player) SetDevice(id string) {
 	p.mu.Lock()
 	p.deviceID = id
+	p.ownDevice = id != ""
 	p.mu.Unlock()
 }
 
@@ -287,6 +290,7 @@ func (p *Player) SetDevice(id string) {
 func (p *Player) ensureDevice(ctx context.Context) (string, error) {
 	p.mu.Lock()
 	id := p.deviceID
+	ownDevice := p.ownDevice
 	p.mu.Unlock()
 	if id != "" {
 		return id, nil
@@ -300,6 +304,9 @@ func (p *Player) ensureDevice(ctx context.Context) (string, error) {
 	var pick *device
 	for i := range res.Devices {
 		d := &res.Devices[i]
+		if d.ID == "" || d.IsRestricted || (ownDevice && d.Name != DeviceName) {
+			continue
+		}
 		switch {
 		case d.Name == DeviceName:
 			pick = d
@@ -371,6 +378,12 @@ func (p *Player) playFrom(idx int) error {
 		}
 	}
 	if err != nil {
+		p.mu.Lock()
+		ownDevice := p.ownDevice
+		p.mu.Unlock()
+		if ownDevice && errors.Is(err, spotify.ErrPlaybackRestricted) {
+			err = fmt.Errorf("%w; librespot may need an update (see docs/troubleshooting.md#spotify)", err)
+		}
 		err = fmt.Errorf("PUT /me/player/play: %w", err)
 	}
 	return p.fail(err)
@@ -718,7 +731,7 @@ func (p *Player) poll() {
 				}
 			}
 		}
-		if st.Device.ID != "" {
+		if st.Device.ID != "" && !p.ownDevice {
 			p.deviceID = st.Device.ID
 		}
 		// Right after a command given here Spotify may still report the

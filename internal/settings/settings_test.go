@@ -31,7 +31,7 @@ func TestSettingsTranslated(t *testing.T) {
 				t.Errorf("two items are %q", it.Key)
 			}
 			keys[it.Key] = true
-			if it.Key == "services.music_dir" || sec.Key == "services" && it.Kind == Toggle {
+			if sec.Key == "services" && it.Kind == Toggle {
 				continue // the services' own names
 			}
 			check(it.Key+" title", it.Title)

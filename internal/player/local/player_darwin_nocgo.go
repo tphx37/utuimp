@@ -39,3 +39,5 @@ func (p *Player) GetState() (*player.State, error)     { return &player.State{},
 func (p *Player) Subscribe() <-chan player.State       { return nil }
 func (p *Player) Close() error                         { return nil }
 func (p *Player) LoadTracks(_ []provider.Track)        {}
+
+func (p *Player) RefreshLibrary(_ []provider.Track) {}

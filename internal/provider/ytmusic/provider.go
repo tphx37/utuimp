@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -28,11 +29,13 @@ const MixPrefix = "RDAMVM"
 
 // Provider implements provider.Provider for YouTube Music.
 type Provider struct {
-	run     ytdlp.Runner
-	stream  ytdlp.Streamer
-	store   *localstore.Store
-	account bool
-	music   *musicAccount
+	run            ytdlp.Runner
+	stream         ytdlp.Streamer
+	store          *localstore.Store
+	account        bool
+	music          *musicAccount
+	searchClient   *http.Client
+	searchEndpoint string
 
 	mu      sync.Mutex
 	cache   map[string]provider.Track
@@ -46,12 +49,14 @@ type Provider struct {
 func New(ytdlpPath, ffmpeg, cookies string, store *localstore.Store) *Provider {
 	base := ytdlp.CookieArgs(cookies)
 	return &Provider{
-		run:     ytdlp.ExecRunner(ytdlpPath, base),
-		stream:  ytdlp.Streamer{YtDlp: ytdlpPath, FFmpeg: ffmpeg, Base: base},
-		store:   store,
-		account: strings.TrimSpace(cookies) != "",
-		music:   newMusicAccount(cookies),
-		cache:   map[string]provider.Track{}, artists: map[string]provider.Artist{}, albums: map[string]provider.Album{},
+		run:            ytdlp.ExecRunner(ytdlpPath, base),
+		stream:         ytdlp.Streamer{YtDlp: ytdlpPath, FFmpeg: ffmpeg, Base: base},
+		store:          store,
+		account:        strings.TrimSpace(cookies) != "",
+		music:          newMusicAccount(cookies),
+		searchClient:   &http.Client{Timeout: 15 * time.Second},
+		searchEndpoint: "https://music.youtube.com/youtubei/v1/search",
+		cache:          map[string]provider.Track{}, artists: map[string]provider.Artist{}, albums: map[string]provider.Album{},
 	}
 }
 
@@ -183,53 +188,26 @@ func listURL(id string) string {
 // ── Provider ───────────────────────────────────────────────────────────────
 
 func (p *Provider) Search(ctx context.Context, query string) (*provider.SearchResult, error) {
-	search := func(kind string, limit int) (*ytdlp.Entry, error) {
-		return p.flat(ctx, "https://music.youtube.com/search?q="+url.QueryEscape(query)+"#"+kind, limit)
-	}
-	var (
-		wg                 sync.WaitGroup
-		songs, arts        *ytdlp.Entry
-		albums             []provider.Album
-		songErr, alb, artE error
-	)
+	var wg sync.WaitGroup
+	var songs []provider.Track
+	var albums []provider.Album
+	var artists []provider.Artist
+	var songErr, albumErr, artistErr error
 	wg.Add(3)
-	go func() { defer wg.Done(); songs, songErr = search("songs", 20) }()
-	go func() { defer wg.Done(); albums, alb = p.searchAlbums(ctx, query, 4) }()
-	go func() { defer wg.Done(); arts, artE = search("artists", 3) }()
+	go func() { defer wg.Done(); songs, songErr = p.searchSongs(ctx, query) }()
+	go func() { defer wg.Done(); albums, _, albumErr = p.searchCollections(ctx, query, "albums") }()
+	go func() { defer wg.Done(); _, artists, artistErr = p.searchCollections(ctx, query, "artists") }()
 	wg.Wait()
 	if songErr != nil {
 		return nil, songErr
 	}
-	res := &provider.SearchResult{Tracks: p.toTracks(songs.Entries), Albums: albums}
-	if alb != nil {
-		res.Warnings = append(res.Warnings, "albums: "+alb.Error())
+	res := &provider.SearchResult{Tracks: songs, Albums: albums, Artists: artists}
+	if albumErr != nil {
+		res.Warnings = append(res.Warnings, "albums: "+albumErr.Error())
 	}
-	if artE != nil {
-		res.Warnings = append(res.Warnings, "artists: "+artE.Error())
+	if artistErr != nil {
+		res.Warnings = append(res.Warnings, "artists: "+artistErr.Error())
 	}
-
-	// Artist results come as bare IDs: look up their names.
-	var mu sync.Mutex
-	if arts != nil {
-		res.Artists = make([]provider.Artist, len(arts.Entries))
-		for i, e := range arts.Entries {
-			wg.Go(func() {
-				d, err := p.flat(ctx, "https://music.youtube.com/browse/"+url.PathEscape(e.ID), 1)
-				if err != nil {
-					return
-				}
-				name := d.Channel
-				if name == "" {
-					name = d.Title
-				}
-				mu.Lock()
-				res.Artists[i] = provider.Artist{ID: e.ID, Name: cleanName(name)}
-				mu.Unlock()
-			})
-		}
-	}
-	wg.Wait()
-	res.Artists = slices.DeleteFunc(res.Artists, func(a provider.Artist) bool { return a.Name == "" })
 	return res, nil
 }
 

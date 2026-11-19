@@ -2,6 +2,9 @@ package ytmusic
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -45,14 +48,36 @@ func TestSearchResolvesNames(t *testing.T) {
 			"entries":[{"id":"v1","title":"Give Life Back","channel":"Daft Punk"}]}`,
 		"browse/UCx": `{"id":"UCx","title":"Daft Punk - Topic","channel":"Daft Punk - Topic"}`,
 	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body struct {
+			Params string `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			return
+		}
+		if strings.Contains(body.Params, "QIYA") {
+			_, _ = w.Write([]byte(`{"contents":[{"musicResponsiveListItemRenderer":{"navigationEndpoint":{"browseEndpoint":{"browseId":"MPREb_a"}},"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Random Access Memories"}]}}},{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Daft Punk","navigationEndpoint":{"browseEndpoint":{"browseId":"UCx"}}},{"text":"2013"}]}}}]}}]}`))
+			return
+		}
+		if strings.Contains(body.Params, "QIgA") {
+			_, _ = w.Write([]byte(`{"contents":[{"musicResponsiveListItemRenderer":{"navigationEndpoint":{"browseEndpoint":{"browseId":"UCx"}},"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Daft Punk"}]}}}]}}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"contents":[{"musicResponsiveListItemRenderer":{"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Get Lucky"}]}}},{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Daft Punk","navigationEndpoint":{"browseEndpoint":{"browseId":"UCx"}}},{"text":" • "},{"text":"Random Access Memories","navigationEndpoint":{"browseEndpoint":{"browseId":"MPREb_a"}}},{"text":" • "},{"text":"4:08"}]}}}],"playlistItemData":{"videoId":"v1"}}}]}`))
+	}))
+	defer server.Close()
+	p.searchEndpoint, p.searchClient = server.URL, server.Client()
 	r, err := p.Search(context.Background(), "daft punk")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.Tracks) != 1 || r.Tracks[0].Title != "Get Lucky" || !strings.Contains(r.Tracks[0].ArtworkURL, "v1") {
+	if len(r.Tracks) != 1 || r.Tracks[0].Title != "Get Lucky" || r.Tracks[0].Artist != "Daft Punk" || r.Tracks[0].Album != "Random Access Memories" || r.Tracks[0].Duration != 248*time.Second || !strings.Contains(r.Tracks[0].ArtworkURL, "v1") {
 		t.Errorf("tracks = %+v", r.Tracks)
 	}
-	if len(r.Albums) != 1 || r.Albums[0].ID != "OLAK_a" || r.Albums[0].Title != "Random Access Memories" || r.Albums[0].Artist != "Daft Punk" {
+	if len(r.Albums) != 1 || r.Albums[0].ID != "MPREb_a" || r.Albums[0].Title != "Random Access Memories" || r.Albums[0].Artist != "Daft Punk" {
 		t.Errorf("albums = %+v", r.Albums)
 	}
 	if len(r.Artists) != 1 || r.Artists[0].Name != "Daft Punk" {

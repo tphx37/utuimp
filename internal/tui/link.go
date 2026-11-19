@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -212,6 +213,11 @@ func (m *Model) linkCommand(arg string) tea.Cmd {
 	if arg == "" {
 		m.note(i18n.T(":link requires a link"))
 		return nil
+	}
+	if m.serviceKey == "radio" {
+		if u, err := url.Parse(arg); err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
+			return m.openLink(provider.Link{Service: "radio", Kind: provider.LinkTrack, ID: arg, URL: arg}, false)
+		}
 	}
 	l, ok := provider.ParseLink(arg)
 	if !ok {

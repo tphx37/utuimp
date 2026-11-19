@@ -2,76 +2,50 @@
 
 [← docs](README.md)
 
-This document tracks planned features and integrations for utuimp.  
-Items are roughly ordered by expected implementation complexity.
+This document tracks the current state of utuimp and possible future work.
+Planned items are proposals, not release commitments.
 
----
+## Available
 
-## Done
+- **Local files**: recursive scanning across several folders, manual refresh,
+  local playlists and sidecar lyrics. See [Services](services.md#local-files).
+- **Yandex Music**: search, library, My Wave and service lyrics.
+- **Spotify**: Web API library and search, with librespot playback.
+- **YouTube Music**: search with song, artist and album metadata, playback
+  through yt-dlp and FFmpeg, and account likes/playlists with exported cookies.
+- **SoundCloud**: yt-dlp playback or the official API with an app of your own.
+- **Internet radio**: Radio Browser search, direct stream and supported HTML
+  links, favorites, playlists, recent links and Linux stream metadata. Some
+  websites do not expose a direct audio stream.
+- **Interface**: cover and boxed views, large pixel lyrics on supported
+  terminals, visualizer, shared volume, MPRIS and other system controls.
+- **Diagnostics**: `--debug` writes a log; `:debug-logs` shows the in-app log.
+- **Demo mode**: `--demo` for a credential-free interface.
 
-- **Local files**: MP3, FLAC, M4A from your music folder (2.1)
-- **Yandex Music**: search, library, My Wave, synced lyrics (2.1)
-- **Spotify**: Web API library and search, playback through librespot
-- **YouTube Music**: through yt-dlp and ffmpeg (2.2)
-- **SoundCloud**: through yt-dlp, or the official API with your own app (2.2)
-- **Cover view**: frameless fullscreen layout with fading lyrics (2.2)
-- **One volume for all services** (2.2)
-- **Demo mode**: `--demo` for credential-free UI development
+## Needs investigation
 
----
+- **MPRIS icon**: the desktop entry and icon are installed and the MPRIS
+  `DesktopEntry` is set; verify icon-theme lookup in desktop environments
+  where the notification icon still does not appear.
+- **Internet radio**: improve stream format and metadata support across
+  platforms, and investigate pages that obtain streams dynamically.
+- **Local files**: consider automatic filesystem watching and richer folder
+  management; currently a manual rescan updates the library.
+- **Lyrics**: explore terminal-native text sizing where graphics are not
+  available; large rendered lyrics already work with the pixel interface.
 
-## In progress
+## Planned / exploratory
 
-- **MPRIS icon**: resolve the GIO / GTK icon-theme lookup for the MPRIS notification
-- **YouTube Music search metadata**: search results come without artist and
-  length until a song plays (yt-dlp lists them by title only)
+- **Discord voice bot**: play utuimp output into a voice channel.
+- **Deezer**: investigate authentication, catalog and full-track playback.
+- **Tidal**: investigate authentication, catalog and full-track playback.
 
----
-
-## Planned
-
-### Discord bot
-
-Discord music bot that will play utuimp's output into the voice chat for every service.
-
-### Local files player QoL fixes
-
-Refresh, point to multiple folder, maybe something else.
-
-### Larger lyrics in kitty
-
-Use kitty's text sizing protocol for genuinely bigger lyrics in the cover
-view. It has to work around Bubble Tea's renderer, which drops those escape
-sequences, so it needs care with resizes, overlays and panels.
-
-### YouTube Music account
-
-Sign-in through browser cookies, to show your own YouTube Music likes and
-playlists instead of utuimp's local ones.
-
-### Deezer
-
-Full-track streaming via Deezer's API.
-
-- OAuth 2.0 authorisation code flow
-- Search, library, playlists via Deezer REST API
-- Requires a Deezer Premium subscription
-
-### Tidal
-
-Full-track streaming via Tidal's API.
-
-- OAuth 2.0 authorisation code flow
-- HiFi / MQA quality tiers where the subscription supports them
-- Search, library, playlists, mixes via Tidal API v2
-
----
+Service support depends on available APIs, playback rights and dependencies;
+no specific account or quality tier is promised yet.
 
 ## Ideas / not yet scoped
 
-- **mpd protocol bridge**: let `ncmpcpp` and other mpd clients control utuimp
-- **Keyboard macro recorder**: record and replay complex key sequences
+- **mpd protocol bridge**: let `ncmpcpp` and other mpd clients control utuimp.
+- **Keyboard macro recorder**: record and replay key sequences.
 
----
-
-If you'd like to work on any of these, please open an issue first so we can coordinate.
+If you'd like to work on an item, please open an issue first so we can coordinate.

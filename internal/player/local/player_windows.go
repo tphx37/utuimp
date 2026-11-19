@@ -100,6 +100,16 @@ func newPlayer() *Player {
 
 // LoadTracks registers the scanned library and queues all of it without
 // starting playback. Anything loaded before is stopped.
+// RefreshLibrary replaces the index while keeping the current queue and playback.
+func (p *Player) RefreshLibrary(tracks []provider.Track) {
+	p.mu.Lock()
+	p.library = make(map[string]provider.Track, len(tracks))
+	for _, t := range tracks {
+		p.library[t.ID] = t
+	}
+	p.mu.Unlock()
+}
+
 func (p *Player) LoadTracks(tracks []provider.Track) {
 	p.cmdMu.Lock()
 	defer p.cmdMu.Unlock()

@@ -352,10 +352,14 @@ func (m *Model) coverIdleRight(w, h int) []string {
 			rows = append(rows, styles.ErrorStyle.Render(strings.TrimRight(r, " ")))
 		}
 	} else {
+		searchHint := "  search"
+		if m.serviceKey == "radio" {
+			searchHint = "  link"
+		}
 		rows = []string{
 			styles.Header.Render(i18n.T("Nothing playing yet")),
 			"",
-			accent.Render("/") + muted.Render(i18n.T("  search")),
+			accent.Render("/") + muted.Render(i18n.T(searchHint)),
 			accent.Render("l") + muted.Render(i18n.T("  library")),
 			accent.Render("F") + muted.Render(i18n.T("  feed")),
 			accent.Render("h") + muted.Render(i18n.T("  history")),
@@ -618,9 +622,13 @@ func (m *Model) coverHomeHints() []string {
 	muted := styles.QueueItemMuted
 	accent := styles.KeyName
 	hint := func(k, what string) string { return accent.Render(k) + muted.Render(i18n.T(what)) }
+	searchHint := " search"
+	if m.serviceKey == "radio" {
+		searchHint = " link"
+	}
 	parts := []string{
 		styles.ModeNormal.Render(i18n.T("COVER")),
-		hint("/", " search"),
+		hint("/", searchHint),
 		hint(i18n.T("l"), " library"),
 		hint(i18n.T("h"), " history"),
 		hint(i18n.T("F"), " feed"),

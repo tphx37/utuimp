@@ -108,6 +108,23 @@ func (s *Store) SetFavorite(t provider.Track, on bool) error {
 	return s.save()
 }
 
+// RenameFavorite changes only the display name of a saved item, preserving its order and ID.
+func (s *Store) RenameFavorite(id, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := slices.IndexFunc(s.d.Favorites, func(t provider.Track) bool { return t.ID == id })
+	if i < 0 {
+		return errors.New("station is not saved")
+	}
+	old := s.d.Favorites[i].Title
+	s.d.Favorites[i].Title = name
+	if err := s.save(); err != nil {
+		s.d.Favorites[i].Title = old
+		return err
+	}
+	return nil
+}
+
 // Playlists returns the saved playlists.
 func (s *Store) Playlists() []Playlist {
 	s.mu.Lock()

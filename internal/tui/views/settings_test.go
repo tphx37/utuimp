@@ -77,15 +77,18 @@ func TestSettingsScrollKeepsRowsInOrder(t *testing.T) {
 		t.Errorf("taller than the panel (%d lines):\n%s", strings.Count(v, "\n"), v)
 	}
 	// Text items ask for a line of text and store what comes back.
-	for m.current().Key != "services.music_dir" {
+	for i := 0; i < 100 && m.current().Key != "services.music_dirs"; i++ {
 		settingsKey(m, "up")
+	}
+	if m.current().Key != "services.music_dirs" {
+		t.Fatal("music folders setting not found")
 	}
 	if _, ok := settingsKey(m, "enter")().(SettingsEditMsg); !ok {
 		t.Fatal("enter on a text item should ask for text")
 	}
-	m.SetText("services.music_dir", " /music ")
-	if cfg.MusicDir != "/music" {
-		t.Errorf("music dir = %q", cfg.MusicDir)
+	m.SetText("services.music_dirs", " /music ; /other ")
+	if len(cfg.MusicDirs) != 2 || cfg.MusicDirs[0] != "/music" || cfg.MusicDirs[1] != "/other" {
+		t.Errorf("music dirs = %v", cfg.MusicDirs)
 	}
 }
 

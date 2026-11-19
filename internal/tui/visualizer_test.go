@@ -179,6 +179,19 @@ func TestVisualizer_Keys(t *testing.T) {
 	}
 }
 
+func TestVisualizerReleaseDropsFrameCopies(t *testing.T) {
+	m := vizModel(t)
+	m.viz = newVisualizer()
+	v := m.viz
+	v.closeOut = make([]vcol, 100)
+	v.fade = make([]vcol, 100)
+	v.out = make([]vcol, 100)
+	m.vizRelease()
+	if v.closeOut != nil || v.fade != nil || v.out != nil {
+		t.Fatal("closing the visualizer must release all full-frame buffers")
+	}
+}
+
 func TestVisualizer_NoSamplesStillDances(t *testing.T) {
 	tap.Register(func([]float32) (int, float64, int64) { return 0, 0, 0 })
 	m := vizModel(t)

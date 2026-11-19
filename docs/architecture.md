@@ -30,7 +30,7 @@ internal/
     provider.go          the Provider interface, and the optional ones
                          (PlaylistEditor, LibraryCollections, CollectionSaver…)
     link.go              parsing the services' share links
-    apple/ yandex/ spotify/ ytmusic/ soundcloud/ local/ demo/
+    apple/ yandex/ spotify/ ytmusic/ soundcloud/ radio/ local/ demo/
     ytdlp/               running yt-dlp and streaming through ffmpeg
     localstore/          favourites and playlists kept on disk
   player/                playback
@@ -41,7 +41,10 @@ internal/
     spotifyconnect/      Spotify through librespot. On Linux utuimp plays
                          librespot's sound itself (capture.go, output_linux.go)
     gst/                 GStreamer playback, also of raw PCM (Spotify on Linux)
-    local/               local files
+    local/               local files; rescans replace the library index without
+                         interrupting the queue
+    radio/               live streams, M3U/PLS and supported HTML pages;
+                         on Linux consumes GStreamer stream tags
     tap/                 hands the sound being played to the visualizer
     mpris/ smtc/ mux/    system media controls. mux follows the playing service
   tui/                   the interface (Bubble Tea v2)

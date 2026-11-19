@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	runtimedebug "runtime/debug"
 	"runtime/pprof"
+	"slices"
 	"strings"
-
-	"github.com/tphx37/utuimp/internal/i18n"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
@@ -16,7 +16,9 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/tphx37/utuimp/internal/assets"
 	"github.com/tphx37/utuimp/internal/config"
+	"github.com/tphx37/utuimp/internal/debuglog"
 	"github.com/tphx37/utuimp/internal/gfx"
+	"github.com/tphx37/utuimp/internal/i18n"
 	demoPlayer "github.com/tphx37/utuimp/internal/player/demo"
 	demoProvider "github.com/tphx37/utuimp/internal/provider/demo"
 	"github.com/tphx37/utuimp/internal/tui"
@@ -143,6 +145,13 @@ func runTUI(_ *cobra.Command, _ []string) error {
 	if newWindow {
 		return openInOwnWindow(os.Args[1:])
 	}
+	if debug {
+		stop, err := startDebugLog()
+		if err != nil {
+			return err
+		}
+		defer stop()
+	}
 	cfgPath, err := config.ConfigPath(cfgFile)
 	if err != nil {
 		return fmt.Errorf("resolving config path: %w", err)
@@ -184,13 +193,23 @@ func runTUI(_ *cobra.Command, _ []string) error {
 		cfg.SetupDone = true
 		if len(cfg.Services) == 0 {
 			// Apple Music waits for the user to say whose token it may use.
-			cfg.Services = []string{"yandex", "local"}
+			cfg.Services = []string{"yandex", "radio", "local"}
 		}
 		if err := cfg.Save(cfgFile); err != nil {
 			return fmt.Errorf("saving config: %w", err)
 		}
 		opts.OpenSettings, opts.Welcome = "services", true
 		firstRun = true
+	}
+
+	if !cfg.RadioTabInitialized {
+		if len(cfg.Services) > 0 && !slices.Contains(cfg.Services, "radio") {
+			cfg.Services = append(cfg.Services, "radio")
+		}
+		cfg.RadioTabInitialized = true
+		if err := cfg.Save(cfgFile); err != nil {
+			return fmt.Errorf("saving radio tab: %w", err)
+		}
 	}
 
 	audioBitrateKbps, err := cfg.AudioBitrateKbps()
@@ -218,6 +237,7 @@ func runTUI(_ *cobra.Command, _ []string) error {
 
 	if musicDir != "" {
 		cfg.MusicDir = musicDir
+		cfg.MusicDirs = nil
 		if saveErr := cfg.Save(cfgFile); saveErr != nil && debug {
 			fmt.Fprintf(os.Stderr, "debug: saving music dir: %v\n", saveErr)
 		}
@@ -288,4 +308,33 @@ func programOptions() []tea.ProgramOption {
 		opts = append(opts, tea.WithColorProfile(colorprofile.ANSI))
 	}
 	return opts
+}
+
+// startDebugLog keeps TUI diagnostics and runtime crash reports in the cache.
+func startDebugLog() (func(), error) {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return nil, fmt.Errorf("debug log directory: %w", err)
+	}
+	dir = filepath.Join(dir, "utuimp")
+	if err = os.MkdirAll(dir, 0700); err != nil {
+		return nil, fmt.Errorf("debug log directory: %w", err)
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "debug.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600) //nolint:gosec // log in the user's cache directory
+	if err != nil {
+		return nil, fmt.Errorf("debug log: %w", err)
+	}
+	debuglog.SetOutput(f)
+	debuglog.Print("[app] starting debug session")
+	if err = runtimedebug.SetCrashOutput(f, runtimedebug.CrashOptions{}); err != nil {
+		debuglog.SetOutput(nil)
+		_ = f.Close()
+		return nil, fmt.Errorf("debug crash output: %w", err)
+	}
+	return func() {
+		debuglog.Print("[app] debug session ended")
+		debuglog.SetOutput(nil)
+		_ = runtimedebug.SetCrashOutput(nil, runtimedebug.CrashOptions{})
+		_ = f.Close()
+	}, nil
 }

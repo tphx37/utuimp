@@ -4570,8 +4570,7 @@ func TestQueueMiniCursor_ArrowsSelectAndEnterPlays(t *testing.T) {
 	m.queue.SetTracks(tracks)
 	m.playerState.Track = &tracks[0]
 
-	m.handleKey(tea.KeyPressMsg{Code: tea.KeyDown}) // lands on the playing track
-	m.handleKey(tea.KeyPressMsg{Code: tea.KeyDown})
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyDown}) // goes straight to the next track
 	if m.queueMiniCursor != 1 {
 		t.Fatalf("cursor = %d, want 1", m.queueMiniCursor)
 	}

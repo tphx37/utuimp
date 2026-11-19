@@ -13,7 +13,7 @@ func TestServiceKeys(t *testing.T) {
 	}
 	k := serviceKeys(&config.Config{}, defs)
 	if k["1"] != "yandex" || k["2"] != "apple" || k["3"] != "spotify" ||
-		k["4"] != "youtube" || k["5"] != "soundcloud" || k["6"] != "local" {
+		k["4"] != "youtube" || k["5"] != "soundcloud" || k["6"] != "radio" || k["7"] != "local" {
 		t.Errorf("defaults = %v", k)
 	}
 	// Rebinding a service moves it; its default key is freed.

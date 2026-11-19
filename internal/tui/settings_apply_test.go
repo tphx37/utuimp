@@ -42,6 +42,26 @@ func TestAMOLEDBackgroundSetting(t *testing.T) {
 	}
 }
 
+func TestPixelInterfaceOffReleasesBuffers(t *testing.T) {
+	m := newModel(newMockPlayer())
+	l := m.lines
+	l.scratch = make([]byte, 1024)
+	l.strips[stripCover].rgba = make([]byte, 1024)
+	l.lyr.last = make([]byte, 1024)
+	l.lyr.blocks = map[string]*lyricBlock{"line": {}}
+	l.lyrItems = []lyricItem{{}}
+	l.ticking = true
+	gen := l.gen
+	m.cfg.UIStyle = config.StyleSimple
+	m.settingsChanged(views.SettingsChangedMsg{Key: "graphics.style"})
+	if l.scratch != nil || l.strips[stripCover].rgba != nil || l.lyr.last != nil || l.lyr.blocks != nil || l.lyrItems != nil {
+		t.Fatal("turning the pixel interface off should release its buffers")
+	}
+	if l.ticking || l.gen == gen {
+		t.Fatal("turning the pixel interface off should stop its frame clock")
+	}
+}
+
 // ← → and + - go as far as the settings say, and the hints say so too.
 func TestSeekAndVolumeSteps(t *testing.T) {
 	mp := newMockPlayer()

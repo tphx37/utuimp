@@ -151,6 +151,14 @@ func (m *Model) linesPlaceBoxes(rows []string, grid [][]rune, now time.Time) boo
 		}
 		boxes = baseBoxes
 	}
+	// Frames outside the visible screen cannot be represented by image strips.
+	valid := boxes[:0]
+	for _, b := range boxes {
+		if b.x0 >= 0 && b.x1 < m.width && b.y0 >= 0 && b.y1 < len(rows) && b.y1 < len(grid) {
+			valid = append(valid, b)
+		}
+	}
+	boxes = valid
 	seen := map[[4]int]time.Time{}
 	// A frame in focus is told by the colour its corner is written in.
 	// It is read back out of the row, not looked for as bytes: the same
@@ -382,7 +390,9 @@ func (m *Model) linesPlaceBoxes(rows []string, grid [][]rune, now time.Time) boo
 						continue
 					}
 					rows[y] = blankCells(rows[y], x, 1)
-					grid[y][x] = ' '
+					if x < len(grid[y]) {
+						grid[y][x] = ' '
+					}
 				}
 			}
 		}

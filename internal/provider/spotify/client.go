@@ -21,6 +21,9 @@ var ErrPremiumRequired = errors.New("Spotify Premium is required to control play
 // ErrNoDevice means no Spotify app or device is available to play on.
 var ErrNoDevice = errors.New("no Spotify device: open Spotify on this computer or your phone (or run spotifyd)")
 
+// ErrPlaybackRestricted is Spotify's generic player restriction response.
+var ErrPlaybackRestricted = errors.New("spotify: Player command failed: Restriction violated (HTTP 403)")
+
 // Client calls the Spotify Web API, refreshing the token when it expires.
 type Client struct {
 	http     *http.Client
@@ -183,6 +186,9 @@ func (c *Client) call(ctx context.Context, method, path string, q url.Values, bo
 			}
 			if e.Error.Reason == "NO_ACTIVE_DEVICE" {
 				return ErrNoDevice
+			}
+			if resp.StatusCode == http.StatusForbidden && strings.Contains(strings.ToLower(e.Error.Message), "restriction violated") {
+				return ErrPlaybackRestricted
 			}
 			msg := e.Error.Message
 			if msg == "" {

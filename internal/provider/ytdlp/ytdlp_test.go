@@ -79,3 +79,37 @@ func TestStreamPipelineReportsFailure(t *testing.T) {
 		t.Errorf("err = %v, want yt-dlp's message", err)
 	}
 }
+
+func TestCookieArgsPaths(t *testing.T) {
+	for _, path := range []string{"cookies.txt", "/tmp/cookies-file", `C:\\Users\\me\\cookies.txt`} {
+		args := CookieArgs(path)
+		if len(args) != 2 || args[0] != "--cookies" || args[1] != path {
+			t.Fatalf("%q: %v", path, args)
+		}
+	}
+	if args := CookieArgs("chrome"); len(args) != 2 || args[0] != "--cookies-from-browser" {
+		t.Fatal(args)
+	}
+}
+
+func TestIsolatedCookiesPreservesSource(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "export.txt")
+	if err := os.WriteFile(source, []byte("original"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	args, err := isolatedCookies([]string{"--cookies", source}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args[1] == source {
+		t.Fatal("yt-dlp must receive a copy")
+	}
+	if err = os.WriteFile(args[1], []byte("changed"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(source) //nolint:gosec // source is inside the test's temporary directory
+	if err != nil || string(got) != "original" {
+		t.Fatalf("source changed: %q %v", got, err)
+	}
+}

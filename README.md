@@ -74,6 +74,10 @@ with `utuimp setup`).
 
 each service signs in the first time you open its tab. details - see [docs/services.md](docs/services.md)
 
+utuimp checks for a new release on each launch and asks before installing it.
+use `--no-update` to skip the check. package-managed or non-writable installs
+may need to be updated through their package manager instead.
+
 ## keys
 
 | | |
@@ -87,7 +91,7 @@ each service signs in the first time you open its tab. details - see [docs/servi
 | `R` | radio from this song |
 | `/` | search |
 | `l` | library |
-| `q` | recently played |
+| `h` | recently played |
 | `y` | lyrics |
 | `F` | recommendations |
 | `i` | song menu |
@@ -112,6 +116,14 @@ fine lines that sway with the music, the cover itself with a light behind
 it, the lyrics large in your system's font, and nothing changes at a stroke,
 at sixty frames a second. each part can be left in plain characters, or all
 of it, in settings → graphics. see [docs/usage.md](docs/usage.md#the-look)
+
+the pixel interface requires the kitty graphics protocol. on Linux and macOS,
+use [kitty](https://sw.kovidgoyal.net/kitty/) or [Ghostty](https://ghostty.org/).
+on Windows, try a compatible terminal such as [Noctty](https://noctty.com/)
+and set settings → graphics → visualizer as a picture to `on` to enable
+protocol detection for the pixel interface too. compatibility may vary. compatible
+terminals also work over SSH, with reduced performance since tmux and screen
+currently disable graphics. without the protocol, character graphics are used.
 
 `V` turns the whole terminal into a visualizer with six different scenes that reacts to the sound. see [docs/visualizer.md](docs/visualizer.md)
 

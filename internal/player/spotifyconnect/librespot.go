@@ -188,9 +188,13 @@ func StartLibrespot(bin, token, cacheDir, logPath string, bitrate int) (*Libresp
 		var err error
 		if pr, pw, err = os.Pipe(); err == nil {
 			shrinkPipe(pw)
-			if out, err = newOutput(pr); err != nil {
+			vr := &volumeReader{source: pr}
+			vr.SetVolume(1)
+			if out, err = newOutput(vr); err != nil {
 				_, _ = pr.Close(), pw.Close()
 				out, pr, pw = nil, nil, nil
+			} else {
+				out = &volumeOutput{audioOut: out, volume: vr}
 			}
 		}
 	}

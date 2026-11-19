@@ -425,6 +425,25 @@ func dirNames(t *testing.T, dir string) []string {
 
 func discard(string) {}
 
+func TestUpdatePromptDeclineChecksEveryTime(t *testing.T) {
+	isolateCache(t)
+	srv := fakeReleases(t, "v2.0.0", true, []byte("new binary"))
+	defer srv.Close()
+	for range 2 {
+		called := false
+		got := updateWithPrompt(srv.URL, "v1.0.0", true, discard, func(tag string) bool {
+			called = true
+			if tag != "v2.0.0" {
+				t.Fatalf("tag = %q", tag)
+			}
+			return false
+		})
+		if !called || got.Outcome != OutcomeDisabled || got.Exe != "" {
+			t.Fatalf("declined update: called=%v, result=%+v", called, got)
+		}
+	}
+}
+
 func TestUpdate_CurrentVersionNeedsNothing(t *testing.T) {
 	isolateCache(t)
 	srv := fakeReleases(t, "v1.2.3", true, []byte("new binary"))

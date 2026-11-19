@@ -54,7 +54,7 @@ func TestFX_NothingMovesOnKeys(t *testing.T) {
 
 func TestFX_PanelComesUpAndSettles(t *testing.T) {
 	m := fxModel(t, config.MotionLively)
-	m.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+	m.Update(tea.KeyPressMsg{Code: 'h', Text: "h"})
 	if m.fx == nil || !m.fx.ticking {
 		t.Fatal("opening a panel should start the frame clock")
 	}
@@ -131,7 +131,7 @@ func TestFX_Dump(t *testing.T) {
 	}
 	m.Update(playerStateMsg(player.State{Track: &provider.Track{ID: "x", Title: "New One", Artist: "A"}}))
 	run("track", 20)
-	m.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+	m.Update(tea.KeyPressMsg{Code: 'h', Text: "h"})
 	run("wipe", 16)
 }
 

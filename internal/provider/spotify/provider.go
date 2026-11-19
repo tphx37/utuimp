@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -395,20 +396,63 @@ func (p *Provider) GetSongRating(ctx context.Context, trackID string) (bool, err
 	return len(res) > 0 && res[0], nil
 }
 
-// GetRecommendations shows the user's playlists (Spotify retired its
-// recommendations endpoints for new apps).
+// GetRecommendations lists recent playback contexts, one entry per play.
 func (p *Provider) GetRecommendations(ctx context.Context) ([]provider.RecommendationGroup, error) {
-	pls, err := p.GetLibraryPlaylists(ctx)
+	var recent struct {
+		Items []struct {
+			Track   spTrack `json:"track"`
+			Context *struct {
+				Type string `json:"type"`
+				URI  string `json:"uri"`
+			} `json:"context"`
+		} `json:"items"`
+	}
+	if err := p.c.get(ctx, "/me/player/recently-played", url.Values{"limit": {"50"}}, &recent); err != nil {
+		return nil, fmt.Errorf("recent playback: %w", err)
+	}
+	playlists, err := p.GetLibraryPlaylists(ctx)
 	if err != nil {
 		return nil, err
 	}
-	g := provider.RecommendationGroup{Title: i18n.T("Your playlists")}
-	for _, pl := range pls {
-		if pl.ID != likedID {
-			g.Items = append(g.Items, provider.RecommendationItem{ID: pl.ID, Kind: "playlist", Title: pl.Name})
+	names := map[string]string{}
+	for _, pl := range playlists {
+		names[pl.ID] = pl.Name
+	}
+	var items []provider.RecommendationItem
+	seen := map[string]bool{}
+	for _, play := range recent.Items {
+		t := play.Track
+		var item provider.RecommendationItem
+		if play.Context != nil {
+			parts := strings.Split(play.Context.URI, ":")
+			if len(parts) == 3 && parts[0] == "spotify" {
+				switch parts[1] {
+				case "playlist":
+					if name := names[parts[2]]; name != "" {
+						item = provider.RecommendationItem{ID: parts[2], Kind: "playlist", Title: name}
+					}
+				case "album":
+					if t.Album != nil && t.Album.ID == parts[2] {
+						item = provider.RecommendationItem{ID: parts[2], Kind: "album", Title: provider.Clean(t.Album.Name), Subtitle: provider.Clean(artistNames(t.Album.Artists))}
+					}
+				}
+			}
+		}
+		if item.ID == "" && t.ID != "" {
+			track := p.toTrack(t, nil)
+			item = provider.RecommendationItem{ID: track.ID, Kind: "track", Title: track.Title, Subtitle: track.Artist}
+		}
+		key := item.Kind + ":" + item.ID
+		if item.ID != "" && item.Title != "" && !seen[key] {
+			seen[key] = true
+			items = append(items, item)
 		}
 	}
-	return []provider.RecommendationGroup{g}, nil
+	saved := make([]provider.RecommendationItem, 0, len(playlists))
+	for _, pl := range playlists {
+		saved = append(saved, provider.RecommendationItem{ID: pl.ID, Kind: "playlist", Title: pl.Name})
+	}
+	return []provider.RecommendationGroup{{Title: i18n.T("Recently played"), Items: items}, {Title: i18n.T("Your playlists"), Items: saved}}, nil
 }
 
 // GetStationTracks approximates radio with songs by the seed's artist found

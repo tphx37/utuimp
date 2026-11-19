@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"math"
 	"net/http"
@@ -125,6 +126,9 @@ type device struct {
 func (p *Player) SetOutput(out Output) {
 	p.mu.Lock()
 	p.out = out
+	if local, ok := out.(interface{ SetVolume(float64) }); ok {
+		local.SetVolume(p.state.Volume)
+	}
 	p.mu.Unlock()
 }
 
@@ -180,6 +184,7 @@ func (p *Player) event(ev Event) {
 	switch ev.Name {
 	case "playing":
 		if held != 0 {
+			p.setPlaying(true)
 			p.release(held, true, ev.Pending)
 			return
 		}
@@ -214,8 +219,11 @@ func (p *Player) setPlaying(on bool) bool {
 		p.mu.Unlock()
 		return false
 	}
-	changed := p.state.Playing != on
+	changed := p.state.Playing != on || (on && p.state.Loading)
 	p.state.Playing = on
+	if on {
+		p.state.Loading = false
+	}
 	p.mu.Unlock()
 	if changed {
 		p.broadcast()
@@ -362,6 +370,9 @@ func (p *Player) playFrom(idx int) error {
 			err = p.c.Do(ctx, http.MethodPut, "/me/player/play", q, map[string]any{"uris": uris}, nil)
 		}
 	}
+	if err != nil {
+		err = fmt.Errorf("PUT /me/player/play: %w", err)
+	}
 	return p.fail(err)
 }
 
@@ -374,7 +385,11 @@ func (p *Player) simple(method, path string, extra url.Values) error {
 		return p.fail(err)
 	}
 	maps.Copy(q, extra)
-	return p.fail(p.c.Do(ctx, method, path, q, nil, nil))
+	err = p.c.Do(ctx, method, path, q, nil, nil)
+	if err != nil {
+		err = fmt.Errorf("%s %s: %w", method, path, err)
+	}
+	return p.fail(err)
 }
 
 // ── player.Player ──────────────────────────────────────────────────────────
@@ -456,6 +471,12 @@ func (p *Player) SetVolume(v float64) error {
 	pct := int(math.Round(min(max(v, 0), 1) * 100))
 	p.mu.Lock()
 	p.state.Volume = float64(pct) / 100
+	if local, ok := p.out.(interface{ SetVolume(float64) }); ok {
+		local.SetVolume(p.state.Volume)
+		p.mu.Unlock()
+		p.broadcast()
+		return nil
+	}
 	p.volTarget = pct
 	p.volSetAt = time.Now()
 	p.mu.Unlock()
@@ -720,7 +741,7 @@ func (p *Player) poll() {
 		default:
 			p.state.RepeatMode = player.RepeatModeOff
 		}
-		if v := st.Device.VolumePercent; v != nil {
+		if v := st.Device.VolumePercent; v != nil && p.out == nil {
 			// Right after a local change the device may still report the
 			// old level: keep ours until it catches up or the hold ends.
 			reported := float64(*v) / 100

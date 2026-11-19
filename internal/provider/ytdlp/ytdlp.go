@@ -24,7 +24,12 @@ func CookieArgs(cookies string) []string {
 	switch {
 	case cookies == "":
 		return nil
-	case fileExists(cookies):
+	case strings.HasPrefix(cookies, "~/"):
+		if home, err := os.UserHomeDir(); err == nil {
+			cookies = filepath.Join(home, cookies[2:])
+		}
+		return []string{"--cookies", cookies}
+	case fileExists(cookies), strings.ContainsAny(cookies, `/\`), strings.HasSuffix(strings.ToLower(cookies), ".txt"):
 		return []string{"--cookies", cookies}
 	default:
 		return []string{"--cookies-from-browser", cookies}
@@ -36,10 +41,51 @@ func fileExists(p string) bool {
 	return err == nil && !st.IsDir()
 }
 
+// isolatedCookies gives yt-dlp a private copy: --cookies writes the jar
+// back on exit, and must not overwrite the user's exported credentials.
+func isolatedCookies(args []string, dir string) ([]string, error) {
+	out := append([]string(nil), args...)
+	for i := 0; i+1 < len(out); i++ {
+		if out[i] != "--cookies" {
+			continue
+		}
+		data, err := os.ReadFile(out[i+1])
+		if err != nil {
+			return nil, err
+		}
+		file, err := os.CreateTemp(dir, "cookies-*.txt")
+		if err != nil {
+			return nil, err
+		}
+		name := file.Name()
+		if _, err = file.Write(data); err != nil {
+			_ = file.Close()
+			_ = os.Remove(name)
+			return nil, err
+		}
+		if err = file.Close(); err != nil {
+			_ = os.Remove(name)
+			return nil, err
+		}
+		out[i+1] = name
+		break
+	}
+	return out, nil
+}
+
 // ExecRunner runs the yt-dlp at path with base flags first.
 func ExecRunner(path string, base []string) Runner {
 	return func(ctx context.Context, args ...string) ([]byte, error) {
-		full := append([]string{"--no-warnings", "--ignore-config"}, base...)
+		dir, err := os.MkdirTemp("", "utuimp-ytdlp-cookies-*")
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = os.RemoveAll(dir) }()
+		isolated, err := isolatedCookies(base, dir)
+		if err != nil {
+			return nil, err
+		}
+		full := append([]string{"--no-warnings", "--ignore-config"}, isolated...)
 		cmd := exec.CommandContext(ctx, path, append(full, args...)...) //nolint:gosec // our own arguments
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
@@ -121,7 +167,13 @@ func (s Streamer) Open(ctx context.Context, info []byte, formatID string, copyAA
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
-	ytArgs := append([]string{"--no-warnings", "--ignore-config", "-q"}, s.Base...)
+	base, err := isolatedCookies(s.Base, dir)
+	if err != nil {
+		cancel()
+		_ = os.RemoveAll(dir)
+		return nil, err
+	}
+	ytArgs := append([]string{"--no-warnings", "--ignore-config", "-q"}, base...)
 	ytArgs = append(ytArgs, "--load-info-json", tmp, "-f", formatID, "--no-part", "-o", "-")
 	dl := exec.CommandContext(ctx, s.YtDlp, ytArgs...) //nolint:gosec // our own arguments
 	dl.Dir = dir

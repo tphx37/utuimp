@@ -26,6 +26,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/dhowden/tag"
+	_ "golang.org/x/image/webp"
 )
 
 const (

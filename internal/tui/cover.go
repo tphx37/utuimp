@@ -358,7 +358,7 @@ func (m *Model) coverIdleRight(w, h int) []string {
 			accent.Render("/") + muted.Render(i18n.T("  search")),
 			accent.Render("l") + muted.Render(i18n.T("  library")),
 			accent.Render("F") + muted.Render(i18n.T("  feed")),
-			accent.Render("q") + muted.Render(i18n.T("  history")),
+			accent.Render("h") + muted.Render(i18n.T("  history")),
 		}
 	}
 	out := make([]string, h)
@@ -622,9 +622,9 @@ func (m *Model) coverHomeHints() []string {
 		styles.ModeNormal.Render(i18n.T("COVER")),
 		hint("/", " search"),
 		hint(i18n.T("l"), " library"),
-		hint(i18n.T("q"), " history"),
+		hint(i18n.T("h"), " history"),
 		hint(i18n.T("F"), " feed"),
-		hint(i18n.T("esc"), " queue"),
+		hint(i18n.T("q"), " queue"),
 		hint(i18n.T("e"), " equalizer"),
 		hint(i18n.T("i"), " song menu"),
 		hint("P", " add to playlist"),

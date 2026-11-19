@@ -38,12 +38,6 @@ func startAppleEngine(cfg *config.Config, send func(tea.Msg), env *engineEnv, id
 		}
 	}
 
-	if exe := updater.CheckAndUpdate(version.Version, noUpdate, status); exe != "" {
-		env.restart(exe)
-		send(tui.RestartMsg{})
-		return
-	}
-
 	status(i18n.T("Preparing Apple Music…"))
 	tokenErr := auth.ResolveDeveloperToken(cfg)
 	lastfm.ApplyEmbedded(cfg)
@@ -69,7 +63,7 @@ func startAppleEngine(cfg *config.Config, send func(tea.Msg), env *engineEnv, id
 			saveCfg("config")
 		case auth.DeveloperTokenRejected:
 			devTokenRejected = true
-			res := updater.UpdateNow(version.Version, noUpdate, status)
+			res := updater.UpdateNow(version.Version, true, status)
 			if res.Outcome == updater.OutcomeInstalled {
 				env.restart(res.Exe)
 				send(tui.RestartMsg{})

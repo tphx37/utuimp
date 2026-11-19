@@ -91,3 +91,25 @@ func TestStationDropsSeedAndFavorites(t *testing.T) {
 		t.Errorf("playlist = %+v", got)
 	}
 }
+
+func TestAccountLibraryFromCookies(t *testing.T) {
+	p := testProvider(t, map[string]string{
+		"feed/playlists": `{"entries":[{"id":"PLone","title":"Mine"},{"id":"LL","title":"Likes"}]}`,
+		"list=LM":        `{"entries":[{"id":"v1","title":"Liked","channel":"Artist"}]}`,
+		"list=PLone":     `{"entries":[{"id":"v2","title":"Playlist song"}]}`,
+	})
+	p.account = true
+	ctx := context.Background()
+	playlists, err := p.GetLibraryPlaylists(ctx)
+	if err != nil || len(playlists) != 2 || playlists[1].ID != "PLone" || !playlists[1].ReadOnly {
+		t.Fatalf("playlists: %+v, %v", playlists, err)
+	}
+	likes, err := p.GetLibraryTracks(ctx)
+	if err != nil || len(likes) != 1 || likes[0].ID != "v1" {
+		t.Fatalf("likes: %+v, %v", likes, err)
+	}
+	tracks, err := p.GetPlaylistTracks(ctx, "PLone")
+	if err != nil || len(tracks) != 1 || tracks[0].ID != "v2" {
+		t.Fatalf("playlist: %+v, %v", tracks, err)
+	}
+}

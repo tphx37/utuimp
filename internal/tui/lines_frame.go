@@ -3,11 +3,13 @@ package tui
 import (
 	"image"
 	"math"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/tphx37/utuimp/internal/tui/styles"
 )
 
 // The frames of the panels and the cover, drawn as pictures (see lines.go).
@@ -36,6 +38,7 @@ const (
 type lineBox struct {
 	x0, y0, x1, y1 int
 	focused        bool
+	underOverlay   bool
 	top, bottom    []bool // which cells of its top and bottom rows are line
 }
 
@@ -124,6 +127,30 @@ func blankCells(line string, x, w int) string {
 func (m *Model) linesPlaceBoxes(rows []string, grid [][]rune, now time.Time) bool {
 	l := m.lines
 	boxes := linesBoxes(grid)
+	if l.baseFrames != "" {
+		baseRows := strings.Split(l.baseFrames, "\n")
+		baseGrid := make([][]rune, len(baseRows))
+		for y, row := range baseRows {
+			baseGrid[y] = cellGrid(ansi.Strip(row))
+		}
+		baseBoxes := linesBoxes(baseGrid)
+		for i := range baseBoxes {
+			baseBoxes[i].underOverlay = !l.overlayRect.empty()
+		}
+		for _, b := range boxes {
+			duplicate := false
+			for _, base := range baseBoxes {
+				if b.x0 == base.x0 && b.y0 == base.y0 && b.x1 == base.x1 && b.y1 == base.y1 {
+					duplicate = true
+					break
+				}
+			}
+			if !duplicate && len(baseBoxes) < linesMaxBoxes {
+				baseBoxes = append(baseBoxes, b)
+			}
+		}
+		boxes = baseBoxes
+	}
 	seen := map[[4]int]time.Time{}
 	// A frame in focus is told by the colour its corner is written in.
 	// It is read back out of the row, not looked for as bytes: the same
@@ -161,17 +188,34 @@ func (m *Model) linesPlaceBoxes(rows []string, grid [][]rune, now time.Time) boo
 		}
 	}
 	morphs := m.fxLevel() > 0
-	from := func(key [4]int) ([4]int, bool) {
-		best, most := [4]int{}, -1
-		for _, g := range gone {
-			if a := overlapCells(g, key); a > most {
-				best, most = g, a
+	// Match all changed frames together. Greedily walking destination
+	// order lets a small cover frame steal an overlay from the much larger
+	// panel it actually belongs to.
+	type framePair struct {
+		from, to [4]int
+		overlap  int
+	}
+	var pairs []framePair
+	for _, src := range gone {
+		for _, dst := range come {
+			area := overlapCells(src, dst)
+			if area > 0 || len(gone) == 1 && len(come) == 1 {
+				pairs = append(pairs, framePair{src, dst, area})
 			}
 		}
-		if most > 0 || most == 0 && len(gone) == 1 && len(come) == 1 {
-			return best, true
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i].overlap > pairs[j].overlap })
+	sources := make(map[[4]int][4]int)
+	usedSource := make(map[[4]int]bool)
+	for _, pair := range pairs {
+		if usedSource[pair.from] {
+			continue
 		}
-		return best, false
+		if _, taken := sources[pair.to]; taken {
+			continue
+		}
+		usedSource[pair.from] = true
+		sources[pair.to] = pair.from
 	}
 	// Each frame keeps its own four strips while it is there, and one going
 	// over to another place takes those of the one it comes from: drawn by
@@ -194,23 +238,51 @@ func (m *Model) linesPlaceBoxes(rows []string, grid [][]rune, now time.Time) boo
 		geo, had := l.boxGeo[key]
 		if !had {
 			geo = boxMorph{from: to, to: to}
-			if src, ok := from(key); ok && morphs {
+			if src, ok := sources[key]; ok && morphs {
 				geo = boxMorph{from: l.boxGeo[src].at(now), to: to, start: now}
 				if born, ok := l.boxes[src]; ok {
 					l.boxes[key] = born // drawn in already: it only moves
 				}
+				// The new geometry inherits the source's focus while its
+				// corner colour is still being composited or faded.
+				if l.boxLit == nil {
+					l.boxLit = make(map[[4]int]bool)
+				}
+				l.boxLit[key] = l.boxLit[src]
 				if s, ok := l.boxSlot[src]; ok && !used[s] {
 					slots[key], used[s] = s, true
 				}
-				for i, g := range gone {
-					if g == src {
-						gone = append(gone[:i], gone[i+1:]...)
-						break
-					}
-				}
+
 			}
 		}
 		geos[key] = geo
+	}
+	// In the cover view there may be no panel for a closing menu to return
+	// to. Animate its own frame towards the centre instead of dropping it.
+	if l.closingActive && (!l.closingFrame.moving(now) || m.songMenu != nil || m.linkOffer != nil || m.prompt != nil) {
+		l.closingActive = false
+	}
+	if morphs && l.menuShown && m.songMenu == nil && m.linkOffer == nil && m.prompt == nil {
+		menu := [4]int{l.menuKey[0], l.menuKey[1] - m.hostRows, l.menuKey[0] + l.menuKey[2] - 1, l.menuKey[1] - m.hostRows + l.menuKey[3] - 1}
+		if geo, ok := l.boxGeo[menu]; ok && !usedSource[menu] {
+			if slot, ok := l.boxSlot[menu]; ok && !used[slot] {
+				from := geo.at(now)
+				cx, cy := (from[0]+from[2])/2, (from[1]+from[3])/2
+				l.closingFrame = boxMorph{from: from, to: [4]float64{cx, cy, cx, cy}, start: now}
+				l.closingSlot, l.closingActive = slot, true
+			}
+		}
+	}
+	if l.closingActive {
+		if used[l.closingSlot] {
+			l.closingActive = false
+		} else {
+			used[l.closingSlot] = true
+			for side := range 4 {
+				st := &l.strips[stripFrame+l.closingSlot*4+side]
+				st.seen, st.morph = true, l.closingFrame
+			}
+		}
 	}
 	for _, b := range boxes {
 		key := [4]int{b.x0, b.y0, b.x1, b.y1}
@@ -239,7 +311,14 @@ func (m *Model) linesPlaceBoxes(rows []string, grid [][]rune, now time.Time) boo
 		if !ok {
 			continue
 		}
-		switch c := corner(rows[b.y0], b.x0, b.x1+1); {
+		colourRow := rows[b.y0]
+		if b.underOverlay {
+			baseRows := strings.Split(l.baseFrames, "\n")
+			if b.y0 < len(baseRows) {
+				colourRow = baseRows[b.y0]
+			}
+		}
+		switch c := corner(colourRow, b.x0, b.x1+1); {
 		case lit != unlit && c == lit:
 			b.focused = true
 		case lit != unlit && c == unlit:
@@ -248,27 +327,66 @@ func (m *Model) linesPlaceBoxes(rows []string, grid [][]rune, now time.Time) boo
 			b.focused = l.boxLit[key]
 		}
 		lits[key] = b.focused
-		// Empty the cells: the runs of line on the top and bottom rows,
-		// and both sides.
-		for _, e := range []struct {
-			y    int
-			mask []bool
-		}{{b.y0, b.top}, {b.y1, b.bottom}} {
-			for k := 0; k < len(e.mask); k++ {
-				if !e.mask[k] {
-					continue
+		// Keep the destination's cell border while a smaller overlaid window
+		// returns to it. The animated line meets it before the cells disappear.
+		geo := geos[key]
+		r := l.overlayRect
+		isOverlay := !r.empty() && b.x0 == r.x0 && b.y0 == r.y0 && b.x1 == r.x1-1 && b.y1 == r.y1-1
+		keepBorder := !isOverlay && geo.moving(now) && (geo.from[2]-geo.from[0])*(geo.from[3]-geo.from[1]) < (geo.to[2]-geo.to[0])*(geo.to[3]-geo.to[1])
+		if keepBorder {
+			// Fade the stationary cell border throughout the return instead
+			// of removing it abruptly when the moving frame arrives.
+			fg, bg, _ := styles.ScreenColors()
+			foreground := [3]uint8{fg.R, fg.G, fg.B}
+			background := [3]uint8{bg.R, bg.G, bg.B}
+			alpha := 1 - smooth(0, linesMorphFor, now.Sub(geo.start).Seconds())
+			for y := b.y0; y <= b.y1; y++ {
+				cells := parseCells(rows[y], m.width, 1, foreground, background)
+				for x := b.x0; x <= b.x1; x++ {
+					border := (y == b.y0 && b.top[x-b.x0]) || (y == b.y1 && b.bottom[x-b.x0]) || (y > b.y0 && y < b.y1 && (x == b.x0 || x == b.x1))
+					if border {
+						c := &cells[0][x]
+						c.fg = blend3(background, c.fg, alpha)
+						c.mod = true
+					}
 				}
-				from := k
-				for k < len(e.mask) && e.mask[k] {
-					k++
-				}
-				rows[e.y] = blankCells(rows[e.y], b.x0+from, k-from)
+				rows[y] = encodeCells(cells, m.width, 1)
 			}
 		}
-		for y := b.y0 + 1; y < b.y1; y++ {
-			rows[y] = blankCells(blankCells(rows[y], b.x1, 1), b.x0, 1)
-			grid[y][b.x0], grid[y][b.x1] = ' ', ' '
+		if !keepBorder {
+			// Empty the cells: the runs of line on the top and bottom rows,
+			// and both sides.
+			for _, e := range []struct {
+				y    int
+				mask []bool
+			}{{b.y0, b.top}, {b.y1, b.bottom}} {
+				for k := 0; k < len(e.mask); k++ {
+					covered := func(x int) bool {
+						r := l.overlayRect
+						return b.underOverlay && x >= r.x0 && x < r.x1 && e.y >= r.y0 && e.y < r.y1
+					}
+					if !e.mask[k] || covered(b.x0+k) {
+						continue
+					}
+					from := k
+					for k < len(e.mask) && e.mask[k] && !covered(b.x0+k) {
+						k++
+					}
+					rows[e.y] = blankCells(rows[e.y], b.x0+from, k-from)
+				}
+			}
+			for y := b.y0 + 1; y < b.y1; y++ {
+				for _, x := range []int{b.x0, b.x1} {
+					r := l.overlayRect
+					if b.underOverlay && x >= r.x0 && x < r.x1 && y >= r.y0 && y < r.y1 {
+						continue
+					}
+					rows[y] = blankCells(rows[y], x, 1)
+					grid[y][x] = ' '
+				}
+			}
 		}
+
 		born, old := l.boxes[key]
 		if !old {
 			born = now
@@ -277,6 +395,13 @@ func (m *Model) linesPlaceBoxes(rows []string, grid [][]rune, now time.Time) boo
 		W, H := b.x1-b.x0+1, b.y1-b.y0+1
 		for side := range 4 {
 			st := &l.strips[stripFrame+n*4+side]
+			z := -1
+			if b.underOverlay {
+				z = -3
+			}
+			if st.img.Z != z {
+				st.img.Z, st.sentKey = z, [5]int{-1}
+			}
 			st.morph = geos[key]
 			st.seen, st.born, st.focused, st.side = true, born, b.focused, side
 			st.boxW, st.boxH = W, H
@@ -305,6 +430,7 @@ func (m *Model) linesPlaceBoxes(rows []string, grid [][]rune, now time.Time) boo
 			}
 		}
 	}
+
 	l.boxes, l.boxLit, l.boxGeo, l.boxSlot = seen, lits, geos, slots
 	return len(boxes) > 0
 }
@@ -569,10 +695,10 @@ func drawFrameSide(buf []byte, w, h, side, boxW, boxH int, mask []bool, cw, chh 
 		if fromEnd < cw {
 			// A corner cell: the arc's centre is r in from the column's
 			// middle and r towards the sides from the row's middle.
-			ax := cw / 2
+			ax := (cw - 1) / 2
 			cx := ax + r
 			if fx > float64(w)/2 {
-				ax = float64(w) - 1 - cw/2
+				ax = float64(w) - cw + (cw-1)/2
 				cx = ax - r
 			}
 			cy := mid + dir*r

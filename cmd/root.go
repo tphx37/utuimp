@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
+	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 	"github.com/tphx37/utuimp/internal/assets"
 	"github.com/tphx37/utuimp/internal/config"
@@ -20,6 +22,8 @@ import (
 	"github.com/tphx37/utuimp/internal/tui"
 	"github.com/tphx37/utuimp/internal/tui/art"
 	"github.com/tphx37/utuimp/internal/tui/styles"
+	"github.com/tphx37/utuimp/internal/updater"
+	"github.com/tphx37/utuimp/internal/version"
 )
 
 var cfgFile string
@@ -151,6 +155,27 @@ func runTUI(_ *cobra.Command, _ []string) error {
 		i18n.Set(cfg.Language)
 	} else {
 		i18n.Set(i18n.Detect())
+	}
+	if !noUpdate {
+		res := updater.CheckWithPrompt(version.Version, func(s string) {
+			if debug {
+				fmt.Fprintln(os.Stderr, s)
+			}
+		}, func(tag string) bool {
+			if !term.IsTerminal(os.Stdin.Fd()) {
+				return false
+			}
+			fmt.Fprintf(os.Stderr, i18n.T("Update %s is available. Install it now? [y/N]")+" ", tag)
+			answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+			answer = strings.ToLower(strings.TrimSpace(answer))
+			return answer == "y" || answer == "yes" || answer == "д" || answer == "да"
+		})
+		if res.Outcome == updater.OutcomeInstalled {
+			return restartProcess(res.Exe)
+		}
+		if res.Outcome == updater.OutcomeManual {
+			fmt.Fprintln(os.Stderr, res.Advice())
+		}
 	}
 	opts := tui.Options{MemProfiling: memProfiling, OpenSettings: openSettings}
 	firstRun := false

@@ -2,6 +2,7 @@ package i18n
 
 // ru is the Russian interface. Keys are the English strings (trimmed).
 var ru = map[string]string{ //nolint:gosec // words about tokens and passwords, not credentials
+	"Update %s is available. Install it now? [y/N]": "Доступна версия %s. Установить её сейчас? [д/Н]",
 	"Apple Music requires your own MusicKit developer token in apple_developer_token. Local files, including the Music media folder on macOS, work without a token.": "Для Apple Music нужен ваш MusicKit developer token в apple_developer_token. Локальные файлы, включая папку медиатеки Music на macOS, работают без токена.",
 	// mode chips
 	"NORMAL": "ОБЫЧНЫЙ", "SEARCH": "ПОИСК", "CMD": "КОМАНДА", "QUEUE": "ОЧЕРЕДЬ",
@@ -328,7 +329,7 @@ var ru = map[string]string{ //nolint:gosec // words about tokens and passwords, 
 	"Strength":        "Сила",
 	"Background":      "Фон",
 	"Discord status":  "Статус в Discord",
-	"YouTube cookies": "Cookies YouTube",
+	"YouTube cookies": "Cookies YouTube", "Your library": "Ваша медиатека",
 	"off: still, and the interface in plain cells (its pixel lines and pictures move, so they go too; for lines that stand still see Graphics, Frames and lines). calm: panels and new songs fade in.": "выкл: без движения, и интерфейс обычными клетками (его пиксельные линии и картинки движутся, поэтому выключаются тоже; неподвижные линии — в Графике, пункт Рамки и линии). спокойная: панели и новые песни плавно проявляются.",
 	"the animation is off (Interface, Animation)":                                                                                                      "анимация выключена (Интерфейс, Анимация)",
 	"The logo over dancing ribbons when utuimp starts.":                                                                                                "Логотип над танцующими лентами при запуске utuimp.",

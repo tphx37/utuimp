@@ -63,7 +63,7 @@ func (t Track) ReleaseYear() string {
 // RecommendationItem is a single album or playlist entry inside a recommendation group.
 type RecommendationItem struct {
 	ID       string
-	Kind     string // "album" or "playlist"
+	Kind     string // "track", "album", "artist" or "playlist"
 	Title    string
 	Subtitle string // artist name for albums; curator name for playlists
 }

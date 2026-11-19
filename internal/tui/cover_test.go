@@ -65,14 +65,18 @@ func TestCoverView_ToggleAndPanels(t *testing.T) {
 		t.Errorf("frame has %d rows, want %d", len(lines), m.height)
 	}
 
-	// esc on the lyrics shows the queue in a frame; esc again goes back.
+	// Esc keeps the lyrics open; q opens the queue and esc goes back.
 	m.handleNormalKey(tea.KeyPressMsg{Code: tea.KeyEscape}, "esc")
+	if !m.lyricsVisible() {
+		t.Fatal("esc should keep lyrics open")
+	}
+	m.handleNormalKey(tea.KeyPressMsg{Code: 'q', Text: "q"}, "q")
 	frame = ansi.Strip(m.View().Content)
 	if os.Getenv("COVER_DUMP") != "" {
 		t.Log("\n" + frame)
 	}
 	if !strings.Contains(frame, "╭") || !strings.Contains(frame, "Next One") {
-		t.Errorf("esc should show the framed queue:\n%s", frame)
+		t.Errorf("q should show the framed queue:\n%s", frame)
 	}
 	m.handleNormalKey(tea.KeyPressMsg{Code: tea.KeyEscape}, "esc")
 	if !m.lyricsVisible() {
@@ -192,7 +196,7 @@ func TestCoverView_HintedKeysWork(t *testing.T) {
 		k    string
 		code rune
 	}{
-		{"/", '/'}, {"l", 'l'}, {"q", 'q'}, {"F", 'F'}, {"esc", tea.KeyEscape}, {"e", 'e'},
+		{"/", '/'}, {"l", 'l'}, {"q", 'q'}, {"F", 'F'}, {"h", 'h'}, {"e", 'e'},
 		{"i", 'i'}, {"j", 'j'}, {"t", 't'}, {"T", 'T'}, {"c", 'c'}, {"v", 'v'}, {":", ':'}, {"?", '?'},
 	}
 	for _, key := range keys {
@@ -252,9 +256,9 @@ func TestCoverView_YHidesLyrics(t *testing.T) {
 		}
 	}
 
-	m.handleNormalKey(tea.KeyPressMsg{Code: tea.KeyEscape}, "esc")
+	m.handleNormalKey(tea.KeyPressMsg{Code: 'q', Text: "q"}, "q")
 	if f := ansi.Strip(m.View().Content); !strings.Contains(f, "Next One") {
-		t.Errorf("esc should show the queue:\n%s", f)
+		t.Errorf("q should show the queue:\n%s", f)
 	}
 	m.handleNormalKey(tea.KeyPressMsg{Code: tea.KeyEscape}, "esc")
 	if f := ansi.Strip(m.View().Content); strings.Contains(f, "Next One") {
@@ -423,5 +427,37 @@ func TestCoverSongBig(t *testing.T) {
 	m.songBig = false
 	if m.labelScale(labelTitle) != 1 {
 		t.Error("elsewhere the words are their usual size")
+	}
+}
+
+func TestRussianShortcutAndSearchInput(t *testing.T) {
+	m := coverModel(t, 120, 36)
+	m.toggleCoverView()
+	m.handleKey(tea.KeyPressMsg{Code: 'й', Text: "й"})
+	if m.lyricsVisible() {
+		t.Fatal("Russian q key should open the queue")
+	}
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if !m.lyricsVisible() {
+		t.Fatal("escape should restore lyrics")
+	}
+	m.handleKey(tea.KeyPressMsg{Code: 'р', Text: "р"})
+	if m.activePanel < 0 || m.panels[m.activePanel] != m.historyP {
+		t.Fatal("Russian h key should open history")
+	}
+	m.mode = modeSearch
+	m.handleKey(tea.KeyPressMsg{Code: 'й', Text: "й"})
+	if m.searchQuery != "й" {
+		t.Fatalf("search text changed: %q", m.searchQuery)
+	}
+}
+
+func TestCoverEscWithoutTrackStaysHome(t *testing.T) {
+	m := coverModel(t, 120, 36)
+	m.toggleCoverView()
+	m.playerState.Track = nil
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.activePanel < 0 || m.panels[m.activePanel] != m.lyricsP {
+		t.Fatal("escape left the cover home without a track")
 	}
 }

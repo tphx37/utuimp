@@ -1,5 +1,20 @@
 # Changelog
 
+## 4.0.3
+
+- Improved mini menus (such as `i` menu) animations.
+- Read YouTube Music cover thumbnails and decode WebP artwork.
+- Show Spotify playlists after recently played items, in the order returned by Spotify.
+- Give yt-dlp a temporary cookies copy to keep the exported file intact.
+- Read YouTube Music liked songs and playlists directly with exported cookies instead of the YouTube video library.
+- Show errors when Spotify feed cannot load saved albums or followed artists.
+- Accept cookies.txt paths including ~/ in YouTube cookies settings.
+- Retry loading the feed after a service finishes connecting.
+- Include the playback command in Spotify error messages to make restrictions easier to diagnose.
+- In cover view now q opens the queue, Esc returns to the lyrics, h opens history.
+- Shortcuts also work on the corresponding keys of the Cyrrilic keyboard layout.
+- Spotify volume is applied locally when utuimp plays the audio, avoiding volume API errors.
+
 ## 4.0.2
 
 - Added an optional pure black AMOLED background in Interface settings.

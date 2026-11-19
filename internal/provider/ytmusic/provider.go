@@ -2,7 +2,8 @@
 // albums, artists' releases and mixes with yt-dlp's flat extraction, and
 // streams each song as yt-dlp's best AAC audio remuxed to ADTS by ffmpeg
 // (opus is re-encoded). utuimp can't write to the YouTube account, so
-// favourites and playlists are kept in a local file.
+// local favourites and playlists are kept in a local file. With cookies,
+// account likes and playlists can also be browsed.
 package ytmusic
 
 import (
@@ -27,9 +28,11 @@ const MixPrefix = "RDAMVM"
 
 // Provider implements provider.Provider for YouTube Music.
 type Provider struct {
-	run    ytdlp.Runner
-	stream ytdlp.Streamer
-	store  *localstore.Store
+	run     ytdlp.Runner
+	stream  ytdlp.Streamer
+	store   *localstore.Store
+	account bool
+	music   *musicAccount
 
 	mu      sync.Mutex
 	cache   map[string]provider.Track
@@ -43,10 +46,12 @@ type Provider struct {
 func New(ytdlpPath, ffmpeg, cookies string, store *localstore.Store) *Provider {
 	base := ytdlp.CookieArgs(cookies)
 	return &Provider{
-		run:    ytdlp.ExecRunner(ytdlpPath, base),
-		stream: ytdlp.Streamer{YtDlp: ytdlpPath, FFmpeg: ffmpeg, Base: base},
-		store:  store,
-		cache:  map[string]provider.Track{}, artists: map[string]provider.Artist{}, albums: map[string]provider.Album{},
+		run:     ytdlp.ExecRunner(ytdlpPath, base),
+		stream:  ytdlp.Streamer{YtDlp: ytdlpPath, FFmpeg: ffmpeg, Base: base},
+		store:   store,
+		account: strings.TrimSpace(cookies) != "",
+		music:   newMusicAccount(cookies),
+		cache:   map[string]provider.Track{}, artists: map[string]provider.Artist{}, albums: map[string]provider.Album{},
 	}
 }
 
@@ -258,8 +263,34 @@ func (p *Provider) searchAlbums(ctx context.Context, query string, limit int) ([
 }
 
 // GetLibraryTracks returns the favourite songs.
-func (p *Provider) GetLibraryTracks(context.Context) ([]provider.Track, error) {
+func (p *Provider) GetLibraryTracks(ctx context.Context) ([]provider.Track, error) {
 	fav := p.store.Favorites()
+	if p.account {
+		var entries []ytdlp.Entry
+		var err error
+		if p.music != nil {
+			entries, err = p.music.browse(ctx, "VLLM")
+		} else {
+			var page *ytdlp.Entry
+			page, err = p.flat(ctx, "https://www.youtube.com/playlist?list=LM", 0)
+			if err == nil {
+				entries = page.Entries
+			}
+		}
+		if err != nil {
+			return nil, fmt.Errorf("YouTube liked songs: %w", err)
+		}
+		seen := make(map[string]bool, len(fav))
+		for _, t := range fav {
+			seen[t.ID] = true
+		}
+		for _, t := range p.toTracks(entries) {
+			if !seen[t.ID] {
+				fav = append(fav, t)
+				seen[t.ID] = true
+			}
+		}
+	}
 	p.remember(fav)
 	return fav, nil
 }
@@ -274,11 +305,39 @@ func (p *Provider) remember(ts []provider.Track) {
 	p.mu.Unlock()
 }
 
-func (p *Provider) GetLibraryPlaylists(context.Context) ([]provider.Playlist, error) {
+func (p *Provider) GetLibraryPlaylists(ctx context.Context) ([]provider.Playlist, error) {
 	out := []provider.Playlist{{ID: provider.FavoritesPlaylistID, Name: i18n.T("Favorites"),
 		TrackCount: len(p.store.Favorites()), ReadOnly: true}}
 	for _, pl := range p.store.Playlists() {
 		out = append(out, provider.Playlist{ID: pl.ID, Name: pl.Name, TrackCount: len(pl.Tracks)})
+	}
+	if p.account {
+		var entries []ytdlp.Entry
+		var err error
+		if p.music != nil {
+			entries, err = p.music.browse(ctx, "FEmusic_liked_playlists")
+		} else {
+			var page *ytdlp.Entry
+			page, err = p.flat(ctx, "https://www.youtube.com/feed/playlists", 0)
+			if err == nil {
+				entries = page.Entries
+			}
+		}
+		if err != nil {
+			return nil, fmt.Errorf("YouTube playlists: %w", err)
+		}
+		seen := map[string]bool{"LL": true}
+		for _, e := range entries {
+			id := e.ID
+			if u, err := url.Parse(e.URL); err == nil && u.Query().Get("list") != "" {
+				id = u.Query().Get("list")
+			}
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			out = append(out, provider.Playlist{ID: id, Name: cleanName(e.Title), ArtworkURL: ytdlp.BestThumb(e.Thumbnails), ReadOnly: true})
+		}
 	}
 	return out, nil
 }
@@ -294,6 +353,13 @@ func (p *Provider) GetPlaylistTracks(ctx context.Context, id string) ([]provider
 		}
 		p.remember(pl.Tracks)
 		return pl.Tracks, nil
+	}
+	if p.music != nil {
+		entries, err := p.music.browse(ctx, "VL"+id)
+		if err != nil {
+			return nil, err
+		}
+		return p.toTracks(entries), nil
 	}
 	d, err := p.flat(ctx, listURL(id), 200)
 	if err != nil {

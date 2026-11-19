@@ -324,6 +324,41 @@ func TestDrawFrameSide(t *testing.T) {
 	}
 }
 
+func TestFrameCornersMeetSides(t *testing.T) {
+	for _, cw := range []int{9, 10} {
+		const ch = 20
+		const cols = 12
+		mask := make([]bool, cols)
+		for i := range mask {
+			mask[i] = true
+		}
+		look := frameLook{reveal: 1, lit: 1, pad: 1}
+		row := make([]byte, cols*cw*3*ch*4)
+		column := make([]byte, 3*cw*ch*4)
+		for _, horizontal := range []int{sideTop, sideBottom} {
+			drawFrameSide(row, cols*cw, 3*ch, horizontal, cols, 3, mask, float64(cw), ch, look)
+			y := 2*ch - 1
+			if horizontal == sideBottom {
+				y = ch
+			}
+			for _, vertical := range []int{sideLeft, sideRight} {
+				drawFrameSide(column, 3*cw, ch, vertical, cols, 3, nil, float64(cw), ch, look)
+				for x := range cw {
+					rx := x
+					if vertical == sideRight {
+						rx += (cols - 1) * cw
+					}
+					a := int(row[(y*cols*cw+rx)*4+3])
+					b := int(column[(cw+x)*4+3])
+					if a-b > 1 || b-a > 1 {
+						t.Fatalf("cell width %d, sides %d/%d, x %d: corner alpha %d, side alpha %d", cw, horizontal, vertical, x, a, b)
+					}
+				}
+			}
+		}
+	}
+}
+
 // With LINES_PNG set, the pictures of a whole screen are laid out as the
 // terminal would show them (without the text), to be looked at.
 func TestLinesScreenPNG(t *testing.T) {
@@ -1293,6 +1328,20 @@ func TestLinesFrameMorph(t *testing.T) {
 	if !found {
 		t.Fatal("no side of the frame on its way")
 	}
+	// A moving side must redraw even when it is still within the same cell
+	// and the playback is quiet (its pixel geometry and colour still change).
+	var moving *lineStrip
+	for i := stripFrame; i < stripCount; i++ {
+		if st := &l.strips[i]; st.seen && st.morph.to == geo.to && st.side == sideLeft {
+			moving = st
+			break
+		}
+	}
+	previous := moving.sentAt
+	m.linesDraw(0.001, previous.Add(time.Millisecond))
+	if !moving.sentAt.After(previous) {
+		t.Fatal("moving frame was skipped by the still-frame cache")
+	}
 	// Settled: whole cells again.
 	geo.start = time.Now().Add(-time.Second)
 	for i := stripFrame; i < stripCount; i++ {
@@ -1300,7 +1349,17 @@ func TestLinesFrameMorph(t *testing.T) {
 			st.morph = geo
 		}
 	}
+	// Finish without another layout: the last animated cell position can
+	// be different from the destination and must not survive the morph.
+	for i := stripFrame; i < stripCount; i++ {
+		if st := &l.strips[i]; st.seen && st.morph.to == geo.to {
+			st.col, st.row = 0, 0
+		}
+	}
 	m.linesDraw(0.016, time.Now())
+	if moving.col != int(geo.to[0])-moving.pad || moving.row != int(geo.to[1])+1 {
+		t.Fatalf("frame did not reach destination: %d,%d", moving.col, moving.row)
+	}
 	for i := stripFrame; i < stripCount; i++ {
 		// (Its pictures are placed by the pixel all the same: they are
 		// sent without their clear rows and columns.)
@@ -1434,5 +1493,248 @@ func BenchmarkLyricWordHighlight(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		item.puts[0].litX = float64(i % row.w)
 		item.paint(buf, row.w, row.h, 0, 100, 400)
+	}
+}
+
+func TestReturningPopupFramePreventsCachedView(t *testing.T) {
+	m := coverModel(t, 100, 40)
+	m.lines.mode = gfx.File
+	m.lines.ticking = true
+	m.viewHas = true
+	m.viewSec = int(m.smoothPosition().Seconds())
+	m.coverView = true
+	m.activePanel = -1
+	now := time.Now()
+	m.lines.boxGeo = map[[4]int]boxMorph{{1, 1, 80, 30}: {from: [4]float64{20, 10, 50, 20}, to: [4]float64{1, 1, 80, 30}, start: now}}
+	if m.viewCanReuse() {
+		t.Fatal("returning frame must refresh fading border cells")
+	}
+	m.lines.boxGeo = map[[4]int]boxMorph{{1, 1, 80, 30}: {from: [4]float64{20, 10, 50, 20}, to: [4]float64{1, 1, 80, 30}, start: now.Add(-time.Second)}}
+	if m.returningFrame(time.Now()) {
+		t.Fatal("settled frame should stop invalidating the view")
+	}
+}
+
+func TestReturningFrameBorderDoesNotCreateRules(t *testing.T) {
+	m := coverModel(t, 80, 24)
+	m.coverView = true
+	m.lines.mode = gfx.File
+	m.lines.cellW, m.lines.cellH = 9, 18
+	m.noAnim = false
+	m.cfg.UIMotion = config.MotionCalm
+	now := time.Now()
+	old := [4]int{15, 8, 40, 15}
+	m.lines.boxGeo = map[[4]int]boxMorph{old: {from: [4]float64{15, 8, 40, 15}, to: [4]float64{15, 8, 40, 15}}}
+	m.lines.boxes = map[[4]int]time.Time{old: now.Add(-time.Second)}
+	m.lines.boxSlot = map[[4]int]int{old: 0}
+	rows := make([]string, m.height)
+	for i := range rows {
+		rows[i] = strings.Repeat(" ", m.width)
+	}
+	rows[2] = "  ╭" + strings.Repeat("─", 65) + "╮" + strings.Repeat(" ", 11)
+	for y := 3; y < 20; y++ {
+		rows[y] = "  │" + strings.Repeat(" ", 65) + "│" + strings.Repeat(" ", 11)
+	}
+	rows[20] = "  ╰" + strings.Repeat("─", 65) + "╯" + strings.Repeat(" ", 11)
+	result := m.linesPlace(strings.Join(rows, "\n"))
+	if !m.returningFrame(time.Now()) {
+		t.Fatal("expected a returning popup frame")
+	}
+	if m.lines.strips[stripRule].seen || len(m.lines.rules) != 0 {
+		t.Fatal("fading frame borders were incorrectly turned into separate graphic rules")
+	}
+	if !strings.Contains(ansi.Strip(result), "╭") {
+		t.Fatal("destination frame should remain visible during the transition")
+	}
+}
+
+func TestGrowingPopupHasOnlyAnimatedBorder(t *testing.T) {
+	m := coverModel(t, 80, 24)
+	m.lines.mode = gfx.File
+	m.lines.cellW, m.lines.cellH = 9, 18
+	m.noAnim = false
+	m.cfg.UIMotion = config.MotionCalm
+	old := [4]int{20, 9, 59, 14}
+	from := [4]float64{20, 9, 59, 14}
+	m.lines.boxGeo = map[[4]int]boxMorph{old: {from: from, to: from}}
+	m.lines.boxes = map[[4]int]time.Time{old: time.Now().Add(-time.Second)}
+	m.lines.boxSlot = map[[4]int]int{old: 0}
+	m.lines.overlayRect = fxRect{20, 7, 60, 18}
+	rows := make([]string, 24)
+	for y := range rows {
+		rows[y] = strings.Repeat(" ", 80)
+	}
+	rows[7] = strings.Repeat(" ", 20) + "╭" + strings.Repeat("─", 38) + "╮" + strings.Repeat(" ", 20)
+	for y := 8; y < 17; y++ {
+		rows[y] = strings.Repeat(" ", 20) + "│" + strings.Repeat(" ", 38) + "│" + strings.Repeat(" ", 20)
+	}
+	rows[17] = strings.Repeat(" ", 20) + "╰" + strings.Repeat("─", 38) + "╯" + strings.Repeat(" ", 20)
+	result := ansi.Strip(m.linesPlace(strings.Join(rows, "\n")))
+	geo := m.lines.boxGeo[[4]int{20, 7, 59, 17}]
+	if !geo.moving(time.Now()) || geo.from != from {
+		t.Fatalf("popup should animate from its previous size: %+v", geo)
+	}
+	if strings.ContainsAny(result, "╭╮╰╯│─") {
+		t.Fatal("terminal border overlaps the animated popup frame")
+	}
+}
+
+func TestClosingPopupReturnsFrameToMostOverlappingPanel(t *testing.T) {
+	m := coverModel(t, 100, 24)
+	m.lines.mode = gfx.File
+	m.lines.cellW, m.lines.cellH = 9, 18
+	m.noAnim = false
+	m.cfg.UIMotion = config.MotionCalm
+	popup := [4]int{17, 6, 72, 13}
+	m.lines.boxGeo = map[[4]int]boxMorph{popup: {from: [4]float64{17, 6, 72, 13}, to: [4]float64{17, 6, 72, 13}}}
+	m.lines.boxes = map[[4]int]time.Time{popup: time.Now().Add(-time.Second)}
+	m.lines.boxSlot = map[[4]int]int{popup: 0}
+	cells := make([][]rune, 24)
+	for y := range cells {
+		cells[y] = []rune(strings.Repeat(" ", 100))
+	}
+	draw := func(x0, y0, x1, y1 int) {
+		cells[y0][x0] = '╭'
+		cells[y0][x1] = '╮'
+		cells[y1][x0] = '╰'
+		cells[y1][x1] = '╯'
+		for x := x0 + 1; x < x1; x++ {
+			cells[y0][x] = '─'
+			cells[y1][x] = '─'
+		}
+		for y := y0 + 1; y < y1; y++ {
+			cells[y][x0] = '│'
+			cells[y][x1] = '│'
+		}
+	}
+	draw(11, 1, 23, 6)
+	draw(37, 1, 90, 18)
+	rows := make([]string, len(cells))
+	for y := range cells {
+		rows[y] = string(cells[y])
+	}
+	m.linesPlaceBoxes(rows, cells, time.Now())
+	queue := m.lines.boxGeo[[4]int{37, 1, 90, 18}]
+	if queue.from != [4]float64{17, 6, 72, 13} || queue.to != [4]float64{37, 1, 90, 18} {
+		t.Fatalf("popup should return to queue, got %+v", queue)
+	}
+	cover := m.lines.boxGeo[[4]int{11, 1, 23, 6}]
+	if cover.from != cover.to {
+		t.Fatalf("cover must not take the popup frame: %+v", cover)
+	}
+}
+
+func TestClosingPopupWithoutPanelAnimates(t *testing.T) {
+	m := coverModel(t, 80, 24)
+	m.coverView = true
+	m.lines.mode = gfx.File
+	m.lines.cellW, m.lines.cellH = 9, 18
+	m.noAnim = false
+	m.cfg.UIMotion = config.MotionCalm
+	popup := [4]int{20, 8, 59, 15}
+	from := [4]float64{20, 8, 59, 15}
+	m.lines.boxGeo = map[[4]int]boxMorph{popup: {from: from, to: from}}
+	m.lines.boxes = map[[4]int]time.Time{popup: time.Now().Add(-time.Second)}
+	m.lines.boxSlot = map[[4]int]int{popup: 0}
+	m.lines.menuShown = true
+	m.lines.menuKey = [7]int{20, 8, 40, 8}
+	rows := make([]string, m.height)
+	grid := make([][]rune, m.height)
+	for y := range rows {
+		rows[y] = strings.Repeat(" ", m.width)
+		grid[y] = []rune(rows[y])
+	}
+	now := time.Now()
+	m.linesPlaceBoxes(rows, grid, now)
+	if !m.lines.closingActive || !m.lines.closingFrame.moving(now) {
+		t.Fatal("popup without a destination should animate closed")
+	}
+	for side := range 4 {
+		if st := &m.lines.strips[stripFrame+side]; !st.seen || st.morph.from != from {
+			t.Fatalf("side %d did not retain the popup geometry: %+v", side, st.morph)
+		}
+	}
+	m.linesDraw(0.016, now.Add(100*time.Millisecond))
+	if st := &m.lines.strips[stripFrame]; !st.morphed || !st.shown {
+		t.Fatal("closing frame was not drawn at intermediate geometry")
+	}
+	m.lines.menuShown = false
+	m.linesPlaceBoxes(rows, grid, now.Add(time.Second))
+	if m.lines.closingActive {
+		t.Fatal("closing animation should finish")
+	}
+}
+
+func TestPopupKeepsCoveredPanelFrame(t *testing.T) {
+	m := coverModel(t, 80, 24)
+	m.lines.mode = gfx.File
+	m.lines.cellW, m.lines.cellH = 9, 18
+	m.cfg.UIMotion = config.MotionCalm
+	m.noAnim = false
+	makeGrid := func() [][]rune {
+		g := make([][]rune, 24)
+		for y := range g {
+			g[y] = []rune(strings.Repeat(" ", 80))
+		}
+		return g
+	}
+	draw := func(g [][]rune, x0, y0, x1, y1 int) {
+		for x := x0 + 1; x < x1; x++ {
+			g[y0][x], g[y1][x] = '─', '─'
+		}
+		for y := y0 + 1; y < y1; y++ {
+			g[y][x0], g[y][x1] = '│', '│'
+		}
+		g[y0][x0], g[y0][x1], g[y1][x0], g[y1][x1] = '╭', '╮', '╰', '╯'
+	}
+	rowsOf := func(g [][]rune) []string {
+		rows := make([]string, len(g))
+		for y := range g {
+			rows[y] = string(g[y])
+		}
+		return rows
+	}
+	base := makeGrid()
+	draw(base, 2, 2, 45, 20)
+	baseRows := rowsOf(base)
+	now := time.Now()
+	m.linesPlaceBoxes(append([]string(nil), baseRows...), base, now)
+	base = makeGrid()
+	draw(base, 2, 2, 45, 20)
+	panel := [4]int{2, 2, 45, 20}
+	slot := m.lines.boxSlot[panel]
+	overlaid := makeGrid()
+	for y := range base {
+		copy(overlaid[y], base[y])
+	}
+	for y := 8; y <= 15; y++ {
+		for x := 30; x <= 65; x++ {
+			overlaid[y][x] = ' '
+		}
+	}
+	draw(overlaid, 30, 8, 65, 15)
+	m.lines.baseFrames = strings.Join(baseRows, "\n")
+	m.lines.overlayRect = fxRect{30, 8, 66, 16}
+	m.linesPlaceBoxes(rowsOf(overlaid), overlaid, now.Add(time.Second))
+	if got := m.lines.boxGeo[panel]; got.from != got.to || m.lines.boxSlot[panel] != slot {
+		t.Fatalf("covered panel frame moved or changed slot: %+v", got)
+	}
+	popup := [4]int{30, 8, 65, 15}
+	if _, ok := m.lines.boxGeo[popup]; !ok {
+		t.Fatal("popup frame was not retained separately")
+	}
+	m.lines.menuShown = true
+	m.lines.menuKey = [7]int{30, 8, 36, 8}
+	m.lines.baseFrames = strings.Join(baseRows, "\n")
+	m.lines.overlayRect = fxRect{}
+	// A fading menu letter can briefly cover a corner in the composed
+	// screen. The panel must still be found in the underlying layout.
+	base[2][2] = 'x'
+	m.linesPlaceBoxes(rowsOf(base), base, now.Add(2*time.Second))
+	if got := m.lines.boxGeo[panel]; got.from != got.to || m.lines.boxSlot[panel] != slot {
+		t.Fatalf("panel frame restarted when popup closed: %+v", got)
+	}
+	if !m.lines.closingActive || m.lines.closingFrame.to[0] != m.lines.closingFrame.to[2] || m.lines.closingFrame.to[1] != m.lines.closingFrame.to[3] {
+		t.Fatal("popup frame should close all the way to its centre")
 	}
 }

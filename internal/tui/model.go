@@ -92,10 +92,10 @@ func (p *queuePanel) SetTracks(tracks []provider.Track)     { p.m.SetTracks(trac
 func (p *queuePanel) SelectedTrack() (int, *provider.Track) { return p.m.SelectedTrack() }
 func (p *queuePanel) Select(idx int)                        { p.m.Select(idx) }
 
-// historyPanel lists recently played songs (the q panel).
+// historyPanel lists recently played songs (the h panel).
 type historyPanel struct{ m *views.QueueModel }
 
-func (p *historyPanel) NavKey() string                     { return "q" }
+func (p *historyPanel) NavKey() string                     { return "h" }
 func (p *historyPanel) NavLabel() string                   { return "history" }
 func (p *historyPanel) SetSize(w, h int)                   { p.m.SetSize(w, h) }
 func (p *historyPanel) Update(msg tea.KeyPressMsg) tea.Cmd { p.m.Update(msg); return nil }
@@ -531,7 +531,7 @@ type Model struct {
 	coverView      bool        // the frameless cover layout (v), see cover.go
 	coverPlain     bool        // cover view without lyrics (y): the song beside the cover
 	viz            *visualizer // fullscreen visualizer (V); nil until first opened
-	coverQueueOpen bool        // cover view without lyrics: the queue is shown (esc)
+	coverQueueOpen bool        // cover view without lyrics: the queue is shown (q)
 	// The key hints at the bottom: hidden (H), and how far they showed
 	// when they last began to go or come back (hintsFrom, 0..1, at hintsAt).
 	hintsHidden  bool
@@ -1338,11 +1338,22 @@ func (m *Model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 
 	case feedResultMsg:
 		if msg.err != nil {
+			if errors.Is(msg.err, provider.ErrNotReady) && m.player != nil {
+				m.feedP.m.SetLoading()
+				cmds = append(cmds, m.fetchFeedCmd())
+				break
+			}
 			m.feedP.m.SetError(msg.err)
 			m.appendLog(fmt.Sprintf("[feed] error: %v", msg.err))
 		} else {
 			m.feedP.m.SetRecommendations(msg.groups)
-			m.appendLog(fmt.Sprintf("[feed] loaded %d groups", len(msg.groups)))
+			counts := map[string]int{}
+			for _, group := range msg.groups {
+				for _, item := range group.Items {
+					counts[item.Kind]++
+				}
+			}
+			m.appendLog(fmt.Sprintf("[feed] loaded %d groups, %d playlists, %d albums, %d artists", len(msg.groups), counts["playlist"], counts["album"], counts["artist"]))
 		}
 
 	case views.EQChangeMsg:
@@ -1657,6 +1668,10 @@ func (m *Model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 		if m.searchQuery != "" {
 			cmds = append(cmds, m.scheduleSearch(m.searchQuery))
 		}
+		if m.activePanel >= 0 && m.panels[m.activePanel] == m.feedP && m.feedP.m.NeedsLoad() {
+			m.feedP.m.SetLoading()
+			cmds = append(cmds, m.fetchFeedCmd())
+		}
 		m.appendLog("[engine] backend: " + msg.Backend)
 		if len(msg.Tracks) > 0 && len(m.queueTracks) == 0 {
 			m.queueTracks = append([]provider.Track{}, msg.Tracks...)
@@ -1841,6 +1856,7 @@ func (m *Model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 	case views.SettingsEditMsg:
 		key := msg.Key
 		m.openPrompt(msg.Title, msg.Value, func(text string) tea.Cmd { return m.settingsP.m.SetText(key, text) })
+		m.prompt.allowEmpty = true
 
 	case views.SettingsRestartMsg:
 		if m.restart != nil {
@@ -1906,6 +1922,15 @@ const ctrlCWindow = 2 * time.Second
 
 func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	k := msg.String()
+	// Translate shortcut keys only outside text entry. Preserve the original
+	// message in search, command and prompt modes so typed text is untouched.
+	if m.mode != modeSearch && m.mode != modeCommand && m.prompt == nil {
+		k = shortcutKey(k)
+		if len([]rune(k)) == 1 {
+			msg.Code = []rune(k)[0]
+			msg.Text = k
+		}
+	}
 
 	// ctrl+c quits when pressed twice in a row (one press is easy to hit
 	// by accident, e.g. when copying text).
@@ -2719,7 +2744,7 @@ func (m *Model) lyricsPosition() time.Duration {
 func (m *Model) fetchFeedCmd() tea.Cmd {
 	prov := m.provider
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 		groups, err := prov.GetRecommendations(ctx)
 		return feedResultMsg{groups: groups, err: err}
@@ -2795,6 +2820,8 @@ func (m *Model) fetchFeedItemTracksCmd(item *provider.RecommendationItem, play b
 		var tracks []provider.Track
 		var err error
 		switch snap.Kind {
+		case "track":
+			tracks = []provider.Track{{ID: snap.ID, CatalogID: snap.ID, Title: snap.Title, Artist: snap.Subtitle}}
 		case "album":
 			tracks, err = prov.GetAlbumTracks(ctx, snap.ID)
 		case "playlist":
@@ -2997,15 +3024,24 @@ func (m *Model) forwardToActivePanel(msg tea.KeyPressMsg) tea.Cmd {
 						m.runRadioSearch(),
 					))
 				}
+				if item.Kind == "track" {
+					track := provider.Track{ID: item.ID, CatalogID: item.ID, Title: item.Title, Artist: item.Subtitle}
+					return tea.Batch(m.playNowCmd(track), m.showPlaybackHome())
+				}
+				if item.Kind == "artist" {
+					m.activePanel = -1
+					m.mode = modeSearch
+					return m.openArtistCmd(provider.Artist{ID: item.ID, Name: item.Title})
+				}
 				// An album or playlist: preview its songs first.
 				return m.previewCmd(m.fetchFeedItemTracksCmd(item, false, false))
 			}
 		case "shift+tab":
-			if item := m.feedP.m.SelectedItem(); item != nil {
+			if item := m.feedP.m.SelectedItem(); item != nil && item.Kind != "artist" {
 				return m.fetchFeedItemTracksCmd(item, false, false)
 			}
 		case "tab", "ctrl+q":
-			if item := m.feedP.m.SelectedItem(); item != nil {
+			if item := m.feedP.m.SelectedItem(); item != nil && item.Kind != "artist" {
 				return m.fetchFeedItemTracksCmd(item, false, true)
 			}
 		default:
@@ -3075,19 +3111,26 @@ func (m *Model) handleNormalKey(msg tea.KeyPressMsg, k string) tea.Cmd {
 		return m.toggleCoverView()
 	}
 
-	// Cover view: y shows or hides the lyrics; esc switches between the
-	// home screen and the queue.
+	// The cover home is the lyrics (or the song when lyrics are hidden).
 	if m.coverView && k == "y" && !m.lyricsP.m.PickerOpen() {
 		m.lastKey = ""
 		return m.toggleCoverLyrics()
 	}
+	if m.coverView && k == "q" && !m.lyricsP.m.PickerOpen() {
+		m.lastKey = ""
+		if m.activePanel < 0 && (!m.coverPlain || m.coverQueueOpen) {
+			return m.coverHome()
+		}
+		m.activePanel = -1
+		m.coverQueueOpen = true
+		return nil
+	}
 	if m.coverView && k == "esc" && m.activePanel < 0 && m.queueMiniCursor < 0 {
 		m.lastKey = ""
-		if m.coverPlain {
-			m.coverQueueOpen = !m.coverQueueOpen
-			return nil
-		}
-		return m.openLyricsPanel()
+		return m.coverHome()
+	}
+	if m.coverView && k == "esc" && m.activePanel >= 0 && m.panels[m.activePanel] == m.lyricsP && !m.lyricsP.m.PickerOpen() {
+		return nil
 	}
 	// Picking a song in the hidden queue shows it.
 	if m.coverView && m.coverPlain && m.activePanel < 0 && !m.coverQueueOpen {
@@ -3165,6 +3208,9 @@ func (m *Model) handleNormalKey(msg tea.KeyPressMsg, k string) tea.Cmd {
 		case "esc":
 			m.activePanel = -1
 			m.lastKey = ""
+			if m.coverView {
+				return m.coverHome()
+			}
 			return nil
 		case "enter":
 			if t != nil {
@@ -3206,6 +3252,9 @@ func (m *Model) handleNormalKey(msg tea.KeyPressMsg, k string) tea.Cmd {
 		case "esc":
 			m.activePanel = -1
 			m.lastKey = ""
+			if m.coverView {
+				return m.coverHome()
+			}
 			return nil
 		case "left", "h", "right", "l", "up", "k", "down", "j", "0", "r":
 			return m.eqP.Update(msg)
@@ -3996,6 +4045,8 @@ func (m *Model) viewCanReuse() bool {
 		why = "soft"
 	case m.fxBusy(now):
 		why = "fx"
+	case m.returningFrame(now):
+		why = "frame"
 	case m.lyricsVisible() && (!m.coverView || !m.lyricsPicOn()):
 		why = "lyrics"
 	case int(m.smoothPosition().Seconds()) != m.viewSec:
@@ -4005,6 +4056,31 @@ func (m *Model) viewCanReuse() bool {
 		m.lines.why = why
 	}
 	return why == ""
+}
+
+// returningFrame keeps the fading cell border in step with the graphic
+// frame returning from a smaller overlaid window.
+func (m *Model) returningFrame(now time.Time) bool {
+	if m.lines == nil {
+		return false
+	}
+	if m.lines.closingActive {
+		return true
+	}
+	// One last layout is required after the animation's time expires,
+	// before the graphic sides clear their intermediate positions.
+	for i := stripFrame; i < stripCount; i++ {
+		st := &m.lines.strips[i]
+		if st.seen && st.morphed && !st.morph.moving(now) {
+			return true
+		}
+	}
+	for _, geo := range m.lines.boxGeo {
+		if geo.moving(now) && (geo.from[2]-geo.from[0])*(geo.from[3]-geo.from[1]) < (geo.to[2]-geo.to[0])*(geo.to[3]-geo.to[1]) {
+			return true
+		}
+	}
+	return false
 }
 
 // renderScreen is the player's screen as it is shown: renderMain with its
@@ -4044,6 +4120,10 @@ func (m *Model) renderMain() string {
 		content = m.renderCoverLayout()
 	} else {
 		content = m.renderBoxLayout()
+	}
+	if m.lines != nil {
+		m.lines.baseFrames = content
+		m.lines.overlayRect = fxRect{}
 	}
 	if m.songMenu != nil {
 		content = m.overlay(content, m.renderSongMenu())
@@ -5050,7 +5130,7 @@ func (m *Model) statusNavLines(w int) []string {
 				accent.Render(":") + muted.Render(i18n.T(" command")),
 				accent.Render("/") + muted.Render(i18n.T(" search")),
 				accent.Render(i18n.T("l")) + muted.Render(i18n.T(" library")),
-				accent.Render(i18n.T("q")) + muted.Render(i18n.T(" history")),
+				accent.Render(i18n.T("h")) + muted.Render(i18n.T(" history")),
 				accent.Render("↑/↓") + muted.Render(i18n.T(" pick song")),
 				accent.Render(i18n.T("y")) + muted.Render(i18n.T(" lyrics")),
 				accent.Render(i18n.T("F")) + muted.Render(i18n.T(" feed")),
@@ -5610,4 +5690,21 @@ func playerEQBandsToConfig(bands []player.EQBand) []config.EQBand {
 		out[i] = config.EQBand{Frequency: b.Frequency, Q: b.Q, Gain: b.Gain}
 	}
 	return out
+}
+
+// shortcutKey maps the standard Russian keyboard's physical letter positions
+// to their Latin shortcuts. Terminals generally send characters, not key codes.
+func shortcutKey(k string) string {
+	const ru = "йцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ"
+	const en = "qwertyuiop[]asdfghjkl;'zxcvbnm,.`QWERTYUIOP{}ASDFGHJKL:\"ZXCVBNM<>~"
+	r := []rune(k)
+	if len(r) != 1 {
+		return k
+	}
+	for i, c := range []rune(ru) {
+		if c == r[0] {
+			return string([]rune(en)[i])
+		}
+	}
+	return k
 }

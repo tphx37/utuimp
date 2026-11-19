@@ -175,9 +175,23 @@ func UpdateNow(current string, noUpdate bool, log func(string)) Result {
 	return update(apiURL, current, !noUpdate, log)
 }
 
+// CheckWithPrompt checks on every launch and installs only after approval.
+func CheckWithPrompt(current string, log func(string), approve func(string) bool) Result {
+	if runtime.GOOS == "windows" {
+		if exe, err := selfPath(); err == nil {
+			removeAside(exe)
+		}
+	}
+	return updateWithPrompt(apiURL, current, true, log, approve)
+}
+
 // update is the testable core. api is the releases endpoint, and install says
 // whether a newer release may replace this binary.
 func update(api, current string, install bool, log func(string)) Result {
+	return updateWithPrompt(api, current, install, log, nil)
+}
+
+func updateWithPrompt(api, current string, install bool, log func(string), approve func(string) bool) Result {
 	log("Checking for updates…")
 
 	rel, err := fetchLatestRelease(api)
@@ -212,6 +226,10 @@ func update(api, current string, install bool, log func(string)) Result {
 		return res
 	}
 	if !install {
+		res.Outcome = OutcomeDisabled
+		return res
+	}
+	if approve != nil && !approve(rel.TagName) {
 		res.Outcome = OutcomeDisabled
 		return res
 	}

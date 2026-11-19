@@ -369,9 +369,9 @@ func TestModel_Update_KeySearchSetsContent(t *testing.T) {
 func TestModel_Update_KeyQuit_NilPlayer(t *testing.T) {
 	m := newModel(nil)
 	// 'q' now opens the queue panel (not quit)
-	m.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+	m.Update(tea.KeyPressMsg{Code: 'h', Text: "h"})
 	if m.activePanel < 0 {
-		t.Error("q key should activate the queue panel")
+		t.Error("h key should activate the queue panel")
 	}
 }
 
@@ -2118,9 +2118,9 @@ func TestHandleNormalKey_L_ToggleOff(t *testing.T) {
 
 func TestHandleNormalKey_Q_ToggleQueuePanel(t *testing.T) {
 	m := newModel(newMockPlayer())
-	m.handleNormalKey(tea.KeyPressMsg{Code: 'q', Text: "q"}, "q")
+	m.handleNormalKey(tea.KeyPressMsg{Code: 'h', Text: "h"}, "h")
 	if m.activePanel < 0 {
-		t.Error("q key should open queue panel")
+		t.Error("h key should open queue panel")
 	}
 }
 
@@ -2165,7 +2165,7 @@ func TestHandleNormalKey_DebugView_Esc_CloseView(t *testing.T) {
 
 func TestHandleNormalKey_QueuePanel_Esc_ClosePanel(t *testing.T) {
 	m := newModel(newMockPlayer())
-	m.handleNormalKey(tea.KeyPressMsg{Code: 'q', Text: "q"}, "q") // open queue
+	m.handleNormalKey(tea.KeyPressMsg{Code: 'h', Text: "h"}, "h") // open queue
 	idx := m.activePanel
 	if idx < 0 {
 		t.Skip("queue panel not available")
@@ -3128,9 +3128,9 @@ func TestLibraryPanel_Update(t *testing.T) {
 func TestQueuePanel_NavLabel(t *testing.T) {
 	m := newModel(newMockPlayer())
 	for _, p := range m.panels {
-		if p.NavKey() == "q" {
+		if p.NavKey() == "h" {
 			if p.NavLabel() != "history" {
-				t.Errorf("q NavLabel() = %q, want %q", p.NavLabel(), "history")
+				t.Errorf("h NavLabel() = %q, want %q", p.NavLabel(), "history")
 			}
 			break
 		}
@@ -3140,7 +3140,7 @@ func TestQueuePanel_NavLabel(t *testing.T) {
 func TestQueuePanel_SetSize(t *testing.T) {
 	m := newModel(newMockPlayer())
 	for _, p := range m.panels {
-		if p.NavKey() == "q" {
+		if p.NavKey() == "h" {
 			p.SetSize(80, 20) // should not panic
 			break
 		}
@@ -3150,7 +3150,7 @@ func TestQueuePanel_SetSize(t *testing.T) {
 func TestQueuePanel_View(t *testing.T) {
 	m := newModel(newMockPlayer())
 	for _, p := range m.panels {
-		if p.NavKey() == "q" {
+		if p.NavKey() == "h" {
 			view := p.View()
 			_ = view // should not panic
 			break
@@ -3161,7 +3161,7 @@ func TestQueuePanel_View(t *testing.T) {
 func TestQueuePanel_Update(t *testing.T) {
 	m := newModel(newMockPlayer())
 	for _, p := range m.panels {
-		if p.NavKey() == "q" {
+		if p.NavKey() == "h" {
 			cmd := p.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
 			_ = cmd // should not panic
 			break
@@ -3172,7 +3172,7 @@ func TestQueuePanel_Update(t *testing.T) {
 func TestQueuePanel_SelectedTrack_Empty(t *testing.T) {
 	m := newModel(newMockPlayer())
 	for _, p := range m.panels {
-		if p.NavKey() == "q" {
+		if p.NavKey() == "h" {
 			hp := p.(*historyPanel)
 			idx, track := hp.m.SelectedTrack()
 			if track != nil {
@@ -3409,7 +3409,7 @@ func TestModel_View_WithQueuePanel(t *testing.T) {
 	m.height = 30
 	// Activate queue panel.
 	for i, p := range m.panels {
-		if p.NavKey() == "q" {
+		if p.NavKey() == "h" {
 			m.activePanel = i
 			break
 		}
@@ -4602,7 +4602,7 @@ func TestHistory_RecordsDedupesAndPlaysNow(t *testing.T) {
 	m.queueTracks = []provider.Track{{ID: "q1", Title: "Q1"}, {ID: "q2", Title: "Q2"}}
 	m.queueIDs = []string{"q1", "q2"}
 	m.playerState.Track = &m.queueTracks[0]
-	m.handleNormalKey(tea.KeyPressMsg{Code: 'q', Text: "q"}, "q")
+	m.handleNormalKey(tea.KeyPressMsg{Code: 'h', Text: "h"}, "h")
 	m.handleNormalKey(tea.KeyPressMsg{Code: tea.KeyDown}, "down") // → b
 	if cmd := m.handleNormalKey(tea.KeyPressMsg{Code: tea.KeyEnter}, "enter"); cmd == nil {
 		t.Fatal("enter on a history entry should play it")
@@ -4694,7 +4694,7 @@ func TestHistory_RecordsWhenPlaybackStartsAndPanelRenders(t *testing.T) {
 	if len(m.history) != 1 || m.history[0].Title != "Song" {
 		t.Fatalf("history = %+v", m.history)
 	}
-	m.handleNormalKey(tea.KeyPressMsg{Code: 'q', Text: "q"}, "q")
+	m.handleNormalKey(tea.KeyPressMsg{Code: 'h', Text: "h"}, "h")
 	out := m.renderBoxLayout()
 	if !strings.Contains(out, "History") || !strings.Contains(out, "Song") {
 		t.Errorf("history panel not rendered:\n%s", out)
@@ -4788,5 +4788,28 @@ func TestRadio_KeepsLookaheadQueued(t *testing.T) {
 	m.Update(radioResultMsg{tracks: more})
 	if m.radio.refilling {
 		t.Errorf("%d songs ahead: radio should stop refilling", m.radioTracksAhead(cur))
+	}
+}
+
+func TestFeedRetriesWhenEngineBecomesReady(t *testing.T) {
+	m := newModel(nil)
+	for i, panel := range m.panels {
+		if panel == m.feedP {
+			m.activePanel = i
+			break
+		}
+	}
+	m.feedP.m.SetError(provider.ErrNotReady)
+	m.Update(EngineReadyMsg{Player: newMockPlayer(), Provider: &mockProvider{}})
+	if m.feedP.m.NeedsLoad() {
+		t.Fatal("feed should start loading when the engine becomes ready")
+	}
+}
+
+func TestFeedRetriesLateNotReadyResult(t *testing.T) {
+	m := newModel(newMockPlayer())
+	_, cmd := m.Update(feedResultMsg{err: provider.ErrNotReady})
+	if cmd == nil || m.feedP.m.NeedsLoad() {
+		t.Fatal("late not-ready result should retry with the connected provider")
 	}
 }

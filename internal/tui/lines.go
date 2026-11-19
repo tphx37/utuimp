@@ -93,10 +93,16 @@ type lineStrip struct {
 	seen       bool
 	col, row   int
 	cols, rows int
-	morph      boxMorph  // a side of a frame: the frame's way to its place (see lines_frame.go)
-	frac       float64   // how much of it is filled
-	want       float64   // how much it should be (the progress and volume lines ease to it)
-	born       time.Time // when it came on screen (a rule draws itself in)
+	morphed    bool     // previous draw used intermediate geometry
+	morph      boxMorph // a side of a frame: the frame's way to its place (see lines_frame.go)
+	// The actual cropped picture and placement sent to the terminal. A side
+	// can disappear halfway through a morph, when its cell geometry no longer
+	// describes that picture.
+	framePixels                                              []byte
+	frameW, frameH, frameCol, frameRow, frameOffX, frameOffY int
+	frac                                                     float64   // how much of it is filled
+	want                                                     float64   // how much it should be (the progress and volume lines ease to it)
+	born                                                     time.Time // when it came on screen (a rule draws itself in)
 	// A side of a frame (see lines_frame.go).
 	side, boxW, boxH int
 	focused          bool
@@ -177,7 +183,9 @@ type uiLines struct {
 	boxSlot map[[4]int]int
 	// boxLit is whether each frame was in focus, for when its colour
 	// cannot tell (see linesPlaceBoxes).
-	boxLit map[[4]int]bool
+	boxLit      map[[4]int]bool
+	baseFrames  string // layout under a small overlay, before it covers panel borders
+	overlayRect fxRect
 	// Where the cover goes, noted like the ribbons' place.
 	coverWant                                bool
 	coverCol, coverRow, coverCols, coverRows int
@@ -209,16 +217,19 @@ type uiLines struct {
 	haloBlank bool // the light behind the cover was last drawn with nothing of it showing
 	// coverOld is the cover a new one replaces, under it while it comes up
 	// (see keepOldCover).
-	coverOld   gfx.Image
-	coverOldOn bool
-	menuImg    gfx.Image
-	menuKey    [7]int
-	menuShown  bool
-	quiet      int  // frames in a row in which nothing moved (see linesWatch)
-	changed    bool // something on screen changed in the last frame drawn
-	views      int  // screens laid out (for UTUIMP_LINES_LOG)
-	why        string
-	sentPx     map[string]int // picture bytes sent, by kind (for UTUIMP_LINES_LOG)
+	coverOld      gfx.Image
+	coverOldOn    bool
+	menuImg       gfx.Image
+	menuKey       [7]int
+	menuShown     bool
+	closingFrame  boxMorph
+	closingSlot   int
+	closingActive bool
+	quiet         int  // frames in a row in which nothing moved (see linesWatch)
+	changed       bool // something on screen changed in the last frame drawn
+	views         int  // screens laid out (for UTUIMP_LINES_LOG)
+	why           string
+	sentPx        map[string]int // picture bytes sent, by kind (for UTUIMP_LINES_LOG)
 	// The lyrics' picture goes to the terminal in bands (see sendBands).
 	lyrBands []lyrBand
 	// Or a line a picture (see sendLyricLines): the lines as lyr.frame
@@ -289,10 +300,14 @@ func newUILines() *uiLines {
 	l.strips[stripProgress] = lineStrip{re: regexp.MustCompile(`(?:\d+:\d\d(?::\d\d)?|[\x{e100}-\x{e1ff}] *)  ([━╸─]{4,})  (?:-?\d+:\d\d|[\x{e100}-\x{e1ff}])`), sway: true}
 	l.strips[stripVolume] = lineStrip{re: regexp.MustCompile(`(?:♪|[\x{e100}-\x{e1ff}] *)  ([━╸─]{4,})  (?:\d+%|[\x{e100}-\x{e1ff}])`)}
 	for i := range l.strips {
-		l.strips[i].img = gfx.Image{ID: linesImageID + i, Z: -2, Alpha: true}
+		z := -3
+		if i >= stripFrame {
+			z = -1
+		}
+		l.strips[i].img = gfx.Image{ID: linesImageID + i, Z: z, Alpha: true}
 	}
-	l.strips[stripHalo].img.Z = -4 // under the cover and the one it replaces
-	l.menuImg = gfx.Image{ID: linesMenuID, Z: -1, Alpha: true}
+	l.strips[stripHalo].img.Z = -5 // under the cover and the one it replaces
+	l.menuImg = gfx.Image{ID: linesMenuID, Z: -2, Alpha: true}
 	return l
 }
 
@@ -402,7 +417,7 @@ func (m *Model) linesPlace(content string) string {
 		l.labels[i].found = false
 		hasLabels = true
 	}
-	if hasLabels || strings.ContainsAny(content, "╭│▸"+string(linesCoverMark)+string(linesCtlMark)) {
+	if hasLabels || l.closingActive || l.menuShown || strings.ContainsAny(content, "╭│▸"+string(linesCoverMark)+string(linesCtlMark)) {
 		grid := make([][]rune, len(rows))
 		for y, line := range rows {
 			if hasLabels || strings.ContainsAny(line, "╭╮╰╯│▸"+string(linesCoverMark)+string(linesCtlMark)) {
@@ -471,6 +486,20 @@ func (m *Model) linesPlace(content string) string {
 			continue
 		}
 		if from, to, ok := linesRuleIn(plain); ok {
+			// The destination border stays as cells while a popup frame
+			// returns. Its horizontal sides are not independent rules.
+			x0 := ansi.StringWidth(plain[:from])
+			x1 := x0 + ansi.StringWidth(plain[from:to])
+			border := false
+			for box := range l.boxGeo {
+				if (y == box[1] || y == box[3]) && x0 <= box[2] && x1 > box[0] {
+					border = true
+					break
+				}
+			}
+			if border {
+				continue
+			}
 			x0, w := empty(y, line, plain, from, to)
 			st := &l.strips[stripRule+nRules]
 			nRules++
@@ -718,13 +747,13 @@ func (l *uiLines) keepOldCover(st *lineStrip) string {
 		return drop
 	}
 	old := st.img
-	old.Z = -3
+	old.Z = -4
 	l.coverOld, l.coverOldOn = old, true
 	id := linesCoverAltID
 	if st.img.ID == linesCoverAltID {
 		id = linesImageID + stripCover
 	}
-	st.img = gfx.Image{ID: id, Z: -2, Alpha: true}
+	st.img = gfx.Image{ID: id, Z: -3, Alpha: true}
 	st.shown, st.sentKey = false, [5]int{}
 	return drop + old.Place(st.col, st.row, st.cols, st.rows)
 }
@@ -931,7 +960,7 @@ func (m *Model) linesDraw(dt float64, now time.Time) string {
 					st.goneAt = now
 				}
 				l.changed = true
-				if i != stripCover {
+				if i != stripCover && i < stripFrame {
 					st.img.Native, st.img.OffX, st.img.OffY = false, 0, 0 // the whole picture, where its cells are
 				}
 				if i == stripLyrics {
@@ -948,6 +977,13 @@ func (m *Model) linesDraw(dt float64, now time.Time) string {
 				}
 				if k > 0 && !st.goneAt.Equal(now) && (l.frameN+i)%linesHalfRate != 0 {
 					continue // it fades out every other frame (see linesHalfRate)
+				}
+				if i >= stripFrame && k > 0 && len(st.framePixels) == st.frameW*st.frameH*4 && len(st.framePixels) > 0 {
+					st.img.Native, st.img.OffX, st.img.OffY = true, st.frameOffX, st.frameOffY
+					if one, err := st.img.Frame(l.mode, l.faded(st.framePixels, k), st.frameW, st.frameH, st.frameCol, st.frameRow, 0, 0); err == nil && one != "" {
+						seq.WriteString(one)
+						continue
+					}
 				}
 				if k > 0 && st.pw > 0 && len(st.rgba) == st.pw*st.ph*4 && (!st.img.Native || i != stripCover) {
 					if one, err := st.img.Frame(l.mode, l.faded(st.rgba, k), st.pw, st.ph, st.col, st.row, st.cols, st.rows); err == nil && one != "" {
@@ -1007,6 +1043,25 @@ func (m *Model) linesDraw(dt float64, now time.Time) string {
 		var sideMask []bool
 		morphing := i >= stripFrame && st.morph.moving(now)
 		if i >= stripFrame {
+			// A frame just finishing a pixel-positioned morph must be sent
+			// once at its final cell geometry, even if its cache key matches.
+			if !morphing && st.morphed {
+				// morphSide updates col and row as it moves. Restore the
+				// destination even if the text layout was cached this tick.
+				target := st.morph.to
+				switch st.side {
+				case sideTop:
+					st.col, st.row = int(target[0]), int(target[1])-st.pad
+				case sideBottom:
+					st.col, st.row = int(target[0]), int(target[3])-st.pad
+				case sideLeft:
+					st.col, st.row = int(target[0])-st.pad, int(target[1])+1
+				case sideRight:
+					st.col, st.row = int(target[2])-st.pad, int(target[1])+1
+				}
+				st.sentKey = [5]int{-1}
+			}
+			st.morphed = morphing
 			st.img.Native, st.img.OffX, st.img.OffY = false, 0, 0
 			sideMask = st.mask
 			if morphing {
@@ -1243,8 +1298,6 @@ func (m *Model) linesDraw(dt float64, now time.Time) string {
 			}
 		case slow && st.shown && [3]int(key[:3]) == [3]int(st.sentKey[:3]) && (l.frameN+i)%linesHalfRate != 0:
 			continue // drawn every other frame, half of them on each
-		case i >= stripRule && reveal >= 1 && key == st.sentKey && amp < 0.004 && !lineTouch:
-			continue
 		}
 		if len(st.rgba) != w*h*4 {
 			st.rgba = make([]byte, w*h*4)
@@ -1338,6 +1391,9 @@ func (m *Model) linesDraw(dt float64, now time.Time) string {
 		}
 		pix := st.rgba
 		st.pw, st.ph = w, h
+		if i >= stripFrame && l.closingActive && (i-stripFrame)/4 == l.closingSlot {
+			pix = l.faded(pix, 1-smooth(0, linesMorphFor, now.Sub(l.closingFrame.start).Seconds()))
+		}
 
 		// What has just come comes softly (the frames, the rules and the
 		// waves draw themselves in instead).
@@ -1488,6 +1544,11 @@ func (m *Model) linesDraw(dt float64, now time.Time) string {
 		if err != nil || one == "" {
 			l.mode = gfx.Off // no pictures after all: the cells come back
 			return seq.String()
+		}
+		if i >= stripFrame {
+			st.framePixels = append(st.framePixels[:0], pix...)
+			st.frameW, st.frameH, st.frameCol, st.frameRow = sendW, sendH, col, row
+			st.frameOffX, st.frameOffY = st.img.OffX, st.img.OffY
 		}
 		st.shown, st.sentAt, st.sentKey = true, now, key
 		seq.WriteString(one)

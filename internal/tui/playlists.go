@@ -25,12 +25,13 @@ import (
 // textPrompt is a small window asking for one line of text: a playlist's
 // name.
 type textPrompt struct {
-	title  string
-	buf    []rune
-	submit func(text string) tea.Cmd
+	title      string
+	buf        []rune
+	submit     func(text string) tea.Cmd
+	allowEmpty bool
 }
 
-const promptMaxRunes = 100
+const promptMaxRunes = 4096
 
 // openPrompt asks for a line of text, starting from initial; submit gets it
 // trimmed (never empty).
@@ -45,7 +46,7 @@ func (m *Model) handlePromptKey(k string, msg tea.KeyPressMsg) tea.Cmd {
 		m.prompt = nil
 	case "enter":
 		text := strings.TrimSpace(string(p.buf))
-		if text == "" {
+		if text == "" && !p.allowEmpty {
 			return nil
 		}
 		m.prompt = nil

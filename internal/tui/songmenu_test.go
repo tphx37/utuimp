@@ -23,6 +23,9 @@ func TestSongMenuBackdropCoversGraphics(t *testing.T) {
 	if seq == "" || !m.lines.menuShown || m.lines.menuImg.Z <= m.lines.strips[stripLabels].img.Z {
 		t.Fatal("menu needs an opaque layer above the player graphics")
 	}
+	if m.lines.strips[stripFrame].img.Z <= m.lines.menuImg.Z {
+		t.Fatal("the popup frame must be above its backdrop")
+	}
 	w, h := m.lines.menuKey[2]*m.lines.cellW, m.lines.menuKey[3]*m.lines.cellH
 	if !strings.Contains(seq, fmt.Sprintf("s=%d,v=%d", w, h)) {
 		t.Fatalf("backdrop must have the menu's full pixel dimensions: %q", seq)

@@ -257,3 +257,27 @@ func TestLibraryUsesURIs(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+func TestFeedShowsOneRecentContextPerPlay(t *testing.T) {
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/me/playlists":
+			_, _ = io.WriteString(w, `{"items":[{"id":"p1","name":"Mix"}]}`)
+		case "/me/player/recently-played":
+			_, _ = io.WriteString(w, `{"items":[{"track":{"id":"t1","name":"One","artists":[{"id":"a1","name":"Artist"}],"album":{"id":"al1","name":"Album"}},"context":{"type":"album","uri":"spotify:album:al1"}},{"track":{"id":"t2","name":"Two"},"context":{"type":"playlist","uri":"spotify:playlist:p1"}},{"track":{"id":"t3","name":"Three"},"context":{"type":"artist","uri":"spotify:artist:a1"}},{"track":{"id":"t1","name":"One","album":{"id":"al1","name":"Album"}},"context":{"type":"album","uri":"spotify:album:al1"}}]}`)
+		default:
+			t.Errorf("unexpected %s", r.URL.Path)
+		}
+	})
+	groups, err := New(c).GetRecommendations(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 2 || len(groups[1].Items) != 2 || groups[1].Items[1].ID != "p1" {
+		t.Fatalf("playlist group: %+v", groups)
+	}
+	items := groups[0].Items
+	if len(items) != 3 || items[0].Kind != "album" || items[1].Kind != "playlist" || items[2].Kind != "track" {
+		t.Fatalf("items: %+v", items)
+	}
+}

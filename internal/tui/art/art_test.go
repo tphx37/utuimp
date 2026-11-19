@@ -169,3 +169,14 @@ func TestDecodeBounded_RejectsOversizedDimensions(t *testing.T) {
 		t.Fatalf("decodeBounded(oversized) error = %v, want exceed max", err)
 	}
 }
+
+func TestDecodeWebPArtwork(t *testing.T) {
+	data, err := base64.StdEncoding.DecodeString("UklGRjwAAABXRUJQVlA4IDAAAADQAQCdASoCAAIAAgA0JaACdLoB+AADsAD+8Oj3/yC5YXXI1/8gP+QH/ID/+PIAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := Decode(bytes.NewReader(data))
+	if err != nil || img.Bounds().Dx() != 2 {
+		t.Fatalf("webp artwork: %v", err)
+	}
+}

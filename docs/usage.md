@@ -46,7 +46,7 @@ that is playing, and the playback keys always control it.
 | `V` | fullscreen [visualizer](visualizer.md) |
 | `/` | search |
 | `l` | your library (`L` jumps back to its top) |
-| `q` | recently played |
+| `h` | recently played |
 | `y` | lyrics |
 | `F` | recommendations (Yandex Music: My Wave) |
 | `e` | equalizer |
@@ -183,10 +183,11 @@ away by accident. Turn them on in `utuimp setup library`, or with
 `library_delete` / `library_edit` in the [config](configuration.md#config-file).
 Adding is always allowed.
 
-YouTube Music and SoundCloud (without the API) have no account library:
-utuimp keeps favorites and playlists itself, in
-`~/.config/utuimp/library-youtube.json` and
-`~/.config/utuimp/library-soundcloud.json`.
+YouTube Music can also show the account's liked songs and playlists when
+YouTube cookies are configured. These account items are read-only; favorites
+and playlists created in utuimp are stored locally in
+`~/.config/utuimp/library-youtube.json`. SoundCloud without the API keeps its
+library in `~/.config/utuimp/library-soundcloud.json`.
 
 ## Favorites
 

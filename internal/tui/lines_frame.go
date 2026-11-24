@@ -267,10 +267,10 @@ func (m *Model) linesPlaceBoxes(rows []string, grid [][]rune, now time.Time) boo
 	}
 	// In the cover view there may be no panel for a closing menu to return
 	// to. Animate its own frame towards the centre instead of dropping it.
-	if l.closingActive && (!l.closingFrame.moving(now) || m.songMenu != nil || m.linkOffer != nil || m.prompt != nil) {
+	if l.closingActive && (!l.closingFrame.moving(now) || m.songMenu != nil || m.linkOffer != nil || m.prompt != nil || m.mode == modePlaylistPicker) {
 		l.closingActive = false
 	}
-	if morphs && l.menuShown && m.songMenu == nil && m.linkOffer == nil && m.prompt == nil {
+	if morphs && l.menuShown && m.songMenu == nil && m.linkOffer == nil && m.prompt == nil && m.mode != modePlaylistPicker {
 		menu := [4]int{l.menuKey[0], l.menuKey[1] - m.hostRows, l.menuKey[0] + l.menuKey[2] - 1, l.menuKey[1] - m.hostRows + l.menuKey[3] - 1}
 		if geo, ok := l.boxGeo[menu]; ok && !usedSource[menu] {
 			if slot, ok := l.boxSlot[menu]; ok && !used[slot] {
@@ -853,8 +853,12 @@ func (m *Model) linesPlaceMarks(rows []string, grid [][]rune, cover *bool) bool 
 	// Runs of rows whose only │ is in one column: a list's mark is a short
 	// one; a long one is the side of a frame that something lies over.
 	runX, runY, runN := -1, 0, 0
+	inOverlay := func(x, y int) bool {
+		r := l.overlayRect
+		return !r.empty() && x >= r.x0 && x < r.x1 && y >= r.y0 && y < r.y1
+	}
 	endRun := func() {
-		if runN >= 1 && runN <= 3 && selX < 0 {
+		if runN >= 1 && runN <= 3 && (selX < 0 || inOverlay(runX, runY) && !inOverlay(selX, selY)) {
 			selX, selY, selN = runX, runY, runN
 		}
 		runX, runN = -1, 0
@@ -920,6 +924,16 @@ func (m *Model) linesPlaceMarks(rows []string, grid [][]rune, cover *bool) bool 
 	if selX < 0 || !m.pixLines() {
 		l.selOn = false
 		return changed
+	}
+	// Popup backgrounds sit above ordinary graphics. Lift the popup's
+	// selection mark above that background, then restore its normal layer
+	// when focus returns to the underlying list.
+	z := -3
+	if inOverlay(selX, selY) {
+		z = -1
+	}
+	if st.img.Z != z {
+		st.img.Z, st.sentKey = z, [5]int{-1}
 	}
 	for y := selY; y < selY+selN; y++ {
 		rows[y] = blankCells(rows[y], selX, 1)

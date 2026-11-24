@@ -800,6 +800,7 @@ func (v *visualizer) finishFrame(m *Model, now time.Time, dt float64) {
 	// it: the picture is drawn above the words then, and is see-through
 	// where it has not reached yet. In cells there is nothing to see
 	// through, and it opens over the dark.
+	wasOver := v.over
 	v.over = masked && v.px > 1 && !v.console
 	if !v.over {
 		v.under = ""
@@ -867,8 +868,10 @@ func (v *visualizer) finishFrame(m *Model, now time.Time, dt float64) {
 	case v.px > 1:
 		v.frame = v.encodeText(label, now)
 		v.img.Alpha, v.img.Z = v.over, -1
-		if v.over {
-			v.img.Z = 1 // over the interface's words while it opens
+		if v.over || (wasOver && !v.closing) {
+			// Keep the first complete frame above the old terminal text.
+			// The view clears that text before the next frame moves below it.
+			v.img.Z = 1
 		}
 		seq, err := v.img.Frame(v.gmode, v.pixels(), v.w, v.h2, 0, 0, v.cw, v.ch)
 		if err != nil {

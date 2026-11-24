@@ -2102,7 +2102,13 @@ func (m *Model) lyricsPicOn() bool {
 			l.cellW, l.cellH = 9, 18
 		}
 	}
-	return l.lyr.ready(l.cellH, m.cfg.LyricsScale())
+	scale := m.cfg.LyricsScale()
+	if m.coverView && m.width < 150 {
+		// Smaller columns need smaller lyrics; preserve the user's size
+		// preference as a multiplier of the responsive size.
+		scale *= math.Max(0.65, float64(m.width)/150)
+	}
+	return l.lyr.ready(l.cellH, scale)
 }
 
 // linesLyricsAt notes where the lyrics' picture goes on the screen being

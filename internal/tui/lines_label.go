@@ -80,11 +80,11 @@ func (m *Model) labelScale(kind int) float64 {
 	}
 	switch kind {
 	case labelTitle:
-		return 2
+		return 1.4
 	case labelArtist:
-		return 1.5
+		return 1.2
 	case labelAlbum:
-		return 1.35
+		return 1.1
 	case labelTime, labelSmall, labelSpeaker:
 		return 1.25
 	}

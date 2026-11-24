@@ -9,7 +9,11 @@
 
 $ErrorActionPreference = "Stop"
 $repo = "tphx37/utuimp"
-$dir = if ($env:UTUIMP_INSTALL_DIR) { $env:UTUIMP_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Programs\utuimp" }
+$existing = Get-Command utuimp.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+$dir = if ($env:UTUIMP_INSTALL_DIR) { $env:UTUIMP_INSTALL_DIR }
+       elseif ($existing) { Split-Path -Parent $existing.Source }
+       else { Join-Path $env:LOCALAPPDATA "Programs\utuimp" }
+$dir = [IO.Path]::GetFullPath($dir)
 
 function Have($cmd) { [bool](Get-Command $cmd -ErrorAction SilentlyContinue) }
 function Step($t) { Write-Host "`n==> $t" -ForegroundColor Cyan }
@@ -111,6 +115,8 @@ foreach ($d in $deps) {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }
 Write-Host "    ok  $dir\utuimp.exe"
+# Make the installed version available in this PowerShell session as well.
+$env:Path = $dir + ";" + $env:Path
 
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if (($userPath -split ";") -notcontains $dir) {
@@ -119,4 +125,8 @@ if (($userPath -split ";") -notcontains $dir) {
 }
 try { & (Join-Path $dir "utuimp.exe") setup-desktop | Out-Null } catch {}
 
+$resolved = Get-Command utuimp -ErrorAction SilentlyContinue
+if ($resolved -and $resolved.CommandType -ne 'Application') {
+    Write-Warning "The command 'utuimp' resolves to $($resolved.CommandType) $($resolved.Name), which takes precedence over the installed executable. Remove that alias/function or run '$dir\utuimp.exe'."
+}
 Write-Host "`n    utuimp is installed. Run: utuimp`n" -ForegroundColor Green

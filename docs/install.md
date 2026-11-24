@@ -31,7 +31,10 @@ The script:
    asks before installing anything.
 2. downloads and verifies a published release when available, otherwise
    builds from source. It installs to `~/.local/bin` on Linux and macOS,
-   or `%LOCALAPPDATA%\Programs\utuimp` on Windows.
+   or the directory of the existing `utuimp.exe` on Windows (otherwise
+   `%LOCALAPPDATA%\Programs\utuimp`). The current PowerShell session is updated
+   too. An alias or function named `utuimp` takes precedence over the executable;
+   use `Get-Command utuimp -All` to inspect conflicting commands.
 
 Options for `install.sh` (when piped from curl, pass them after `sh -s --`):
 
@@ -42,7 +45,7 @@ Options for `install.sh` (when piped from curl, pass them after `sh -s --`):
 | `--yes` | don't ask, install what is missing |
 
 Environment: `UTUIMP_INSTALL_DIR` changes the install directory (default
-`~/.local/bin`), `UTUIMP_YES=1` is the same as `--yes`.
+`~/.local/bin` on Unix; on Windows it overrides the directory above), `UTUIMP_YES=1` is the same as `--yes`.
 
 Without a terminal (in CI, for example) the script installs no dependencies
 unless `--yes` is given.

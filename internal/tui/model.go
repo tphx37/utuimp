@@ -679,7 +679,8 @@ type Model struct {
 	cmdSuggIdx int // currently highlighted suggestion (0-based)
 
 	// Double-key tracking (for 'gg')
-	lastKey string
+	lastKey       string
+	playbackKeyAt map[string]time.Time
 
 	// Errors / status messages
 	errMsg    string
@@ -3469,6 +3470,17 @@ func (m *Model) handleNormalKey(msg tea.KeyPressMsg, k string) tea.Cmd {
 // previous, volume, seek, repeat, shuffle, favourite, radio) wherever they
 // are pressed. ok is false when k isn't one of them or had nothing to act on.
 func (m *Model) playbackKey(k string) (cmd tea.Cmd, ok bool) {
+	// Throttle repeated transport commands without delaying other shortcuts.
+	if k == "space" || k == "n" || k == "p" {
+		now := time.Now()
+		if now.Sub(m.playbackKeyAt[k]) < 300*time.Millisecond {
+			return nil, true
+		}
+		if m.playbackKeyAt == nil {
+			m.playbackKeyAt = make(map[string]time.Time)
+		}
+		m.playbackKeyAt[k] = now
+	}
 	switch k {
 	case "space":
 		return m.togglePlayPause(), true
@@ -4088,10 +4100,11 @@ func (m *Model) viewNow() tea.View {
 	}
 	var content string
 	switch {
-	case m.mode == modePlaylistPicker:
-		content = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.renderPlaylistPickerModal())
 	case m.introStep != introDone:
 		content = m.renderIntro()
+	case m.viz != nil && m.viz.closing && m.viz.closeN <= 1:
+		// Keep the old cells until the first closing picture is above them.
+		content = m.renderVisualizer()
 	case m.vizOpen() && !m.viz.over:
 		content = m.renderVisualizer()
 	case m.vizOpen() && m.viz.under != "":
@@ -4109,7 +4122,7 @@ func (m *Model) viewNow() tea.View {
 			m.viz.under = content
 		}
 	}
-	if m.lines != nil && (m.vizOpen() && !m.viz.over || m.introStep != introDone && !m.introOpening() || m.mode == modePlaylistPicker) {
+	if m.lines != nil && (m.vizOpen() && !m.viz.over || m.introStep != introDone && !m.introOpening()) {
 		m.lines.unsee()
 	}
 	if styles.Console && !m.vizOpen() { // the visualizer writes for the console itself
@@ -4230,6 +4243,9 @@ func (m *Model) renderMain() string {
 	if m.lines != nil {
 		m.lines.baseFrames = content
 		m.lines.overlayRect = fxRect{}
+	}
+	if m.mode == modePlaylistPicker {
+		content = m.overlay(content, m.renderPlaylistPickerModal())
 	}
 	if m.songMenu != nil {
 		content = m.overlay(content, m.renderSongMenu())
@@ -5100,7 +5116,7 @@ func (m *Model) searchLines(contentW, h int) []string {
 	}
 	footer := "  " + accent.Render(i18n.T("Enter")) + muted.Render(i18n.T(enter)) +
 		"  ·  " + accent.Render(i18n.T("Tab")) + muted.Render(i18n.T(" play next")) +
-		"  ·  " + accent.Render(i18n.T("Shift+Tab")) + muted.Render(i18n.T(" add to queue")) +
+		"  ·  " + accent.Render(i18n.T("Shift+Tab")) + muted.Render(i18n.T(" play last")) +
 		"  ·  " + accent.Render(i18n.T("ctrl+p")) + muted.Render(i18n.T(" add to playlist")) +
 		"  ·  " + accent.Render(i18n.T("Esc")) + muted.Render(esc)
 	if m.serviceKey == "radio" && m.search.SelectedTrack() != nil {
@@ -5163,13 +5179,13 @@ func (m *Model) statusNavLines(w int) []string {
 				styles.ModeNormal.Render(i18n.T("HISTORY")),
 				accent.Render(i18n.T("Enter")) + muted.Render(i18n.T(" play now")),
 				accent.Render(i18n.T("Tab")) + muted.Render(i18n.T(" play next")),
-				accent.Render(i18n.T("Shift+Tab")) + muted.Render(i18n.T(" add to queue")),
+				accent.Render(i18n.T("Shift+Tab")) + muted.Render(i18n.T(" play last")),
 				accent.Render(i18n.T("p")) + muted.Render(i18n.T(" add to playlist")),
 				accent.Render(i18n.T("R")) + muted.Render(i18n.T(" radio")),
 				accent.Render(i18n.T("i")) + muted.Render(i18n.T(" song menu")),
 				accent.Render(i18n.T("esc")) + muted.Render(i18n.T(" close")),
 			}
-		case m.activePanel < 0 && m.queueMiniCursor >= 0:
+		case m.activePanel < 0 && (m.queueMiniCursor >= 0 || (m.coverView && m.coverQueueOpen)):
 			parts = []string{
 				styles.ModeNormal.Render(i18n.T("QUEUE")),
 				accent.Render(i18n.T("Enter")) + muted.Render(i18n.T(" play")),
@@ -5215,8 +5231,8 @@ func (m *Model) statusNavLines(w int) []string {
 			parts = []string{
 				styles.ModeNormal.Render(i18n.T("FEED")),
 				accent.Render(i18n.T("Enter")) + muted.Render(i18n.T(" open")),
-				accent.Render(i18n.T("Tab")) + muted.Render(i18n.T(" next")),
-				accent.Render(i18n.T("Shift+Tab")) + muted.Render(i18n.T(" queue")),
+				accent.Render(i18n.T("Tab")) + muted.Render(i18n.T(" play next")),
+				accent.Render(i18n.T("Shift+Tab")) + muted.Render(i18n.T(" play last")),
 				accent.Render(i18n.T("j/k")) + muted.Render(i18n.T(" navigate")),
 				accent.Render(i18n.T("r")) + muted.Render(i18n.T(" refresh")),
 				accent.Render(i18n.T("esc")) + muted.Render(i18n.T(" close")),
@@ -5252,7 +5268,7 @@ func (m *Model) statusNavLines(w int) []string {
 				searchHint = " link"
 			}
 			parts = []string{
-				styles.ModeNormal.Render(i18n.T("NORMAL")),
+				styles.ModeNormal.Render("BOXED"),
 				accent.Render(":") + muted.Render(i18n.T(" command")),
 				accent.Render("/") + muted.Render(i18n.T(searchHint)),
 				accent.Render(i18n.T("l")) + muted.Render(i18n.T(" library")),
@@ -5745,7 +5761,7 @@ func (m *Model) pickerWindow() (start, end int) {
 
 // renderPlaylistPickerModal renders the centered "Add to playlist" modal.
 func (m *Model) renderPlaylistPickerModal() string {
-	innerW := min(46, m.width-8)
+	innerW := min(52, max(20, m.width-10))
 	sep := styles.QueueItemMuted.Render(strings.Repeat("─", innerW))
 
 	var lines []string
@@ -5765,12 +5781,14 @@ func (m *Model) renderPlaylistPickerModal() string {
 		start, end := m.pickerWindow()
 		if start > 0 {
 			lines = append(lines, styles.QueueItemMuted.Render(fmt.Sprintf(i18n.T("  ↑ %d more"), start)))
+		} else {
+			lines = append(lines, "")
 		}
 		for i := start; i < end; i++ {
 			if i == len(m.playlistPickerItems) {
 				name := i18n.T("+ New playlist…")
 				if i == m.playlistPickerCursor {
-					lines = append(lines, styles.Playing.Render("▶ "+name))
+					lines = append(lines, styles.Playing.Render("│ ")+styles.Selected.Render(name))
 				} else {
 					lines = append(lines, styles.QueueItemMuted.Render("  "+name))
 				}
@@ -5778,7 +5796,7 @@ func (m *Model) renderPlaylistPickerModal() string {
 			}
 			name := truncateStr(m.playlistPickerItems[i].Name, innerW-3)
 			if i == m.playlistPickerCursor {
-				lines = append(lines, styles.Playing.Render("▶ "+name))
+				lines = append(lines, styles.Playing.Render("│ ")+styles.Selected.Render(name))
 			} else {
 				lines = append(lines, styles.QueueItem.Render("  "+name))
 			}
@@ -5786,6 +5804,8 @@ func (m *Model) renderPlaylistPickerModal() string {
 		remaining := len(m.playlistPickerItems) + 1 - end
 		if remaining > 0 {
 			lines = append(lines, styles.QueueItemMuted.Render(fmt.Sprintf(i18n.T("  ↓ %d more"), remaining)))
+		} else {
+			lines = append(lines, "")
 		}
 	}
 
@@ -5794,9 +5814,9 @@ func (m *Model) renderPlaylistPickerModal() string {
 
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(styles.ColorPrimary).
+		BorderForeground(styles.ColorBorderFocus).
 		Padding(0, 1).
-		Width(innerW).
+		Width(innerW + 4).
 		Render(strings.Join(lines, "\n"))
 }
 

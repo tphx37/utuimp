@@ -59,7 +59,7 @@ func (m *Model) coverDims() (leftW, rightW, h int) {
 	}
 	leftW = min(70, max(36, m.width*2/5))
 	if m.coverPlain {
-		leftW = min(100, max(36, m.width/2)) // the cover alone gets more room
+		leftW = min(80, max(36, m.width*2/5)) // leave more room for the song title
 	}
 	return leftW, m.width - leftW - 1, h
 }
@@ -282,7 +282,7 @@ func (m *Model) coverGeom(w, h int) (rows, cols, top int) {
 	}
 	rows = min(h-text, 24)
 	if m.coverPlain {
-		rows = min(h-2, 40)
+		rows = min(h-2, 30)
 	}
 	cols = int(math.Round(float64(rows) * aspect))
 	for rows > 2 && cols > w-6 {
@@ -319,7 +319,7 @@ func (m *Model) coverLyricsBand(h int) (top, height int) {
 // coverSongRight is the right column with the lyrics hidden: the song,
 // its controls and volume, centred.
 func (m *Model) coverSongRight(w, h int) []string {
-	textW := min(w-4, 64)
+	textW := min(w-4, 90)
 	// Beside the cover alone the words, the lines and the buttons are
 	// drawn large, where they are drawn and there is the room: at their
 	// usual size they were small beside it.
@@ -488,10 +488,61 @@ func (m *Model) renderCoverLayout() string {
 			rows = append(rows, padRight(left[i], leftW)+" "+padRight(safeIdx(right, i), rightW))
 		}
 	} else {
-		for _, l := range m.coverSongText(m.width - 2) {
+		// In narrow windows put the cover beside the song details, keeping
+		// the progress and controls across the full width below them.
+		artRows, cols := 0, 0
+		if m.coverWanted() && h >= 6 && m.width >= 28 {
+			artRows = min(6, h-3)
+			aspect := m.artCellAsp
+			if aspect <= 0 {
+				aspect = 2
+			}
+			cols = min(m.width-20, int(math.Round(float64(artRows)*aspect)))
+		}
+		labelStart := 0
+		if m.lines != nil {
+			labelStart = len(m.lines.labels)
+		}
+		song := m.coverSongText(m.width - 2)
+		if artRows > 0 && len(song) >= 4 {
+			textW := max(1, m.width-cols-5)
+			if m.lines != nil {
+				for i := labelStart; i < len(m.lines.labels); i++ {
+					lb := &m.lines.labels[i]
+					if lb.kind == labelTitle || lb.kind == labelArtist || lb.kind == labelAlbum {
+						lb.cells, lb.align = textW, alignLeft
+					}
+				}
+			}
+			headerRows := max(artRows, 3)
+			header := make([]string, headerRows)
+			textTop := (headerRows - 3) / 2
+			for i := range 3 {
+				header[textTop+i] = ansi.Truncate(strings.TrimSpace(song[i+1]), textW, "…")
+			}
+			song = append(header, song[4:]...)
+		}
+		home := m.mode == modeNormal && !m.debugView && !m.coverQueueOpen &&
+			(m.activePanel < 0 || m.panels[m.activePanel] == m.lyricsP && !m.lyricsP.m.PickerOpen())
+		if home {
+			rows = append(rows, make([]string, max(0, full-len(rows)-len(song)-2))...)
+		}
+		if artRows > 0 {
+			const col = 3
+			var cover []string
+			if m.linesCoverAt(col, len(rows), cols, artRows) {
+				cover = make([]string, artRows)
+			} else {
+				cover = m.coverArtLines(art.Size{Width: cols, Height: artRows})
+			}
+			for i := range artRows {
+				song[i] = "  " + padRight(safeIdx(cover, i), cols) + "  " + song[i]
+			}
+		}
+		for _, l := range song {
 			rows = append(rows, " "+l)
 		}
-		rows = append(rows, m.coverRightLines(rightW, h)...)
+		rows = append(rows, m.coverRightLines(rightW, h-artRows)...)
 	}
 	for len(rows) < full {
 		rows = append(rows, "")
@@ -627,7 +678,7 @@ func (m *Model) coverHomeHints() []string {
 		searchHint = " link"
 	}
 	parts := []string{
-		styles.ModeNormal.Render(i18n.T("COVER")),
+		styles.ModeNormal.Render("COVER"),
 		hint("/", searchHint),
 		hint(i18n.T("l"), " library"),
 		hint(i18n.T("h"), " history"),

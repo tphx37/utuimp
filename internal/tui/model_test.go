@@ -4812,3 +4812,32 @@ func TestFeedRetriesLateNotReadyResult(t *testing.T) {
 		t.Fatal("late not-ready result should retry with the connected provider")
 	}
 }
+
+func TestPlaybackKeysThrottleRepeats(t *testing.T) {
+	m := newModel(newMockPlayer())
+	for _, key := range []string{"space", "n", "p"} {
+		if cmd, ok := m.playbackKey(key); !ok || cmd == nil {
+			t.Fatalf("first %s should run", key)
+		}
+		if cmd, ok := m.playbackKey(key); !ok || cmd != nil {
+			t.Fatalf("repeated %s should be suppressed", key)
+		}
+		m.playbackKeyAt[key] = time.Now().Add(-time.Second)
+		if cmd, ok := m.playbackKey(key); !ok || cmd == nil {
+			t.Fatalf("%s should work again after cooldown", key)
+		}
+	}
+}
+
+func TestPlaylistPickerHeightStableWhileScrolling(t *testing.T) {
+	m := newModel(newMockPlayer())
+	m.width, m.height = 100, 40
+	m.playlistPickerItems = make([]provider.Playlist, 20)
+	height := lipgloss.Height(m.renderPlaylistPickerModal())
+	for i := range len(m.playlistPickerItems) + 1 {
+		m.playlistPickerCursor = i
+		if got := lipgloss.Height(m.renderPlaylistPickerModal()); got != height {
+			t.Fatalf("cursor %d: picker height %d, want %d", i, got, height)
+		}
+	}
+}

@@ -5,7 +5,7 @@
 First, type `:debug-logs` inside utuimp. It shows what utuimp has been
 doing, and the error is usually there. Run `utuimp --debug` to also save
 diagnostics and crash reports to `~/.cache/utuimp/debug.log` (on Windows,
-`utuimp/debug.log` under the user cache directory). Review the log for private
+`%LocalAppData%\utuimp\debug.log`, normally `C:\Users\<your-user>\AppData\Local\utuimp\debug.log`). In PowerShell, open it with `notepad "$env:LocalAppData\utuimp\debug.log"`. Review the log for private
 information before sharing it.
 
 - [Playback](#playback)

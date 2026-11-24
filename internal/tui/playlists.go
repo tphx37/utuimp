@@ -412,12 +412,12 @@ func (m *Model) libraryHints() []string {
 	_, saver := m.provider.(provider.CollectionSaver)
 	switch {
 	case saver && (lib.SelectedSavedAlbum() != nil || lib.SelectedSavedArtist() != nil):
-		parts = append(parts, key("Tab", " next"), key("Shift+Tab", " queue"))
+		parts = append(parts, key("Tab", " play next"), key("Shift+Tab", " play last"))
 		if m.canDelete() {
 			parts = append(parts, key("d d", " remove"))
 		}
 	case lib.ShowingPlaylists():
-		parts = append(parts, key("Tab", " next"), key("Shift+Tab", " queue"), key("c", " new playlist"))
+		parts = append(parts, key("Tab", " play next"), key("Shift+Tab", " play last"), key("c", " new playlist"))
 		if editable && m.canEdit() {
 			parts = append(parts, key("r", " rename"))
 		}
@@ -431,13 +431,13 @@ func (m *Model) libraryHints() []string {
 				parts = append(parts, key("r", " rename station"))
 			}
 		}
-		parts = append(parts, key("Tab", " song next"), key("Shift+Tab", " song to end"), key("Ctrl+Q", " all next"), key("P", " add to playlist"))
+		parts = append(parts, key("Tab", " play next"), key("Shift+Tab", " play last"), key("Ctrl+Q", " all next"), key("P", " add to playlist"))
 		if pl, _, _ := lib.OpenPlaylist(); pl != nil && editable && m.canDelete() {
 			parts = append(parts, key("d d", " remove"))
 		}
 		parts = append(parts, key("i", " song menu"))
 	default:
-		parts = append(parts, key("Tab", " next"), key("Shift+Tab", " queue"))
+		parts = append(parts, key("Tab", " play next"), key("Shift+Tab", " play last"))
 	}
 	if m.serviceKey == "local" {
 		parts = append(parts, key("Ctrl+R", " refresh"))

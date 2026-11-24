@@ -79,6 +79,13 @@ func (d *trackData) download(ctx context.Context, link string) {
 		d.finish(fmt.Errorf("audio download: HTTP %d", resp.StatusCode))
 		return
 	}
+	// Reserving a known, modest size avoids repeatedly copying a growing
+	// song buffer. Ignore large or unknown lengths from remote servers.
+	if resp.ContentLength > 0 && resp.ContentLength <= 16<<20 {
+		d.mu.Lock()
+		d.buf = make([]byte, 0, int(resp.ContentLength))
+		d.mu.Unlock()
+	}
 	d.read(resp.Body)
 }
 
@@ -288,6 +295,10 @@ func (p *Player) serve(w http.ResponseWriter, r *http.Request) {
 // start resolves and plays queue[idx] (generation gen).
 func (p *Player) start(gen, idx int) {
 	p.mu.RLock()
+	if gen != p.gen || idx < 0 || idx >= len(p.queue) {
+		p.mu.RUnlock()
+		return
+	}
 	id := p.queue[idx]
 	t, known := p.meta[id]
 	p.mu.RUnlock()

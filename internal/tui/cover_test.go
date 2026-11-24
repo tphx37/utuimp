@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/tphx37/utuimp/internal/config"
+	"github.com/tphx37/utuimp/internal/gfx"
 	"github.com/tphx37/utuimp/internal/lyrics"
 	"github.com/tphx37/utuimp/internal/provider"
 	"github.com/tphx37/utuimp/internal/tui/art"
@@ -74,6 +75,9 @@ func TestCoverView_ToggleAndPanels(t *testing.T) {
 	frame = ansi.Strip(m.View().Content)
 	if os.Getenv("COVER_DUMP") != "" {
 		t.Log("\n" + frame)
+	}
+	if !strings.Contains(strings.Join(m.statusNavLines(120), " "), "QUEUE") {
+		t.Error("open cover queue should have the queue status")
 	}
 	if !strings.Contains(frame, "╭") || !strings.Contains(frame, "Next One") {
 		t.Errorf("q should show the framed queue:\n%s", frame)
@@ -459,5 +463,63 @@ func TestCoverEscWithoutTrackStaysHome(t *testing.T) {
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	if m.activePanel < 0 || m.panels[m.activePanel] != m.lyricsP {
 		t.Fatal("escape left the cover home without a track")
+	}
+}
+
+func TestCoverViewNarrowKeepsSmallCover(t *testing.T) {
+	m := coverModel(t, 52, 30)
+	m.coverView = true
+	m.lines.mode = gfx.Shm
+	m.lines.cellW, m.lines.cellH = 9, 18
+	m.cfg.HideHints, m.hintsHidden = true, true
+	m.activePanel = m.lyricsPanelIdx()
+	_ = m.renderCoverLayout()
+	if !m.lines.coverWant || m.lines.coverRows < 2 || m.lines.coverRows > 6 {
+		left, right, h := m.coverDims()
+		t.Fatalf("narrow view should reserve a small cover: wanted=%v rows=%d dims=%d,%d,%d status=%d", m.lines.coverWant, m.lines.coverRows, left, right, h, len(m.coverStatusLines()))
+	}
+	full := m.height - len(m.coverStatusLines())
+	bottom := m.lines.coverRow + m.lines.coverRows + len(m.coverSongText(m.width-2)) - 4
+	if gap := full - bottom; gap < 0 || gap > 2 {
+		t.Fatalf("player should end close to the hints, gap=%d", gap)
+	}
+	_ = m.linesPlace(m.renderMain())
+	for _, lb := range m.lines.labels {
+		if lb.kind == labelTitle && lb.found {
+			if lb.x <= m.lines.coverCol+m.lines.coverCols || lb.y < m.lines.coverRow || lb.y >= m.lines.coverRow+m.lines.coverRows {
+				t.Fatalf("title should sit beside cover: title=%d,%d cover=%d,%d %dx%d", lb.x, lb.y, m.lines.coverCol, m.lines.coverRow, m.lines.coverCols, m.lines.coverRows)
+			}
+			return
+		}
+	}
+	t.Fatal("title label missing")
+}
+
+func TestCoverLyricsScaleAdaptsToWidth(t *testing.T) {
+	m := coverModel(t, 100, 30)
+	m.coverView = true
+	m.lines.mode = gfx.Shm
+	m.lines.cellW, m.lines.cellH = 9, 18
+	if !m.lyricsPicOn() {
+		t.Skip("no font available")
+	}
+	small := m.lines.lyr.font.Size
+	m.width = 160
+	if !m.lyricsPicOn() || m.lines.lyr.font.Size <= small {
+		t.Fatal("lyrics should use a smaller font in a narrower window")
+	}
+}
+
+func TestCoverPlainWideLeavesRoomForTitle(t *testing.T) {
+	m := coverModel(t, 200, 50)
+	m.coverView, m.coverPlain = true, true
+	left, right, h := m.coverDims()
+	rows, _, _ := m.coverGeom(left, h)
+	if rows > 30 || right <= left {
+		t.Fatalf("cover should leave room for text: cover rows=%d, columns=%d/%d", rows, left, right)
+	}
+	m.songBig = true
+	if m.labelScale(labelTitle) > 1.4 {
+		t.Fatal("wide cover title should fit more text")
 	}
 }

@@ -321,7 +321,7 @@ func (m *Model) renderSongMenu() string {
 			num := styles.KeyName.Render(fmt.Sprintf(i18n.T("%d "), i+1))
 			label := truncateStr(it.label, innerW-4)
 			if i == sm.idx {
-				lines = append(lines, styles.Playing.Render("▸ ")+num+styles.Selected.Render(label))
+				lines = append(lines, styles.Playing.Render("│ ")+num+styles.Selected.Render(label))
 			} else {
 				lines = append(lines, "  "+num+styles.QueueItem.Render(label))
 			}
@@ -360,6 +360,8 @@ func (m *Model) songMenuBackdrop() string {
 		box = m.renderPrompt()
 	case m.linkOffer != nil:
 		box = m.renderLinkOffer()
+	case m.mode == modePlaylistPicker:
+		box = m.renderPlaylistPickerModal()
 	case m.songMenu != nil:
 		box = m.renderSongMenu()
 	}

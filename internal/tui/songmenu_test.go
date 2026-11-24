@@ -18,13 +18,18 @@ func TestSongMenuBackdropCoversGraphics(t *testing.T) {
 	m.coverView = true
 	m.lines.mode = gfx.File
 	m.lines.cellW, m.lines.cellH = 9, 18
-	m.songMenu = &songMenuState{track: *m.playerState.Track}
+	m.songMenu = &songMenuState{track: *m.playerState.Track, items: []songMenuItem{{label: "Album"}}}
 	seq := m.songMenuBackdrop()
 	if seq == "" || !m.lines.menuShown || m.lines.menuImg.Z <= m.lines.strips[stripLabels].img.Z {
 		t.Fatal("menu needs an opaque layer above the player graphics")
 	}
 	if m.lines.strips[stripFrame].img.Z <= m.lines.menuImg.Z {
 		t.Fatal("the popup frame must be above its backdrop")
+	}
+	m.linesPlace(m.renderMain())
+	mark := m.lines.strips[stripSel]
+	if !mark.seen || mark.img.Z <= m.lines.menuImg.Z {
+		t.Fatalf("song menu selection must appear above backdrop: seen=%v z=%d", mark.seen, mark.img.Z)
 	}
 	w, h := m.lines.menuKey[2]*m.lines.cellW, m.lines.menuKey[3]*m.lines.cellH
 	if !strings.Contains(seq, fmt.Sprintf("s=%d,v=%d", w, h)) {
@@ -69,6 +74,10 @@ func TestSongMenu(t *testing.T) {
 		if !strings.Contains(screen, want) {
 			t.Errorf("screen missing %q (menu should sit over the UI):\n%s", want, screen)
 		}
+	}
+
+	if !strings.Contains(screen, "│ 1 ") {
+		t.Errorf("selected song menu item has no cursor:\n%s", screen)
 	}
 
 	// Each artist opens separately.

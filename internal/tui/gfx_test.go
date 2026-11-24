@@ -35,6 +35,22 @@ func TestVisualizer_Pixels(t *testing.T) {
 		t.Fatalf("px = %d, want a finer picture", v.px)
 	}
 	cells := m.width * m.height
+	// The first opaque frame stays above the old text until the view has
+	// switched to the visualizer; only the following frame goes below it.
+	v.openedAt = time.Now().Add(-time.Duration((vizOpenFor - 0.1) * float64(time.Second)))
+	m.vizStep()
+	if !v.over {
+		t.Fatal("opening frame should be over the interface")
+	}
+	v.openedAt = time.Now().Add(-time.Duration((vizOpenFor + 0.1) * float64(time.Second)))
+	m.vizStep()
+	if v.over || v.img.Z != 1 {
+		t.Fatal("first complete frame must cover stale interface text")
+	}
+	m.vizStep()
+	if v.img.Z != -1 {
+		t.Fatal("later frames should be behind visualizer text")
+	}
 	// Opened: no longer a circle growing over the interface.
 	v.openedAt = time.Now().Add(-time.Duration((vizOpenFor + 1) * float64(time.Second)))
 	for scene := range sceneCount {
@@ -210,8 +226,13 @@ func TestVisualizer_Transitions(t *testing.T) {
 	if mid < 0.9 || corner > 0.1 {
 		t.Errorf("half closed: still there in the middle (%.2f), gone at the edges (%.2f)", mid, corner)
 	}
+	if !strings.Contains(ansi.Strip(m.View().Content), "esc  exit") {
+		t.Error("the visualizer cells should remain until its closing image is placed")
+	}
+	m.Update(vizTickMsg{v.gen})
+	m.Update(tea.RawMsg{Msg: "frame sent"})
 	if strings.Contains(ansi.Strip(m.View().Content), "esc  exit") {
-		t.Error("the interface is drawn under it while it closes")
+		t.Error("the interface should appear under the closing image")
 	}
 	v.closedAt = time.Now().Add(-time.Second)
 	_, cmd := m.Update(vizTickMsg{v.gen})

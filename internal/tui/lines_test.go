@@ -526,6 +526,20 @@ func TestLinesPlaceMarks(t *testing.T) {
 	if st := m.lines.strips[stripSel]; st.col != 2 || m.lines.selTop < chh {
 		t.Errorf("▸ marks its row, a row of bars does not: col %d, top %.0f", st.col, m.lines.selTop)
 	}
+	// The popup selection takes priority over an underlying list and must
+	// be above the opaque popup background; closing it restores the layer.
+	m.lines.overlayRect = fxRect{4, 1, 14, 4}
+	rows, g = screen(" │ underlying", "      │ popup")
+	m.linesPlaceMarks(rows, g, &cover)
+	if st := m.lines.strips[stripSel]; st.col != 6 || st.img.Z <= m.lines.menuImg.Z {
+		t.Fatalf("popup selection hidden or not selected: col=%d z=%d", st.col, st.img.Z)
+	}
+	m.lines.overlayRect = fxRect{}
+	rows, g = screen(" │ underlying")
+	m.linesPlaceMarks(rows, g, &cover)
+	if st := m.lines.strips[stripSel]; st.img.Z >= m.lines.menuImg.Z {
+		t.Fatalf("underlying selection should return beneath popup: z=%d", st.img.Z)
+	}
 	buf := make([]byte, 9*200*4)
 	drawSel(buf, 9, 200, 40, 70, 18, 1, vcol{1, 0.4, 0.5})
 	if buf[(55*9+4)*4+3] < 200 || buf[(20*9+4)*4+3] != 0 || buf[(100*9+4)*4+3] != 0 {
@@ -1753,4 +1767,49 @@ func TestLinesPlaceBoxesShortOverlayRow(t *testing.T) {
 		grid[i] = cellGrid(row)
 	}
 	m.linesPlaceBoxes(rows, grid, time.Now())
+}
+
+func TestLyricsPictureFadesSixthLineDuringScroll(t *testing.T) {
+	var p lyricsPic
+	if !p.ready(18, 0.7) {
+		t.Skip("no font available")
+	}
+	lines := make([]views.CoverSceneLine, 12)
+	for i := range lines {
+		lines[i].Text = fmt.Sprintf("line %d", i)
+	}
+	for _, focus := range []int{0, 6, 11} {
+		p.settled = false
+		items, _ := p.scene(800, 1800, views.CoverScene{Lines: lines, Focus: focus, Current: focus, Cursor: -1, Synced: true}, 0.02, lyricLook{})
+		if len(items) > 6 {
+			t.Fatalf("focus %d: got %d visible song lines", focus, len(items))
+		}
+		if focus == 6 && (len(items) != 6 || items[5].puts[0].a >= items[4].puts[0].a) {
+			t.Fatal("the sixth, following line should be dimmer than the others")
+		}
+		found := false
+		for _, item := range items {
+			found = found || item.key == focus
+		}
+		if !found {
+			t.Fatalf("focus %d is not visible", focus)
+		}
+	}
+	p.settled = false
+	sc := views.CoverScene{Lines: lines, Focus: 6, Current: 6, Cursor: -1, Synced: true}
+	p.scene(800, 1800, sc, 0.02, lyricLook{})
+	sc.Focus, sc.Current = 7, 7
+	items, moving := p.scene(800, 1800, sc, 0.02, lyricLook{})
+	if !moving {
+		t.Fatal("line change should glide")
+	}
+	for _, item := range items {
+		if item.key == 10 {
+			if a := item.puts[0].a; a <= 0 || a >= 0.1 {
+				t.Fatalf("new line should fade in gradually, opacity=%v", a)
+			}
+			return
+		}
+	}
+	t.Fatal("incoming line should start fading in during the scroll")
 }

@@ -495,7 +495,29 @@ func (p *lyricsPic) scene(w, h int, sc views.CoverScene, dt float64, look lyricL
 
 	q := func(v float64) int { return int(math.Round(v * 255)) }
 	qc := func(c vcol) int { return q(c.r)<<16 | q(c.g)<<8 | q(c.b) }
-	for i, line := range sc.Lines {
+	// Follow the animated scroll position, not the new focus: otherwise
+	// changing lines instantly replaces items before they can glide in/out.
+	position := p.scroll + top
+	linePos := 0.0
+	for i := 1; i < len(p.tops); i++ {
+		if position < float64(p.tops[i]) {
+			span := float64(p.tops[i] - p.tops[i-1])
+			if span > 0 {
+				linePos = float64(i-1) + clamp01((position-float64(p.tops[i-1]))/span)
+			}
+			break
+		}
+		linePos = float64(i)
+	}
+	first := max(0, int(math.Floor(linePos))-3)
+	last := min(len(sc.Lines), int(math.Ceil(linePos))+5)
+	for i := first; i < last; i++ {
+		distance := float64(i) - linePos
+		visibility := smooth(-3, -2, distance) * (1 - smooth(2, 4, distance))
+		if visibility <= 0 {
+			continue
+		}
+		line := sc.Lines[i]
 		b := p.block(line, w)
 		y := int(math.Round(float64(p.tops[i]) - p.scroll))
 		// Its light: full for the line being sung (or picked), eased.
@@ -522,6 +544,8 @@ func (p *lyricsPic) scene(w, h int, sc views.CoverScene, dt float64, look lyricL
 		}
 		lit := p.lit[i]
 		rest, sung := base+(0.55-base)*lit, base+(1-base)*lit
+		rest *= visibility
+		sung *= visibility
 		colRest, colSung := look.fg, look.fg.mix(look.sung, lit)
 		if i == sc.Cursor && i != sc.Current {
 			colRest, colSung = look.fg.mix(look.pick, lit), look.fg.mix(look.pick, lit)
@@ -555,6 +579,7 @@ func (p *lyricsPic) scene(w, h int, sc views.CoverScene, dt float64, look lyricL
 		if len(b.trans) > 0 {
 			ry += p.small.Height / 4
 			a := 0.62 * (base + (0.8-base)*lit)
+			a *= visibility
 			for r := range b.trans {
 				row := &b.trans[r]
 				it.puts = append(it.puts, lyricPut{row: row, y: ry, c: look.fg, a: a, litX: -1e9, c2: look.fg, a2: a, litEdge: 1})

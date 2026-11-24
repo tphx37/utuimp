@@ -1,5 +1,13 @@
 # Changelog
 
+## 4.0.4
+
+- Small changes to artwork and lyrics behaviour in smaller terminal sizes.
+- Avoid repeated audio buffer allocations, improving performance.
+- Fixed a possible crash when the Yandex Music queue changes during a track switch.
+- Fixed Windows installer PATH handling.
+- Improved song and playlist menus and cover view status labels.
+
 ## 4.0.3
 
 ### Added

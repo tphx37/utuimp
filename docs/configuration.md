@@ -206,7 +206,7 @@ utuimp version
 | `--no-update` | don't check for updates this run |
 | `--window` | open in a terminal window of its own |
 | `--demo` | fake player and fake songs, no accounts or network |
-| `--debug` | save diagnostics and crash reports to the user cache (`utuimp/debug.log`) |
+| `--debug` | save diagnostics and crash reports to the user cache (`~/.cache/utuimp/debug.log` on Linux; `%LocalAppData%\utuimp\debug.log` on Windows) |
 
 ## Environment variables
 
